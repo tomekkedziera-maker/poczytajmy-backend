@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "804fb957-23b3-48fd-b6da-08d82d2be6a4"
+      }
+    },
+    "android": {
+      "package": "com.tomeken.poczytajmybackend"
+    }
+  }
+}

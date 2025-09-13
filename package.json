@@ -1,0 +1,20 @@
+{
+  "name": "poczytajmy-ocr-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node index.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "groq-sdk": "^0.32.0",
+    "morgan": "^1.10.1",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^5.19.1",
+    "sharp": "^0.33.5",
+    "tesseract.js": "^5.1.1"
+  }
+}
