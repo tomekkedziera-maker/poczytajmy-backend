@@ -33,7 +33,7 @@ const PREWARM_EVERY_MIN = Number(process.env.PREWARM_EVERY_MIN || 5); // 0 = tyl
 const BASE_URL = process.env.BASE_URL || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 
-const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
+const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 }); // (pozostawiony – już nie wpinamy go do fetch)
 const now = () => (global.performance?.now?.() ?? Date.now());
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const trimUserContent = (s = '', limit = 1200) => {
@@ -136,37 +136,140 @@ app.get('/', (_req, res) => {
   `);
 });
 
-// === ASR ===
+/* ===================== ASR (z timestamps + accuracy) ===================== */
 app.post('/asr', upload.single('audio'), async (req, res) => {
   try {
-    if (MOCK_ASR) return res.json({ text: 'Ala ma kota', source: 'mock' });
-    if (!req.file) return res.status(400).json({ error: 'Brak pliku w polu "audio".' });
+    if (MOCK_ASR) {
+      return res.json({
+        ok: true,
+        recognizedText: 'Ala ma kota i psa',
+        wordsRead: 5,
+        accuracy: 87,
+        wordTimestamps: [
+          { word: 'Ala', tStart: 0.0, tEnd: 0.4 },
+          { word: 'ma',  tStart: 0.6, tEnd: 0.8 },
+          { word: 'kota',tStart: 1.2, tEnd: 1.7 },
+          { word: 'i',   tStart: 3.7, tEnd: 3.8 },
+          { word: 'psa', tStart: 8.8, tEnd: 9.3 },
+        ],
+        source: 'mock'
+      });
+    }
 
+    if (!req.file) return res.status(400).json({ ok: false, error: 'Brak pliku w polu "audio".' });
+
+    const { expectedText = '' } = req.body || {};
     const ext = pickAudioExt(req.file);
     const tmpPath = path.join(os.tmpdir(), `rec-${Date.now()}.${ext}`);
     fs.writeFileSync(tmpPath, req.file.buffer);
     const stream = fs.createReadStream(tmpPath);
 
+    let provider = 'none';
+    let recognizedText = '';
+    let wordTimestamps = [];
+
     try {
       if (groq) {
+        // Groq Whisper – verbose_json pozwala wyciągnąć words/segments
         const transcript = await groq.audio.transcriptions.create({
-          file: stream, model: 'whisper-large-v3', language: 'pl',
+          file: stream,
+          model: 'whisper-large-v3',
+          language: 'pl',
+          response_format: 'verbose_json',
+          temperature: 0,
         });
-        return res.json({ text: transcript?.text ?? '', source: 'groq' });
-      }
-      if (openai) {
+        provider = 'groq';
+        recognizedText = (transcript?.text || '').trim();
+
+        if (Array.isArray(transcript?.words) && transcript.words.length) {
+          wordTimestamps = transcript.words.map(w => ({
+            word: String(w.word || w.text || '').trim(),
+            tStart: Number(w.start ?? 0),
+            tEnd: Number(w.end ?? 0),
+          })).filter(w => w.word);
+        } else if (Array.isArray(transcript?.segments)) {
+          const out = [];
+          for (const seg of transcript.segments) {
+            if (Array.isArray(seg.words) && seg.words.length) {
+              for (const w of seg.words) {
+                out.push({
+                  word: String(w.word || w.text || '').trim(),
+                  tStart: Number(w.start ?? 0),
+                  tEnd: Number(w.end ?? 0),
+                });
+              }
+            }
+          }
+          wordTimestamps = out;
+        }
+      } else if (openai) {
+        // OpenAI Whisper – verbose_json z segments/words
         const transcript = await openai.audio.transcriptions.create({
-          file: stream, model: 'whisper-1', language: 'pl',
+          file: stream,
+          model: 'whisper-1',
+          language: 'pl',
+          response_format: 'verbose_json',
+          temperature: 0,
         });
-        return res.json({ text: transcript?.text ?? '', source: 'openai' });
+        provider = 'openai';
+        recognizedText = (transcript?.text || '').trim();
+
+        const out = [];
+        if (Array.isArray(transcript?.segments)) {
+          for (const seg of transcript.segments) {
+            if (Array.isArray(seg.words) && seg.words.length) {
+              for (const w of seg.words) {
+                out.push({
+                  word: String(w.word || w.text || '').trim(),
+                  tStart: Number(w.start ?? 0),
+                  tEnd: Number(w.end ?? 0),
+                });
+              }
+            }
+          }
+        }
+        wordTimestamps = out;
+      } else {
+        return res.status(502).json({ ok: false, error: 'NO_PROVIDER' });
       }
-      return res.status(502).json({ error: 'NO_PROVIDER' });
     } finally {
       fs.unlink(tmpPath, () => {});
     }
+
+    // Fallback gdy brak word-level timestamps – rozsmaruj po czasie
+    if (!Array.isArray(wordTimestamps) || wordTimestamps.length === 0) {
+      const words = (recognizedText || '').split(/\s+/).filter(Boolean);
+      let t = 0;
+      wordTimestamps = words.map(w => {
+        const start = t; const end = t + 0.4; t += 0.8; // 0.4s artykulacji + 0.4s krótka pauza
+        return { word: w, tStart: start, tEnd: end };
+      });
+    }
+
+    const wordsRead = Number(wordTimestamps.length || 0);
+
+    // Accuracy: prosty Jaccard po tokenach (szybki i stabilny)
+    function norm(s=''){ return String(s).toLowerCase().replace(/[^\p{L}\p{M}0-9\s]+/gu,' ').replace(/\s+/g,' ').trim(); }
+    function jacc(a,b){
+      const A=new Set(norm(a).split(' ').filter(Boolean));
+      const B=new Set(norm(b).split(' ').filter(Boolean));
+      if(!A.size && !B.size) return 100;
+      let inter=0; for (const x of A) if(B.has(x)) inter++;
+      return Math.round((inter/(A.size+B.size-inter))*100);
+    }
+    const accuracy = expectedText ? jacc(recognizedText, expectedText) : 0;
+
+    return res.json({
+      ok: true,
+      recognizedText,
+      wordsRead,
+      accuracy,
+      wordTimestamps,
+      source: provider,
+    });
   } catch (err) {
     console.error('ASR error:', err);
-    res.status(500).json({ error: 'ASR_FAILED', details: String(err?.message || err) });
+    res.status(500).json({ ok: false, error: 'ASR_FAILED', details: String(err?.message || err) });
   }
 });
 
@@ -197,7 +300,7 @@ function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 function normalize(text) {
   return (text || '')
     .toLowerCase()
-    .replace(/[„”"!?.,;:()\-–—[\]{}…]/g, '')
+    .replace(/[„”"!?.,;:()\-\–—[\]{}…]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -270,7 +373,7 @@ function sanitizeNoName(name, raw) {
   s = s.replace(helloRe, '').trim();
   if (name) {
     const forms = [name, `${name}u`, `${name}o`, `${name}e`, `${name}a`, `${name}ku`];
-    const escaped = forms.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const escaped = forms.map(v => v.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'));
     const nameRe = new RegExp(`\\b(?:${escaped.join('|')})\\b[\\s,!.?]*`, 'giu');
     s = s.replace(nameRe, '').trim();
   }
@@ -283,9 +386,15 @@ const recentGreetings = new Map();
 /* ===== Groq/OpenAI race helpers (no local text) ===== */
 async function groqChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 0.3, top_p = 0.95 }) {
   const t0 = now();
+  // Zmiana: usunięty `agent: keepAliveAgent` (fetch w Node ignoruje tę opcję)
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST', agent: keepAliveAgent,
-    headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY || ''}`, 'Content-Type': 'application/json', Accept: 'application/json', Connection: 'keep-alive' },
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.GROQ_API_KEY || ''}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Connection: 'keep-alive'
+    },
     body: JSON.stringify({ model: GROQ_MODEL, temperature, top_p, max_tokens, messages })
   });
   if (!res.ok) throw new Error(`GROQ_HTTP_${res.status}`);
@@ -317,9 +426,8 @@ async function generateGreetingV2({ name, age, character, theme }) {
     })());
   }
 
-  let raw = '', provider = '';
   const winner = await withDeadline(Promise.any(racers), DEADLINE_MS);
-  raw = winner.text; provider = winner.provider;
+  let raw = winner.text;
 
   let cands = parseList(raw);
   if (!cands.length && raw) cands = raw.split(/[.\n]/).map(s => s.trim()).filter(Boolean);
@@ -333,7 +441,7 @@ async function generateGreetingV2({ name, age, character, theme }) {
   const finalText = cleaned || picked;
 
   recentGreetings.set(profileKey, [finalText, ...history].slice(0, 20));
-  return { text: finalText, source: provider || 'unknown' };
+  return { text: finalText, source: winner.provider || 'unknown' };
 }
 
 app.post('/agent/generate-greeting', async (req, res) => {
@@ -480,7 +588,8 @@ async function prewarmOnce() {
       await groqChat({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, temperature: 0.0 });
     }
     if (BASE_URL) {
-      await fetch(`${BASE_URL}/health`, { agent: keepAliveAgent, headers: { Connection: 'keep-alive' } }).catch(()=>{});
+      // Zmiana: usunięty `agent: keepAliveAgent`
+      await fetch(`${BASE_URL}/health`, { headers: { Connection: 'keep-alive' } }).catch(()=>{});
     }
   } catch { /* noop */ }
 }
