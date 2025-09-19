@@ -721,7 +721,7 @@ app.post('/ocr', upload.single('image'), async (req, res) => {
   }
 });
 
-/* ===================== ElevenLabs TTS proxy (nowe) ===================== */
+/* ===================== ElevenLabs TTS proxy (diag + default voice) ===================== */
 /* ENV: ELEVEN_API_KEY lub ELEVENLABS_API_KEY */
 app.post('/tts', async (req, res) => {
   try {
@@ -729,7 +729,7 @@ app.post('/tts', async (req, res) => {
     if (!apiKey) return res.status(500).json({ ok: false, error: 'NO_ELEVEN_API_KEY' });
 
     const { text = '', voiceId = '21m00Tcm4TlvDq8ikWAM' } = req.body || {}; // Rachel (domyślna)
-    const clean = String(text).trim().slice(0, 500);
+    const clean = String(text).trim().slice(0, 600);
     if (!clean) return res.status(400).json({ ok: false, error: 'EMPTY_TEXT' });
 
     const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
@@ -745,13 +745,43 @@ app.post('/tts', async (req, res) => {
         voice_settings: { stability: 0.5, similarity_boost: 0.75 }
       })
     });
-    if (!r.ok) return res.status(502).json({ ok: false, error: `ELEVEN_HTTP_${r.status}` });
+
+    if (!r.ok) {
+      let details = '';
+      try { details = await r.text(); } catch {}
+      return res.status(502).json({ ok: false, error: `ELEVEN_HTTP_${r.status}`, details: details?.slice(0, 800) });
+    }
 
     const buf = Buffer.from(await r.arrayBuffer());
     res.json({ ok: true, audioB64: buf.toString('base64') });
   } catch (err) {
     console.error('TTS proxy error:', err);
-    res.status(500).json({ ok: false, error: 'TTS_PROXY_FAILED' });
+    res.status(500).json({ ok: false, error: 'TTS_PROXY_FAILED', details: String(err?.message || err) });
+  }
+});
+
+/* ===================== ElevenLabs voices (diagnostyka klucza) ===================== */
+app.get('/tts-voices', async (_req, res) => {
+  try {
+    const apiKey = process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) return res.status(500).json({ ok: false, error: 'NO_ELEVEN_API_KEY' });
+
+    const r = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': apiKey, 'Accept': 'application/json' }
+    });
+
+    if (!r.ok) {
+      let details = '';
+      try { details = await r.text(); } catch {}
+      return res.status(502).json({ ok: false, error: `ELEVEN_HTTP_${r.status}`, details: details?.slice(0, 800) });
+    }
+
+    const data = await r.json();
+    const voices = Array.isArray(data?.voices) ? data.voices.map(v => ({ id: v.voice_id, name: v.name })) : [];
+    return res.json({ ok: true, voices });
+  } catch (err) {
+    console.error('TTS voices error:', err);
+    return res.status(500).json({ ok: false, error: 'VOICES_FAILED', details: String(err?.message || err) });
   }
 });
 
@@ -794,6 +824,7 @@ app.post('/tts-openai', async (req, res) => {
     res.status(500).json({ ok: false, error: 'TTS_OPENAI_FAILED' });
   }
 });
+
 /* ===================== START ===================== */
 async function prewarmOnce() {
   try {
@@ -817,4 +848,5 @@ app.listen(PORT, () => {
     console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
   }
 });
+
 
