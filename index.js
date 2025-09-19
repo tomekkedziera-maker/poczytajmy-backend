@@ -498,28 +498,34 @@ Kontekst (fragment przeczytanego tekstu – opcjonalnie możesz nawiązać ogól
 Podaj tylko gotową wypowiedź.`;
 }
 
-// --- Hard limiter: 1–2 zdania, <= maxChars, max 1 emoji, bez cudzysłowów/nawiasów
+// --- Hard limiter: 1–2 zdania, <= maxChars, max 1 emoji, bez cudzysłowów/nawiasów/cytatów
 function tightenMotivation(s, maxChars = 160) {
   if (!s) return s;
 
-  // usuń cudzysłowy/nawiasy i nadmiar spacji
-  s = String(s).replace(/[\"“”„”()]/g, '').replace(/\s+/g, ' ').trim();
+  // usuń cudzysłowy, nawiasy i nadmiar spacji
+  s = String(s)
+    .replace(/[\"“”„”'()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  // podziel na zdania i weź 1–2 najkrótsze
-  const parts = s.split(/(?<=[.!?])\s+/).filter(Boolean);
+  // usuń fragmenty w cytatach (np. «kota», „kota”, "kota")
+  s = s.replace(/[«»„”"'].*?[«»„”"']/g, '').replace(/\s+/g, ' ').trim();
+
+  // rozbij na zdania i weź maks 2
+  const parts = s.split(/(?<=[.!?…])\s+/).filter(Boolean);
   s = parts.slice(0, 2).join(' ').trim();
 
-  // max 1 emoji – usuń kolejne (zostaw pierwsze)
-  const emojiRe = /([\p{Emoji_Presentation}\p{Emoji}\uFE0F])/gu;
-  let seenEmoji = 0;
-  s = s.replace(emojiRe, (m) => (++seenEmoji > 1 ? '' : m));
+  // zostaw max 1 emoji
+  const emojiRe = /[\p{Extended_Pictographic}\uFE0F]/gu;
+  let seen = 0;
+  s = s.replace(emojiRe, m => (++seen > 1 ? '' : m));
 
-  // twardy limit znaków (ucina na granicy wyrazu)
+  // twardy limit znaków (ucięcie na granicy wyrazu)
   if (s.length > maxChars) {
     s = s.slice(0, maxChars).replace(/\s+\S*$/, '').trim();
   }
 
-  // zakończ kropką, jeśli brak znaku końca zdania
+  // domknij kropką, jeśli brak
   if (!/[.!?…]$/.test(s)) s += '.';
   return s;
 }
@@ -553,7 +559,7 @@ async function generateMotivation({ age, accuracy, text, characterName, lang = '
   // lekkie sanity: usuń otaczające cudzysłowy
   out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
 
-  // TWARDY LIMIT: 1–2 krótkie zdania, ≤160 znaków, max 1 emoji
+  // TWARDY LIMIT w generatorze
   out = tightenMotivation(out, 160);
 
   if (!out) throw new Error('EMPTY_MOTIVATION');
@@ -571,9 +577,12 @@ app.post('/agent/motivate', async (req, res) => {
       lang = 'pl',
     } = req.body || {};
 
-    const { text: msg, source } = await generateMotivation({
+    const { text: rawMsg, source } = await generateMotivation({
       age, accuracy, text, characterName, lang
     });
+
+    // DRUGI BEZPIECZNIK w endpointzie
+    const msg = tightenMotivation(rawMsg, 160);
 
     res.json({ ok: true, text: msg, source });
   } catch (err) {
@@ -709,6 +718,40 @@ app.post('/ocr', upload.single('image'), async (req, res) => {
   } catch (err) {
     console.error('OCR error:', err);
     res.status(500).json({ ok: false, error: 'OCR_FAILED', details: String(err?.message || err) });
+  }
+});
+
+/* ===================== ElevenLabs TTS proxy (nowe) ===================== */
+/* ENV: ELEVEN_API_KEY lub ELEVENLABS_API_KEY */
+app.post('/tts', async (req, res) => {
+  try {
+    const apiKey = process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) return res.status(500).json({ ok: false, error: 'NO_ELEVEN_API_KEY' });
+
+    const { text = '', voiceId = '21m00Tcm4TlvDq8ikWAM' } = req.body || {}; // Rachel (domyślna)
+    const clean = String(text).trim().slice(0, 500);
+    if (!clean) return res.status(400).json({ ok: false, error: 'EMPTY_TEXT' });
+
+    const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg'
+      },
+      body: JSON.stringify({
+        text: clean,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+      })
+    });
+    if (!r.ok) return res.status(502).json({ ok: false, error: `ELEVEN_HTTP_${r.status}` });
+
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.json({ ok: true, audioB64: buf.toString('base64') });
+  } catch (err) {
+    console.error('TTS proxy error:', err);
+    res.status(500).json({ ok: false, error: 'TTS_PROXY_FAILED' });
   }
 });
 
