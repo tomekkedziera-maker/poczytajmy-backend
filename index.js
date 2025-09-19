@@ -749,7 +749,7 @@ app.post('/tts', async (req, res) => {
     if (!r.ok) {
       let details = '';
       try { details = await r.text(); } catch {}
-      return res.status(502).json({ ok: false, error: `ELEVEN_HTTP_${r.status}`, details: details?.slice(0, 800) });
+      return res.status(r.status).json({ ok: false, error: `ELEVEN_HTTP_${r.status}`, details: details?.slice(0, 800) });
     }
 
     const buf = Buffer.from(await r.arrayBuffer());
