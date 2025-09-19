@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: poczytajmy-backend
+    env: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 3001
+      - key: FAST_TIMEOUT_MS
+        value: 1200
+      - key: MAX_TOKENS_FAST
+        value: 64
+      - key: PREWARM_EVERY_MIN
+        value: 5
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      # Poniższe ustaw proszę ręcznie jako "Sync: false" (sekrety)
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: BASE_URL
+        sync: false

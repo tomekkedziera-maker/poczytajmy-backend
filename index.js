@@ -458,6 +458,110 @@ app.post('/agent/generate-greeting', async (req, res) => {
   }
 });
 
+/* ===================== AGENT MOTYWACJI (Groq/OpenAI) ===================== */
+
+function bucketToneByAge(age) {
+  const a = Number(age);
+  if (Number.isFinite(a) && a <= 5) return 'bardzo prosto, ciepło, łagodnie; krótkie słowa; 1 emoji max';
+  if (Number.isFinite(a) && a <= 8) return 'prosto, energicznie, wspierająco; mini-sugestia co poprawić; 1 emoji max';
+  return 'partnersko, konkretnie, z uznaniem; 1 emoji max';
+}
+
+function rubricByAccuracy(acc) {
+  const s = Math.max(0, Math.min(100, Math.round(acc || 0)));
+  if (s >= 95) return 'wynik świetny; podkreśl perfekcję i zaproponuj trudniejsze słowo przy następnej stronie';
+  if (s >= 80) return 'wynik bardzo dobry; pochwal płynność i zaproponuj jedną mikro-radę (np. dokładniej końcówki)';
+  if (s >= 60) return 'wynik dobry; pochwal staranie i podaj jedną prostą wskazówkę (np. wolniej, sylabizuj trudniejsze słowa)';
+  return 'wynik na rozgrzewkę; skup się na zachęcie i jednej mini-radzie (np. przeczytaj zdanie jeszcze raz spokojnie)';
+}
+
+function buildMotivationPrompt({ age, accuracy, text, characterName = 'Bohater', lang = 'pl' }) {
+  const tone = bucketToneByAge(age);
+  const rubric = rubricByAccuracy(accuracy);
+  const excerpt = trimUserContent(text || '', 220);
+
+  return `
+Jesteś ${characterName} z aplikacji do nauki czytania dla dzieci. Twoje zadanie:
+napisz 1 krótki komentarz motywacyjny po polsku (${lang}), dopasowany do wieku dziecka i jakości czytania.
+
+Zasady stylu:
+- Styl: ${tone}.
+- ${rubric}.
+- Maks. 180 znaków. 1 zdanie (wyjątkowo 2 krótkie, jeśli to konieczne).
+- Brak cudzysłowów, brak nawiasów. Bez liczb procentowych ani ocen wprost.
+- Mów do dziecka w 2. osobie („czytasz”, „dasz radę”), NIE używaj imienia dziecka.
+
+Kontekst (fragment przeczytanego tekstu – opcjonalnie możesz nawiązać ogólnie, bez cytowania):
+"${excerpt}"
+
+Podaj tylko gotową wypowiedź.`;
+}
+
+async function generateMotivation({ age, accuracy, text, characterName, lang = 'pl' }) {
+  const prompt = buildMotivationPrompt({ age, accuracy, text, characterName, lang });
+
+  const racers = [];
+  if (process.env.GROQ_API_KEY) {
+    racers.push(groqChat({
+      messages: [{ role: 'user', content: trimUserContent(prompt) }],
+      temperature: 0.9, top_p: 0.95, max_tokens: 120,
+    }));
+  }
+  if (openai) {
+    racers.push((async () => {
+      const t0 = now();
+      const r = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.9, top_p: 0.95, max_tokens: 120,
+      });
+      const txt = r?.choices?.[0]?.message?.content?.trim?.() || '';
+      if (!txt) throw new Error('OPENAI_EMPTY');
+      return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
+    })());
+  }
+
+  const winner = await withDeadline(Promise.any(racers), DEADLINE_MS);
+  let out = String(winner.text || '').trim();
+  // lekkie sanity: usuń otaczające cudzysłowy
+  out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
+
+  // twarda długość (gdy model popłynie)
+  if (out.length > 200) out = out.slice(0, 200).trim();
+
+  if (!out) throw new Error('EMPTY_MOTIVATION');
+  return { text: out, source: winner.provider || 'unknown' };
+}
+
+app.post('/agent/motivate', async (req, res) => {
+  try {
+    const {
+      age,
+      accuracy = 0,
+      text = '',
+      name,                 // świadomie ignorujemy w treści (priv + prostota)
+      characterName = 'Bohater',
+      lang = 'pl',
+    } = req.body || {};
+
+    const { text: msg, source } = await generateMotivation({
+      age, accuracy, text, characterName, lang
+    });
+
+    res.json({ ok: true, text: msg, source });
+  } catch (err) {
+    const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
+    if (timedOut) return res.status(504).json({ ok: false, error: 'DEADLINE_EXCEEDED', timed_out: true });
+    console.error('agent/motivate error:', err);
+    return res.status(502).json({
+      ok: false,
+      error: String(err?.message || err),
+      // bezpieczny fallback zgodny z UI
+      fallback: 'Świetna próba! Z każdą stroną będzie coraz lepiej — spróbujmy jeszcze raz! 💪'
+    });
+  }
+});
+
 /* ===================== GENERATOR ZDAŃ DO CZYTANIA ===================== */
 const BANK_A1 = [
   'Ala ma kota.',
