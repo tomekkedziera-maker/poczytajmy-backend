@@ -755,32 +755,45 @@ app.post('/tts', async (req, res) => {
   }
 });
 
-/* ===================== OpenAI TTS proxy (free) ===================== */
+/* ===================== OpenAI TTS proxy (free) — via REST ===================== */
 /* ENV: OPENAI_API_KEY */
 app.post('/tts-openai', async (req, res) => {
   try {
-    if (!openai) return res.status(500).json({ ok: false, error: 'NO_OPENAI_API_KEY' });
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ ok: false, error: 'NO_OPENAI_API_KEY' });
 
-    const { text = '', voice = 'alloy', format = 'mp3', speed = 1.0 } = req.body || {};
+    const { text = '', voice = 'alloy', format = 'mp3' } = req.body || {};
     const clean = String(text).trim().slice(0, 600);
     if (!clean) return res.status(400).json({ ok: false, error: 'EMPTY_TEXT' });
 
-    const resp = await openai.audio.speech.create({
-      model: 'gpt-4o-mini-tts',
-      voice,          // np. alloy | aria | verse
-      input: clean,
-      format,         // mp3 | wav | ogg
-      speed           // 0.5–2.0
+    // Bezpieczny REST call (stabilny dla gpt-4o-mini-tts)
+    const r = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: format === 'wav' ? 'audio/wav' : (format === 'ogg' ? 'audio/ogg' : 'audio/mpeg')
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini-tts',
+        voice,             // alloy | aria | verse
+        input: clean
+        // brak speed — bywa odrzucany; domyślne tempo jest OK
+      })
     });
 
-    const buf = Buffer.from(await resp.arrayBuffer());
+    if (!r.ok) {
+      const errText = await r.text().catch(() => '');
+      return res.status(502).json({ ok: false, error: `OPENAI_HTTP_${r.status}`, details: errText.slice(0, 300) });
+    }
+
+    const buf = Buffer.from(await r.arrayBuffer());
     res.json({ ok: true, provider: 'openai', format, audioB64: buf.toString('base64') });
   } catch (err) {
-    console.error('TTS-OPENAI error:', err);
+    console.error('TTS-OPENAI REST error:', err);
     res.status(500).json({ ok: false, error: 'TTS_OPENAI_FAILED' });
   }
 });
-
 /* ===================== START ===================== */
 async function prewarmOnce() {
   try {
