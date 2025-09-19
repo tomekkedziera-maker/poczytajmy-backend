@@ -487,14 +487,41 @@ napisz 1 krótki komentarz motywacyjny po polsku (${lang}), dopasowany do wieku 
 Zasady stylu:
 - Styl: ${tone}.
 - ${rubric}.
-- Maks. 180 znaków. 1 zdanie (wyjątkowo 2 krótkie, jeśli to konieczne).
-- Brak cudzysłowów, brak nawiasów. Bez liczb procentowych ani ocen wprost.
+- Maks. 160 znaków. 1 zdanie (wyjątkowo 2 bardzo krótkie).
+- Brak cudzysłowów i nawiasów. Bez liczb procentowych ani ocen wprost.
 - Mów do dziecka w 2. osobie („czytasz”, „dasz radę”), NIE używaj imienia dziecka.
+- Użyj co najwyżej 1 emoji (opcjonalnie).
 
 Kontekst (fragment przeczytanego tekstu – opcjonalnie możesz nawiązać ogólnie, bez cytowania):
 "${excerpt}"
 
 Podaj tylko gotową wypowiedź.`;
+}
+
+// --- Hard limiter: 1–2 zdania, <= maxChars, max 1 emoji, bez cudzysłowów/nawiasów
+function tightenMotivation(s, maxChars = 160) {
+  if (!s) return s;
+
+  // usuń cudzysłowy/nawiasy i nadmiar spacji
+  s = String(s).replace(/[\"“”„”()]/g, '').replace(/\s+/g, ' ').trim();
+
+  // podziel na zdania i weź 1–2 najkrótsze
+  const parts = s.split(/(?<=[.!?])\s+/).filter(Boolean);
+  s = parts.slice(0, 2).join(' ').trim();
+
+  // max 1 emoji – usuń kolejne (zostaw pierwsze)
+  const emojiRe = /([\p{Emoji_Presentation}\p{Emoji}\uFE0F])/gu;
+  let seenEmoji = 0;
+  s = s.replace(emojiRe, (m) => (++seenEmoji > 1 ? '' : m));
+
+  // twardy limit znaków (ucina na granicy wyrazu)
+  if (s.length > maxChars) {
+    s = s.slice(0, maxChars).replace(/\s+\S*$/, '').trim();
+  }
+
+  // zakończ kropką, jeśli brak znaku końca zdania
+  if (!/[.!?…]$/.test(s)) s += '.';
+  return s;
 }
 
 async function generateMotivation({ age, accuracy, text, characterName, lang = 'pl' }) {
@@ -526,8 +553,8 @@ async function generateMotivation({ age, accuracy, text, characterName, lang = '
   // lekkie sanity: usuń otaczające cudzysłowy
   out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
 
-  // twarda długość (gdy model popłynie)
-  if (out.length > 200) out = out.slice(0, 200).trim();
+  // TWARDY LIMIT: 1–2 krótkie zdania, ≤160 znaków, max 1 emoji
+  out = tightenMotivation(out, 160);
 
   if (!out) throw new Error('EMPTY_MOTIVATION');
   return { text: out, source: winner.provider || 'unknown' };
@@ -708,4 +735,3 @@ app.listen(PORT, () => {
     console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
   }
 });
-
