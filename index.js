@@ -755,6 +755,32 @@ app.post('/tts', async (req, res) => {
   }
 });
 
+/* ===================== OpenAI TTS proxy (free) ===================== */
+/* ENV: OPENAI_API_KEY */
+app.post('/tts-openai', async (req, res) => {
+  try {
+    if (!openai) return res.status(500).json({ ok: false, error: 'NO_OPENAI_API_KEY' });
+
+    const { text = '', voice = 'alloy', format = 'mp3', speed = 1.0 } = req.body || {};
+    const clean = String(text).trim().slice(0, 600);
+    if (!clean) return res.status(400).json({ ok: false, error: 'EMPTY_TEXT' });
+
+    const resp = await openai.audio.speech.create({
+      model: 'gpt-4o-mini-tts',
+      voice,          // np. alloy | aria | verse
+      input: clean,
+      format,         // mp3 | wav | ogg
+      speed           // 0.5–2.0
+    });
+
+    const buf = Buffer.from(await resp.arrayBuffer());
+    res.json({ ok: true, provider: 'openai', format, audioB64: buf.toString('base64') });
+  } catch (err) {
+    console.error('TTS-OPENAI error:', err);
+    res.status(500).json({ ok: false, error: 'TTS_OPENAI_FAILED' });
+  }
+});
+
 /* ===================== START ===================== */
 async function prewarmOnce() {
   try {
@@ -778,3 +804,4 @@ app.listen(PORT, () => {
     console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
   }
 });
+
