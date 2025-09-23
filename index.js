@@ -61,6 +61,9 @@ const groq   = process.env.GROQ_API_KEY   ? new Groq({ apiKey: process.env.GROQ_
 const MOCK_ASR  = process.env.MOCK_ASR  === '1';
 const MOCK_TEXT = process.env.MOCK_TEXT === '1';
 
+/* ====== ElevenLabs defaults ====== */
+const DEFAULT_ELEVEN_VOICE_ID = process.env.ELEVEN_VOICE_ID || 'jJYvw04W4nFnH9II4y4C';
+
 /* ===================== OCR helpers ===================== */
 const LANG_PATH =
   process.env.OCR_LANG_PATH ||
@@ -830,13 +833,20 @@ app.post('/ocr', upload.single('image'), async (req, res) => {
 });
 
 /* ===================== ElevenLabs TTS proxy (diag + default voice) ===================== */
-/* ENV: ELEVEN_API_KEY lub ELEVENLABS_API_KEY */
+/* ENV: ELEVEN_API_KEY lub ELEVENLABS_API_KEY, opcjonalnie ELEVEN_VOICE_ID */
 app.post('/tts', async (req, res) => {
   try {
     const apiKey = process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY;
     if (!apiKey) return res.status(500).json({ ok: false, error: 'NO_ELEVEN_API_KEY' });
 
-    const { text = '', voiceId = '21m00Tcm4TlvDq8ikWAM' } = req.body || {}; // Rachel (domyślna)
+    const {
+      text = '',
+      voiceId = DEFAULT_ELEVEN_VOICE_ID,  // domyślnie Twój głos
+      output_format = 'mp3_44100_128',     // wymuszamy MP3 (łatwe w RN)
+      stability = 0.5,
+      similarity_boost = 0.75,
+    } = req.body || {};
+
     const clean = String(text).trim().slice(0, 600);
     if (!clean) return res.status(400).json({ ok: false, error: 'EMPTY_TEXT' });
 
@@ -850,7 +860,8 @@ app.post('/tts', async (req, res) => {
       body: JSON.stringify({
         text: clean,
         model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+        output_format, // mp3_44100_128
+        voice_settings: { stability, similarity_boost }
       })
     });
 
@@ -861,7 +872,7 @@ app.post('/tts', async (req, res) => {
     }
 
     const buf = Buffer.from(await r.arrayBuffer());
-    res.json({ ok: true, audioB64: buf.toString('base64') });
+    res.json({ ok: true, audioB64: buf.toString('base64'), mime: 'audio/mpeg', voiceId });
   } catch (err) {
     console.error('TTS proxy error:', err);
     res.status(500).json({ ok: false, error: 'TTS_PROXY_FAILED', details: String(err?.message || err) });
