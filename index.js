@@ -598,83 +598,191 @@ app.post('/agent/motivate', async (req, res) => {
   }
 });
 
+
 /* ===================== GENERATOR ZDAŃ DO CZYTANIA ===================== */
+
+// — proste banki awaryjne
 const BANK_A1 = [
-  'Ala ma kota.',
-  'Miś je miodek.',
-  'Piłka leży na trawie.',
-  'Pies biegnie do domu.',
-  'Słońce świeci jasno.',
+  "Ala ma kota i lubi czytać bajki wieczorem.",
+  "Miś je miodek, a potem słucha krótkiej opowieści.",
+  "Piłka leży na trawie, a Julek czyta na ławce.",
+  "Pies biegnie do domu, gdzie czeka nowa książka.",
+  "Słońce świeci jasno, a my czytamy w ogrodzie."
 ];
 const BANK_A2 = [
-  'W ogrodzie rosną kolorowe kwiaty.',
-  'Kasia czyta ciekawą książkę o zwierzętach.',
-  'Na spacerze spotkaliśmy wesołego psa.',
-  'Dziś po południu pojedziemy na rowerach.',
+  "W ogrodzie rosną kwiaty, a my czytamy o motylach.",
+  "Kasia czyta książkę o zwierzętach i szuka trudnych słów.",
+  "Na spacerze opowiadamy historię o małej latarni morskiej.",
+  "Po południu wybieramy rozdział o odważnym króliku."
 ];
 const BANK_B1 = [
-  'Choć padał deszcz, wybraliśmy się na długi spacer.',
-  'Lubię zagadki, bo rozwijają wyobraźnię i spostrzegawczość.',
-  'Z zachwytem obserwowałem, jak motyl siada na liściu.',
-  'Po kolacji wspólnie ułożyliśmy plan jutrzejszej wycieczki.',
+  "Choć padał deszcz, przeczytaliśmy rozdział o podróży po mapie.",
+  "Lubię zagadki, bo rozwijają wyobraźnię i pomagają w czytaniu.",
+  "Z zachwytem śledziłem, jak narrator opisuje lot kolorowego motyla.",
+  "Po kolacji wspólnie czytamy i planujemy jutrzejszą przygodę."
 ];
-function bankByLevel(level = 'A1') {
+function bankByLevel(level = "A1") {
   const L = String(level).toUpperCase();
-  if (L === 'B1') return BANK_B1;
-  if (L === 'A2') return BANK_A2;
+  if (L === "B1") return BANK_B1;
+  if (L === "A2") return BANK_A2;
   return BANK_A1;
 }
 
-app.post('/agent/generate-text', async (req, res) => {
+// — drobne utilsy
+function onlyOneSentence(s) {
+  // weź pierwsze zdanie (kropka, pytajnik, wykrzyknik)
+  const parts = String(s).split(/(?<=[.!?…])\s+/).filter(Boolean);
+  return (parts[0] || s).trim();
+}
+function cleanSentence(s) {
+  // bez cudzysłowów, nawiasów, podwójnych spacji; domknij kropką
+  let out = String(s)
+    .replace(/[„”"“”'()«»]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  out = onlyOneSentence(out);
+  if (!/[.!?…]$/.test(out)) out += ".";
+  return out;
+}
+function countWords(s) {
+  return (String(s).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
+}
+const PROFANITY = [
+  "kurwa","cholera","debil","idiota","głupi","szmata",
+  "pedał","lesba","spier","nienawidzę","zabij","śmierć"
+];
+function hasForbidden(s) {
+  const low = String(s).toLowerCase();
+  return PROFANITY.some(p => low.includes(p));
+}
+function hasPolishDiacritics(s) {
+  return /[ąćęłńóśźż]/i.test(String(s));
+}
+function validateKidsSentencePL(s, { minWords=8, maxWords=16 } = {}) {
+  const issues = [];
+  const txt = cleanSentence(onlyOneSentence(s));
+  const words = countWords(txt);
+  if (words < minWords || words > maxWords) {
+    issues.push(`Liczba słów ${words} poza zakresem ${minWords}–${maxWords}.`);
+  }
+  if (hasForbidden(txt)) issues.push("Słowa niedozwolone.");
+  if (!hasPolishDiacritics(txt)) issues.push("Brak polskich znaków.");
+  // prosty test „bełkotu”: >40% słów dłuższych niż 12 znaków lub łącznie > 24 słowa
+  const tokens = (txt.match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []);
+  const long = tokens.filter(w => w.replace(/[^a-ząćęłńóśźż-]/gi,"").length > 12).length;
+  const ratio = tokens.length ? long / tokens.length : 0;
+  if (tokens.length > 24 || ratio > 0.4) issues.push("Zbyt trudne lub nienaturalne słownictwo.");
+  return { ok: issues.length === 0, issues, text: txt };
+}
+
+// — drugi przebieg: korektor PL (OpenAI/Groq; bierze zwycięzcę z wyścigu)
+async function correctPolishSentence(raw) {
+  const prompt = `
+Popraw zdanie dla dziecka w wieku wczesnoszkolnym.
+Zasady:
+- Jedno zdanie po polsku, 8–16 słów.
+- Proste, naturalne, bez żargonu i cudzysłowów.
+- Popraw ortografię i interpunkcję.
+Zwróć tylko gotowe zdanie.
+Tekst:
+${raw}`.trim();
+
+  const racers = [];
+  if (process.env.GROQ_API_KEY) {
+    racers.push(groqChat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2, top_p: 0.9, max_tokens: 60,
+    }));
+  }
+  if (openai) {
+    racers.push((async () => {
+      const t0 = now();
+      const r = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2, top_p: 0.9, max_tokens: 60,
+      });
+      const txt = r?.choices?.[0]?.message?.content?.trim?.() || "";
+      if (!txt) throw new Error("OPENAI_EMPTY");
+      return { provider: "openai", text: txt, latency_ms: Math.round(now() - t0) };
+    })());
+  }
+  const winner = await withDeadline(Promise.any(racers), DEADLINE_MS);
+  return cleanSentence(winner.text || "");
+}
+
+app.post("/agent/generate-text", async (req, res) => {
   try {
-    const { language = 'pl', level = 'A1' } = req.body || {};
+    const { language = "pl", level = "A1" } = req.body || {};
 
-    if (MOCK_TEXT) {
-      const list = bankByLevel(level);
-      return res.json({ ok: true, text: pick(list), level, language, source: 'mock' });
-    }
-
+    // 1) Prompt generujący — bardzo precyzyjny
     const prompt =
-`Napisz jedno proste zdanie po ${language === 'pl' ? 'polsku' : 'angielsku'} na poziomie ${String(level).toUpperCase()} do głośnego czytania przez dziecko.
-Zasady: jedno zdanie, jasno i naturalnie, bez cudzysłowów, 12–16 słów.`;
+`Napisz jedno proste zdanie po polsku na poziomie ${String(level).toUpperCase()} do głośnego czytania przez dziecko.
+Wymagania:
+- Jedno zdanie (8–16 słów), naturalne i poprawne.
+- Słownictwo codzienne, bez żargonu i neologizmów.
+- Zero przemocy, straszenia, polityki, chorób.
+- Brak cudzysłowów i nawiasów.
+- Używaj pełnych polskich znaków.
+Podaj tylko gotowe zdanie.`;
 
     const racers = [];
     if (process.env.GROQ_API_KEY) {
       racers.push(groqChat({
-        messages: [{ role: 'user', content: trimUserContent(prompt) }],
-        temperature: 0.7, top_p: 0.95, max_tokens: 60,
+        messages: [{ role: "user", content: trimUserContent(prompt) }],
+        temperature: 0.3, top_p: 0.9, max_tokens: 60,
       }));
     }
     if (openai) {
       racers.push((async () => {
         const t0 = now();
         const r = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.8, top_p: 0.95, max_tokens: 60,
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.3, top_p: 0.9, max_tokens: 60,
         });
-        const txt = r?.choices?.[0]?.message?.content?.trim?.() || '';
-        if (!txt) throw new Error('OPENAI_EMPTY');
-        return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
+        const txt = r?.choices?.[0]?.message?.content?.trim?.() || "";
+        if (!txt) throw new Error("OPENAI_EMPTY");
+        return { provider: "openai", text: txt, latency_ms: Math.round(now() - t0) };
       })());
     }
 
+    // 2) Zwycięzca wyścigu
     const winner = await withDeadline(Promise.any(racers), DEADLINE_MS);
-    let text = String(winner.text || '').replace(/^["'„”]+|["'„”]+$/g, '').trim();
-    if (!text) throw new Error('EMPTY_GENERATION');
+    let sentence = cleanSentence(winner.text || "");
+    if (!sentence) throw new Error("EMPTY_GENERATION");
 
-    return res.json({ ok: true, text, level, language, source: winner.provider });
+    // 3) Walidacja
+    let check = validateKidsSentencePL(sentence);
+    if (!check.ok) {
+      // 3a) Korekta + ponowna walidacja
+      const fixed = cleanSentence(await correctPolishSentence(sentence));
+      const check2 = validateKidsSentencePL(fixed);
+      if (check2.ok) {
+        return res.json({ ok: true, text: check2.text, level, language, source: `${winner.provider}+corrector` });
+      }
+
+      // 3b) Ostatnia próba: fallback do banku
+      const backup = pick(bankByLevel(level));
+      return res.json({ ok: true, text: backup, level, language, source: "fallback-bank" });
+    }
+
+    // 4) Sukces
+    return res.json({ ok: true, text: check.text, level, language, source: winner.provider });
   } catch (err) {
-    const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
-    if (timedOut) return res.status(504).json({ ok: false, error: 'DEADLINE_EXCEEDED', timed_out: true });
-    console.error('agent/generate-text error:', err);
-    return res.status(502).json({ ok: false, error: String(err?.message || err) });
+    const timedOut = String(err?.message || err) === "DEADLINE_EXCEEDED";
+    if (timedOut) return res.status(504).json({ ok: false, error: "DEADLINE_EXCEEDED", timed_out: true });
+    console.error("agent/generate-text error:", err);
+    // fallback awaryjny
+    const { level = "A1", language = "pl" } = req.body || {};
+    const backup = pick(bankByLevel(level));
+    return res.status(200).json({ ok: true, text: backup, level, language, source: "fallback-bank" });
   }
 });
 
 // Alias zgodności wstecznej
-app.post('/generate-text', (req, res) => {
-  res.redirect(307, '/agent/generate-text');
+app.post("/generate-text", (req, res) => {
+  res.redirect(307, "/agent/generate-text");
 });
 
 /* ===================== OCR ===================== */
