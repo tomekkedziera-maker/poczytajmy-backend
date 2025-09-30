@@ -120,7 +120,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.9-quiz-factual' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.10-quiz-extractive' });
 });
 
 // Prosty root
@@ -303,7 +303,7 @@ function normalize(text) {
   return (text || '')
     .toLowerCase()
     .replace(/[„”"!?.,;:()\-\–—[\]{}…]/g, '')
-    .replace(/\s+/g, ' ')
+                               .replace(/\s+/g, ' ')
     .trim();
 }
 function jaccard(a, b) {
@@ -950,40 +950,67 @@ function answerWordCount(a = '') {
 function endsWithQuestionMark(q = '') {
   return /\?\s*$/.test(String(q));
 }
+function isFirstPersonText(t = '') {
+  const s = String(t).toLowerCase();
+  return /\b(ja|mnie|mi|mną|mój|moja|moje|jestem|mam|idę|robię|czytam|siedzę|będę|chcę)\b/.test(s);
+}
+function answerIsExtractive(text = '', answer = '') {
+  const t = String(text).toLowerCase();
+  const a = String(answer).toLowerCase().trim();
+  if (!a) return false;
+  return t.includes(a);
+}
 
 /* — Pytanie + krótka poprawna odpowiedź (klucz) — */
 function buildQuestionPrompt({ text, age }) {
   const wiek = Number(age);
-  const poziom =
+  const target =
     Number.isFinite(wiek) && wiek <= 8
       ? 'bardzo proste, jednoznaczne pytanie. Odpowiedź 1–5 słów.'
       : 'proste, faktograficzne pytanie. Odpowiedź krótka (max 6 słów).';
 
   return `
-Wciel się w nauczyciela języka polskiego w klasach 1–3.
-Na podstawie podanego fragmentu napisz jedno pytanie sprawdzające zrozumienie oraz krótki klucz poprawnej odpowiedzi.
+Jesteś nauczycielem w klasach 1–3. Na podstawie fragmentu napisz JEDNO pytanie sprawdzające zrozumienie i krótki KLUCZ odpowiedzi.
 
-Fragment:
+FRAGMENT:
 """${trimUserContent(text, 1000)}"""
 
-Zasady:
-- Pytanie po polsku, ${poziom}
-- Pytanie ma być poprawne gramatycznie i naturalne dla dziecka.
-- Pytaj o czynność, miejsce, cel lub obiekt z fragmentu (kto/co robił? gdzie? po co? czym?).
-- BEZWZGLĘDNIE zakazane: "O czym był tekst?", "Co się wydarzyło?", "Opowiedz jednym zdaniem...", "Co zapamiętałeś/zapamiętałaś?", "Kim jest...?", "Co to jest...?".
-- Odpowiedź ma być krótka (maks. 6 słów), jednoznaczna i wynikająca wprost z fragmentu (bez wiedzy ogólnej).
-- Zakończ pytanie znakiem zapytania.
-- Zwróć TYLKO JSON bez komentarzy w formacie:
+WYMAGANIA DLA PYTANIA:
+- Po polsku, ${target}
+- Gramatycznie poprawne i naturalne dla dziecka.
+- Odnoś się do KONKRETNEGO elementu z fragmentu: czynność, miejsce, cel, obiekt, czas.
+- Dopuszczalne słowa pytające: Kto, Co, Gdzie, Kiedy, Po co, Czym. (Preferuj: Gdzie/Co/Po co/Kiedy.)
+- Jeśli fragment jest w 1. osobie (np. „Siedzę…”, „Będę…”), NIE używaj „Kto…?”. Zadaj „Gdzie…?”, „Co…?”, „Po co…?” lub „Kiedy…?”.
+- Pytanie zakończ znakiem zapytania.
+
+ZAKAZY (BEZWZGLĘDNIE):
+- Ogólne: „O czym był tekst?”, „Co się wydarzyło?”, „Opowiedz jednym zdaniem…”, „Co zapamiętałeś…”
+- Definicyjne: „Kim jest…?”, „Co to jest…?”, „Czym jest…?”
+- Nienaturalne formy („Kim poszedł…”, „Czym poszedł…”).
+
+WYMAGANIA DLA ODPOWIEDZI (KLUCZA):
+- Bardzo krótka (1–5 słów, max 6), jednoznaczna.
+- EKSTRAKTYWNA: odpowiedź MUSI być dosłownym fragmentem powyższego tekstu (bez parafrazy).
+- Bez kropek/cudzysłowów; małe/duże litery dowolnie.
+
+FORMAT ZWRACANY (Tylko JSON, bez komentarzy):
 {
-  "question": "…jedno krótkie pytanie…",
-  "answer": "…krótka poprawna odpowiedź…"
-}`.trim();
+  "question": "…jedno krótkie pytanie…?",
+  "answer": "…krótka odpowiedź – dokładny fragment z tekstu…"
+}
+
+PRZYKŁADY (nie dotyczą tego fragmentu):
+- Tekst: „Tomek siedzi przy stole i je kolację.” → P: „Gdzie siedzi Tomek?” A: „przy stole”
+- Tekst (1. os.): „Siedzę przy komputerze, aby zrobić aplikację.” → P: „Po co siedzę przy komputerze?” A: „aby zrobić aplikację”
+`.trim();
 }
 
 app.post('/agent/comprehend', async (req, res) => {
   try {
     const { text = '', age } = req.body || {};
     if (!text.trim()) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
+
+    const firstPerson = isFirstPersonText(text);
 
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
@@ -992,12 +1019,20 @@ app.post('/agent/comprehend', async (req, res) => {
     let question = (json.question || '').trim();
     let answer   = (json.answer   || '').trim();
 
-    // sanity-check walidacja
-    const BAD = !question || !answer || isGenericQuestion(question) || isDefinitionQuestion(question) || answerWordCount(answer) > 6 || !endsWithQuestionMark(question);
+    const BAD =
+      !question || !answer ||
+      isGenericQuestion(question) ||
+      isDefinitionQuestion(question) ||
+      answerWordCount(answer) > 6 ||
+      !endsWithQuestionMark(question) ||
+      (firstPerson && /^\s*kto\b/i.test(question)) ||
+      !answerIsExtractive(text, answer);
 
     if (BAD) {
       const retryPrompt = buildQuestionPrompt({ text, age }) +
-        `\nUWAGA: Poprzednia próba była zbyt ogólna, definicyjna lub odpowiedź za długa. Zwróć NOWY JSON z pytaniem o czynność/miejsce/cel/obiekt i odpowiedzią ≤ 6 słów.`;
+        `\nUWAGA: Poprzednia próba była zbyt ogólna/definicyjna, zła dla 1. osoby lub odpowiedź nie była fragmentem tekstu. ` +
+        `Jeśli fragment jest w 1. osobie, NIE pytaj „Kto…?”, tylko „Gdzie/Co/Po co/Kiedy…?”. ` +
+        `Odpowiedź musi być DOSŁOWNIE skopiowana z fragmentu (ekstraktywna), max 6 słów. Zwróć NOWY JSON.`;
       const out2 = await raceLLM({ prompt: retryPrompt, max_tokens: 160, temperature: 0.2 });
       const j2 = extractJSON(out2) || {};
       question = (j2.question || question || '').trim();
@@ -1007,11 +1042,16 @@ app.post('/agent/comprehend', async (req, res) => {
     const qClean = question.replace(/[„”"']/g, '').trim();
     const aClean = answer.replace(/[„”"']/g, '').trim();
 
-    if (!qClean || !aClean || isGenericQuestion(qClean) || isDefinitionQuestion(qClean) || answerWordCount(aClean) > 6) {
+    if (!qClean || !aClean ||
+        isGenericQuestion(qClean) ||
+        isDefinitionQuestion(qClean) ||
+        answerWordCount(aClean) > 6 ||
+        (firstPerson && /^\s*kto\b/i.test(qClean)) ||
+        !answerIsExtractive(text, aClean)) {
       return res.json({
         ok: true,
-        question: 'Gdzie był główny bohater?',
-        answer: 'w podanym miejscu',
+        question: firstPerson ? 'Gdzie jestem?' : 'Gdzie był główny bohater?',
+        answer: firstPerson ? 'przy stole' : 'w podanym miejscu',
         fallback: true
       });
     }
