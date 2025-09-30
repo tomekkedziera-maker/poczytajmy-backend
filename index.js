@@ -120,7 +120,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.8-quiz-text' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.9-quiz-factual' });
 });
 
 // Prosty root
@@ -940,6 +940,10 @@ function isGenericQuestion(q = '') {
   const s = String(q).toLowerCase();
   return /opowiedz.*jednym zdaniem|co.*zapamięta|o czym był|co się wydarzyło|streść|podsumuj/.test(s);
 }
+function isDefinitionQuestion(q='') {
+  const s = String(q).toLowerCase();
+  return /\bkim jest\b|\bkim był\b|\bco to jest\b|\bczym jest\b/.test(s);
+}
 function answerWordCount(a = '') {
   return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
 }
@@ -964,8 +968,9 @@ Fragment:
 
 Zasady:
 - Pytanie po polsku, ${poziom}
-- BEZWZGLĘDNIE zakazane są pytania ogólne: "O czym był tekst?", "Co się wydarzyło?", "Opowiedz jednym zdaniem...", "Co zapamiętałeś/zapamiętałaś?".
-- Pytanie musi dotyczyć JEDNEGO konkretnego faktu (kto/co/gdzie/kiedy/ile).
+- Pytanie ma być poprawne gramatycznie i naturalne dla dziecka.
+- Pytaj o czynność, miejsce, cel lub obiekt z fragmentu (kto/co robił? gdzie? po co? czym?).
+- BEZWZGLĘDNIE zakazane: "O czym był tekst?", "Co się wydarzyło?", "Opowiedz jednym zdaniem...", "Co zapamiętałeś/zapamiętałaś?", "Kim jest...?", "Co to jest...?".
 - Odpowiedź ma być krótka (maks. 6 słów), jednoznaczna i wynikająca wprost z fragmentu (bez wiedzy ogólnej).
 - Zakończ pytanie znakiem zapytania.
 - Zwróć TYLKO JSON bez komentarzy w formacie:
@@ -981,18 +986,18 @@ app.post('/agent/comprehend', async (req, res) => {
     if (!text.trim()) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
     const prompt = buildQuestionPrompt({ text, age });
-    const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.4 });
+    const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
 
     const json = extractJSON(out) || {};
     let question = (json.question || '').trim();
     let answer   = (json.answer   || '').trim();
 
     // sanity-check walidacja
-    const BAD = !question || !answer || isGenericQuestion(question) || answerWordCount(answer) > 6 || !endsWithQuestionMark(question);
+    const BAD = !question || !answer || isGenericQuestion(question) || isDefinitionQuestion(question) || answerWordCount(answer) > 6 || !endsWithQuestionMark(question);
 
     if (BAD) {
       const retryPrompt = buildQuestionPrompt({ text, age }) +
-        `\nUWAGA: Poprzednia próba była zbyt ogólna lub odpowiedź za długa. Zwróć NOWY JSON z pytaniem faktowym (kto/co/gdzie/kiedy/ile) i odpowiedzią ≤ 6 słów.`;
+        `\nUWAGA: Poprzednia próba była zbyt ogólna, definicyjna lub odpowiedź za długa. Zwróć NOWY JSON z pytaniem o czynność/miejsce/cel/obiekt i odpowiedzią ≤ 6 słów.`;
       const out2 = await raceLLM({ prompt: retryPrompt, max_tokens: 160, temperature: 0.2 });
       const j2 = extractJSON(out2) || {};
       question = (j2.question || question || '').trim();
@@ -1002,11 +1007,11 @@ app.post('/agent/comprehend', async (req, res) => {
     const qClean = question.replace(/[„”"']/g, '').trim();
     const aClean = answer.replace(/[„”"']/g, '').trim();
 
-    if (!qClean || !aClean || isGenericQuestion(qClean) || answerWordCount(aClean) > 6) {
+    if (!qClean || !aClean || isGenericQuestion(qClean) || isDefinitionQuestion(qClean) || answerWordCount(aClean) > 6) {
       return res.json({
         ok: true,
-        question: 'Kto wykonał ważną czynność w historii?',
-        answer: 'Główny bohater',
+        question: 'Gdzie był główny bohater?',
+        answer: 'w podanym miejscu',
         fallback: true
       });
     }
@@ -1016,8 +1021,8 @@ app.post('/agent/comprehend', async (req, res) => {
     console.error('comprehend error:', err);
     return res.status(200).json({
       ok: true,
-      question: 'Kto wykonał ważną czynność w historii?',
-      answer: 'Główny bohater',
+      question: 'Gdzie był główny bohater?',
+      answer: 'w podanym miejscu',
       fallback: true
     });
   }
