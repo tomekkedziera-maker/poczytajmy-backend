@@ -1084,13 +1084,41 @@ if (firstPerson && /^\s*kto\b/i.test(question)) {
         answerWordCount(aClean) > 6 ||
         (firstPerson && /^\s*kto\b/i.test(qClean)) ||
         !answerIsExtractive(text, aClean)) {
-      return res.json({
-        ok: true,
-        question: firstPerson ? 'Gdzie jestem?' : 'Gdzie był główny bohater?',
-        answer: firstPerson ? 'przy stole' : 'w podanym miejscu',
-        fallback: true
-      });
-    }
+      if (firstPerson) {
+  const purpose = extractPurpose(text);
+  const place   = extractPlace(text);
+  if (purpose) {
+    return res.json({
+      ok: true,
+      question: 'Po co siedzę?',
+      answer: purpose,
+      fallback: true
+    });
+  } else if (place) {
+    return res.json({
+      ok: true,
+      question: 'Gdzie siedzę?',
+      answer: place,
+      fallback: true
+    });
+  } else {
+    const verb = extractMainVerb1st(text) || 'robię';
+    return res.json({
+      ok: true,
+      question: 'Co robię?',
+      answer: verb,
+      fallback: true
+    });
+  }
+}
+
+return res.json({
+  ok: true,
+  question: 'Gdzie był główny bohater?',
+  answer: 'w podanym miejscu',
+  fallback: true
+});
+}
 
     return res.json({ ok: true, question: qClean, answer: aClean });
   } catch (err) {
