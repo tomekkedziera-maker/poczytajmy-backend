@@ -935,13 +935,25 @@ function extractJSON(s) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
+// pomocnicze walidacje pytań/odpowiedzi
+function isGenericQuestion(q = '') {
+  const s = String(q).toLowerCase();
+  return /opowiedz.*jednym zdaniem|co.*zapamięta|o czym był|co się wydarzyło|streść|podsumuj/.test(s);
+}
+function answerWordCount(a = '') {
+  return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
+}
+function endsWithQuestionMark(q = '') {
+  return /\?\s*$/.test(String(q));
+}
+
 /* — Pytanie + krótka poprawna odpowiedź (klucz) — */
 function buildQuestionPrompt({ text, age }) {
   const wiek = Number(age);
   const poziom =
     Number.isFinite(wiek) && wiek <= 8
       ? 'bardzo proste, jednoznaczne pytanie. Odpowiedź 1–5 słów.'
-      : 'proste pytanie. Odpowiedź jedno krótkie zdanie (max 12 słów).';
+      : 'proste, faktograficzne pytanie. Odpowiedź krótka (max 6 słów).';
 
   return `
 Wciel się w nauczyciela języka polskiego w klasach 1–3.
@@ -952,9 +964,10 @@ Fragment:
 
 Zasady:
 - Pytanie po polsku, ${poziom}
-- NIE używaj pytania ogólnego typu "O czym był tekst?".
-- Pytanie o konkretny fakt/postać/czynność/miejsce z fragmentu.
-- Odpowiedź ma być krótka i możliwa do sprawdzenia (nie “to zależy”).
+- BEZWZGLĘDNIE zakazane są pytania ogólne: "O czym był tekst?", "Co się wydarzyło?", "Opowiedz jednym zdaniem...", "Co zapamiętałeś/zapamiętałaś?".
+- Pytanie musi dotyczyć JEDNEGO konkretnego faktu (kto/co/gdzie/kiedy/ile).
+- Odpowiedź ma być krótka (maks. 6 słów), jednoznaczna i wynikająca wprost z fragmentu (bez wiedzy ogólnej).
+- Zakończ pytanie znakiem zapytania.
 - Zwróć TYLKO JSON bez komentarzy w formacie:
 {
   "question": "…jedno krótkie pytanie…",
@@ -971,13 +984,32 @@ app.post('/agent/comprehend', async (req, res) => {
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.4 });
 
     const json = extractJSON(out) || {};
-    const question = (json.question || '').trim();
-    const answer   = (json.answer   || '').trim();
+    let question = (json.question || '').trim();
+    let answer   = (json.answer   || '').trim();
 
-    if (!question || !answer) throw new Error('BAD_JSON');
+    // sanity-check walidacja
+    const BAD = !question || !answer || isGenericQuestion(question) || answerWordCount(answer) > 6 || !endsWithQuestionMark(question);
+
+    if (BAD) {
+      const retryPrompt = buildQuestionPrompt({ text, age }) +
+        `\nUWAGA: Poprzednia próba była zbyt ogólna lub odpowiedź za długa. Zwróć NOWY JSON z pytaniem faktowym (kto/co/gdzie/kiedy/ile) i odpowiedzią ≤ 6 słów.`;
+      const out2 = await raceLLM({ prompt: retryPrompt, max_tokens: 160, temperature: 0.2 });
+      const j2 = extractJSON(out2) || {};
+      question = (j2.question || question || '').trim();
+      answer   = (j2.answer   || answer   || '').trim();
+    }
 
     const qClean = question.replace(/[„”"']/g, '').trim();
     const aClean = answer.replace(/[„”"']/g, '').trim();
+
+    if (!qClean || !aClean || isGenericQuestion(qClean) || answerWordCount(aClean) > 6) {
+      return res.json({
+        ok: true,
+        question: 'Kto wykonał ważną czynność w historii?',
+        answer: 'Główny bohater',
+        fallback: true
+      });
+    }
 
     return res.json({ ok: true, question: qClean, answer: aClean });
   } catch (err) {
