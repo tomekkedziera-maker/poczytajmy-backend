@@ -303,7 +303,7 @@ function normalize(text) {
   return (text || '')
     .toLowerCase()
     .replace(/[„”"!?.,;:()\-\–—[\]{}…]/g, '')
-                               .replace(/\s+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 function jaccard(a, b) {
@@ -1018,42 +1018,38 @@ app.post('/agent/comprehend', async (req, res) => {
     const json = extractJSON(out) || {};
     let question = (json.question || '').trim();
     let answer   = (json.answer   || '').trim();
-// --- HOTFIX: twardy post-filter dla 1. osoby + ekstraktywny klucz ---
-function extractPlace(text) {
-  const s = text;
-  const m = s.match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
-  return m ? m[0].trim().replace(/\s+$/,'') : '';
-}
-function extractPurpose(text) {
-  const s = text;
-  const m = s.match(/\baby\s+[^.?!]+/i);
-  return m ? m[0].trim() : '';
-}
-function extractMainVerb1st(text) {
-  // prosta heurystyka: „siedzę”, „czytam”, „jem”, itp.
-  const m = text.match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/);
-  return m ? m[0].trim() : '';
-}
 
-const firstPerson = isFirstPersonText(text);
+    // --- HOTFIX v2: 1. osoba musi mieć pytanie w 1. osobie i ekstraktywną odpowiedź ---
+    function extractPlace(s) {
+      const m = s.match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
+      return m ? m[0].trim().replace(/\s+$/, '') : '';
+    }
+    function extractPurpose(s) {
+      const m = s.match(/\baby\s+[^.?!]+/i);
+      return m ? m[0].trim() : '';
+    }
+    function extractMainVerb1st(s) {
+      const m = s.match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/);
+      return m ? m[0].trim() : '';
+    }
+    const has3rdPersonName = /\b[A-ZŁŚŻĆÓŃ][a-ząćęłńóśźż]+\b/.test(question.replace(/^[A-ZŁŚŻĆÓŃ]/,''));
+    const startsAllowed1st = /^(Gdzie|Co|Po co|Kiedy|Czym)\s+(jestem|siedzę|robię|idę|czytam|jem|będę)\b/i.test(question);
 
-if (firstPerson && /^\s*kto\b/i.test(question)) {
-  const purpose = extractPurpose(text); // np. "aby zrobić aplikację"
-  const place   = extractPlace(text);   // np. "przy stole"
-
-  if (purpose) {
-    question = 'Po co siedzę?';
-    answer   = purpose;                 // ekstraktywnie z tekstu
-  } else if (place) {
-    question = 'Gdzie siedzę?';
-    answer   = place;                   // ekstraktywnie z tekstu
-  } else {
-    const verb = extractMainVerb1st(text) || 'czytam';
-    question = 'Co robię?';
-    answer   = verb;                    // pojedynczy czasownik z tekstu
-  }
-}
-
+    if (firstPerson && (/^\s*kto\b/i.test(question) || has3rdPersonName || !startsAllowed1st)) {
+      const purpose = extractPurpose(text);
+      const place   = extractPlace(text);
+      if (purpose) {
+        question = 'Po co siedzę?';
+        answer   = purpose;
+      } else if (place) {
+        question = 'Gdzie siedzę?';
+        answer   = place;
+      } else {
+        const verb = extractMainVerb1st(text) || 'robię';
+        question = 'Co robię?';
+        answer   = verb;
+      }
+    }
 
     const BAD =
       !question || !answer ||
@@ -1084,41 +1080,26 @@ if (firstPerson && /^\s*kto\b/i.test(question)) {
         answerWordCount(aClean) > 6 ||
         (firstPerson && /^\s*kto\b/i.test(qClean)) ||
         !answerIsExtractive(text, aClean)) {
+      // mądrzejszy fallback
+      const purpose = (firstPerson && extractPurpose(text)) || '';
+      const place   = (firstPerson && extractPlace(text))   || '';
+      if (firstPerson && purpose) {
+        return res.json({ ok: true, question: 'Po co siedzę?', answer: purpose, fallback: true });
+      }
+      if (firstPerson && place) {
+        return res.json({ ok: true, question: 'Gdzie siedzę?', answer: place, fallback: true });
+      }
       if (firstPerson) {
-  const purpose = extractPurpose(text);
-  const place   = extractPlace(text);
-  if (purpose) {
-    return res.json({
-      ok: true,
-      question: 'Po co siedzę?',
-      answer: purpose,
-      fallback: true
-    });
-  } else if (place) {
-    return res.json({
-      ok: true,
-      question: 'Gdzie siedzę?',
-      answer: place,
-      fallback: true
-    });
-  } else {
-    const verb = extractMainVerb1st(text) || 'robię';
-    return res.json({
-      ok: true,
-      question: 'Co robię?',
-      answer: verb,
-      fallback: true
-    });
-  }
-}
-
-return res.json({
-  ok: true,
-  question: 'Gdzie był główny bohater?',
-  answer: 'w podanym miejscu',
-  fallback: true
-});
-}
+        const verb = extractMainVerb1st(text) || 'robię';
+        return res.json({ ok: true, question: 'Co robię?', answer: verb, fallback: true });
+      }
+      return res.json({
+        ok: true,
+        question: 'Gdzie był główny bohater?',
+        answer: 'w podanym miejscu',
+        fallback: true
+      });
+    }
 
     return res.json({ ok: true, question: qClean, answer: aClean });
   } catch (err) {
