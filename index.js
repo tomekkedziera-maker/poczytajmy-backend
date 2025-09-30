@@ -1018,6 +1018,42 @@ app.post('/agent/comprehend', async (req, res) => {
     const json = extractJSON(out) || {};
     let question = (json.question || '').trim();
     let answer   = (json.answer   || '').trim();
+// --- HOTFIX: twardy post-filter dla 1. osoby + ekstraktywny klucz ---
+function extractPlace(text) {
+  const s = text;
+  const m = s.match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
+  return m ? m[0].trim().replace(/\s+$/,'') : '';
+}
+function extractPurpose(text) {
+  const s = text;
+  const m = s.match(/\baby\s+[^.?!]+/i);
+  return m ? m[0].trim() : '';
+}
+function extractMainVerb1st(text) {
+  // prosta heurystyka: „siedzę”, „czytam”, „jem”, itp.
+  const m = text.match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/);
+  return m ? m[0].trim() : '';
+}
+
+const firstPerson = isFirstPersonText(text);
+
+if (firstPerson && /^\s*kto\b/i.test(question)) {
+  const purpose = extractPurpose(text); // np. "aby zrobić aplikację"
+  const place   = extractPlace(text);   // np. "przy stole"
+
+  if (purpose) {
+    question = 'Po co siedzę?';
+    answer   = purpose;                 // ekstraktywnie z tekstu
+  } else if (place) {
+    question = 'Gdzie siedzę?';
+    answer   = place;                   // ekstraktywnie z tekstu
+  } else {
+    const verb = extractMainVerb1st(text) || 'czytam';
+    question = 'Co robię?';
+    answer   = verb;                    // pojedynczy czasownik z tekstu
+  }
+}
+
 
     const BAD =
       !question || !answer ||
