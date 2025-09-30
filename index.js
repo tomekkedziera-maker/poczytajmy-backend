@@ -120,7 +120,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.7-quiz-key' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.8-quiz-text' });
 });
 
 // Prosty root
@@ -135,6 +135,7 @@ app.get('/', (_req, res) => {
         <li>POST <code>/agent/generate-text</code></li>
         <li>POST <code>/agent/comprehend</code> ✅ pytanie+klucz</li>
         <li>POST <code>/agent/check-answer-voice</code> ✅ ocena+feedback</li>
+        <li>POST <code>/agent/check-answer-text</code> ✅ ocena+feedback (tekst)</li>
         <li>POST <code>/asr</code>, <code>/ocr</code></li>
       </ul>
     </body></html>
@@ -1096,6 +1097,52 @@ app.post('/agent/check-answer-voice', upload.single('audio'), async (req, res) =
       result: 'bad',
       feedback: 'Nie udało się ocenić odpowiedzi, spróbuj powiedzieć ją jeszcze raz.',
       expectedAnswer: expectedAnswer || ''
+    });
+  }
+});
+
+/* — Ocena odpowiedzi TEKSTOWEJ dziecka (bez audio) — */
+app.post('/agent/check-answer-text', async (req, res) => {
+  try {
+    const {
+      question = '',
+      text = '',
+      age,
+      expectedAnswer = '',
+      childAnswer = ''
+    } = req.body || {};
+
+    if (!question || !text) return res.status(400).json({ ok: false, error: 'NO_Q_OR_TEXT' });
+
+    const checkPrompt = buildCheckPrompt({
+      text,
+      age,
+      question,
+      childAnswer,
+      expectedAnswer
+    });
+
+    const out = await raceLLM({ prompt: checkPrompt, max_tokens: 160, temperature: 0.2 });
+    const json = extractJSON(out) || {};
+    const ok = !!json.ok;
+    const feedback = (json.feedback || '').trim();
+    const expected = (json.expectedAnswer || expectedAnswer || '').trim();
+
+    return res.json({
+      ok: true,
+      recognizedText: childAnswer,
+      result: ok ? 'ok' : 'bad',
+      feedback,
+      expectedAnswer: expected
+    });
+  } catch (e) {
+    console.error('check-answer-text error:', e);
+    return res.status(200).json({
+      ok: true,
+      recognizedText: '',
+      result: 'bad',
+      feedback: 'Nie udało się ocenić odpowiedzi, spróbuj wpisać ją ponownie.',
+      expectedAnswer: ''
     });
   }
 });
