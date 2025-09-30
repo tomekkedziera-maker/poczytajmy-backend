@@ -120,7 +120,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.10-quiz-extractive' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.12-earlyreturn-fix' });
 });
 
 // Prosty root
@@ -1012,99 +1012,41 @@ app.post('/agent/comprehend', async (req, res) => {
 
     const firstPerson = isFirstPersonText(text);
 
-// === EARLY RETURN dla 1. osoby: zero LLM, zero fallbacków ===
-function extractPlace(s) {
-  const m = String(s).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
-  return m ? m[0].trim().replace(/\s+$/, '') : '';
-}
-function extractPurpose(s) {
-  const m = String(s).match(/\baby\s+[^.?!]+/i);
-  return m ? m[0].trim() : '';
-}
-function extractMainVerb1st(s) {
-  const m = String(s).match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/); // np. siedzę, czytam, jem
-  return m ? m[0].trim() : '';
-}
-
-if (firstPerson) {
-  const purpose = extractPurpose(text);
-  const place   = extractPlace(text);
-  if (purpose) {
-    return res.json({ ok: true, question: 'Po co siedzę?',  answer: purpose });
-  }
-  if (place) {
-    return res.json({ ok: true, question: 'Gdzie siedzę?', answer: place   });
-  }
-  const verb = extractMainVerb1st(text) || 'robię';
-  return res.json({ ok: true, question: 'Co robię?',       answer: verb    });
-}
-
-
-    const prompt = buildQuestionPrompt({ text, age });
-    const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
-
-   // --- FORCE FIRST-PERSON TEMPLATES (deterministycznie, bez LLM) ---
-function extractPlace(s) {
-  const m = String(s).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
-  return m ? m[0].trim().replace(/\s+$/, '') : '';
-}
-function extractPurpose(s) {
-  const m = String(s).match(/\baby\s+[^.?!]+/i);
-  return m ? m[0].trim() : '';
-}
-function extractMainVerb1st(s) {
-  const m = String(s).match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/); // np. siedzę, czytam, jem
-  return m ? m[0].trim() : '';
-}
-
-if (firstPerson) {
-  const purpose = extractPurpose(text);
-  const place   = extractPlace(text);
-  if (purpose) {
-    question = 'Po co siedzę?';
-    answer   = purpose;                 // dosłownie z tekstu
-  } else if (place) {
-    question = 'Gdzie siedzę?';
-    answer   = place;                   // dosłownie z tekstu
-  } else {
-    const verb = extractMainVerb1st(text) || 'robię';
-    question = 'Co robię?';
-    answer   = verb;                    // 1 słowo z tekstu
-  }
-}
-
-
-    // --- HOTFIX v2: 1. osoba musi mieć pytanie w 1. osobie i ekstraktywną odpowiedź ---
-    function extractPlace(s) {
-      const m = s.match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
+    // --- 1st-person extractors (pojedyncza definicja w handlerze) ---
+    function extractPlace1st(s) {
+      const m = String(s).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
       return m ? m[0].trim().replace(/\s+$/, '') : '';
     }
-    function extractPurpose(s) {
-      const m = s.match(/\baby\s+[^.?!]+/i);
+    function extractPurpose1st(s) {
+      const m = String(s).match(/\baby\s+[^.?!]+/i);
       return m ? m[0].trim() : '';
     }
     function extractMainVerb1st(s) {
-      const m = s.match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/);
+      const m = String(s).match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/); // np. siedzę, czytam, jem
       return m ? m[0].trim() : '';
     }
-    const has3rdPersonName = /\b[A-ZŁŚŻĆÓŃ][a-ząćęłńóśźż]+\b/.test(question.replace(/^[A-ZŁŚŻĆÓŃ]/,''));
-    const startsAllowed1st = /^(Gdzie|Co|Po co|Kiedy|Czym)\s+(jestem|siedzę|robię|idę|czytam|jem|będę)\b/i.test(question);
 
-    if (firstPerson && (/^\s*kto\b/i.test(question) || has3rdPersonName || !startsAllowed1st)) {
-      const purpose = extractPurpose(text);
-      const place   = extractPlace(text);
+    // === EARLY RETURN dla 1. osoby: zero LLM, zero fallbacków ===
+    if (firstPerson) {
+      const purpose = extractPurpose1st(text);
+      const place   = extractPlace1st(text);
       if (purpose) {
-        question = 'Po co siedzę?';
-        answer   = purpose;
-      } else if (place) {
-        question = 'Gdzie siedzę?';
-        answer   = place;
-      } else {
-        const verb = extractMainVerb1st(text) || 'robię';
-        question = 'Co robię?';
-        answer   = verb;
+        return res.json({ ok: true, question: 'Po co siedzę?',  answer: purpose });
       }
+      if (place) {
+        return res.json({ ok: true, question: 'Gdzie siedzę?', answer: place   });
+      }
+      const verb = extractMainVerb1st(text) || 'robię';
+      return res.json({ ok: true, question: 'Co robię?',       answer: verb    });
     }
+
+    // === 3. osoba → LLM + walidacje ===
+    const prompt = buildQuestionPrompt({ text, age });
+    const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
+
+    const json = extractJSON(out) || {};
+    let question = (json.question || '').trim();
+    let answer   = (json.answer   || '').trim();
 
     const BAD =
       !question || !answer ||
@@ -1112,13 +1054,11 @@ if (firstPerson) {
       isDefinitionQuestion(question) ||
       answerWordCount(answer) > 6 ||
       !endsWithQuestionMark(question) ||
-      (firstPerson && /^\s*kto\b/i.test(question)) ||
       !answerIsExtractive(text, answer);
 
     if (BAD) {
       const retryPrompt = buildQuestionPrompt({ text, age }) +
-        `\nUWAGA: Poprzednia próba była zbyt ogólna/definicyjna, zła dla 1. osoby lub odpowiedź nie była fragmentem tekstu. ` +
-        `Jeśli fragment jest w 1. osobie, NIE pytaj „Kto…?”, tylko „Gdzie/Co/Po co/Kiedy…?”. ` +
+        `\nUWAGA: Poprzednia próba była zbyt ogólna/definicyjna lub odpowiedź nie była fragmentem tekstu. ` +
         `Odpowiedź musi być DOSŁOWNIE skopiowana z fragmentu (ekstraktywna), max 6 słów. Zwróć NOWY JSON.`;
       const out2 = await raceLLM({ prompt: retryPrompt, max_tokens: 160, temperature: 0.2 });
       const j2 = extractJSON(out2) || {};
@@ -1133,21 +1073,9 @@ if (firstPerson) {
         isGenericQuestion(qClean) ||
         isDefinitionQuestion(qClean) ||
         answerWordCount(aClean) > 6 ||
-        (firstPerson && /^\s*kto\b/i.test(qClean)) ||
+        !endsWithQuestionMark(qClean) ||
         !answerIsExtractive(text, aClean)) {
-      // mądrzejszy fallback
-      const purpose = (firstPerson && extractPurpose(text)) || '';
-      const place   = (firstPerson && extractPlace(text))   || '';
-      if (firstPerson && purpose) {
-        return res.json({ ok: true, question: 'Po co siedzę?', answer: purpose, fallback: true });
-      }
-      if (firstPerson && place) {
-        return res.json({ ok: true, question: 'Gdzie siedzę?', answer: place, fallback: true });
-      }
-      if (firstPerson) {
-        const verb = extractMainVerb1st(text) || 'robię';
-        return res.json({ ok: true, question: 'Co robię?', answer: verb, fallback: true });
-      }
+      // fallback dla 3. osoby
       return res.json({
         ok: true,
         question: 'Gdzie był główny bohater?',
