@@ -1015,9 +1015,36 @@ app.post('/agent/comprehend', async (req, res) => {
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
 
-    const json = extractJSON(out) || {};
-    let question = (json.question || '').trim();
-    let answer   = (json.answer   || '').trim();
+   // --- FORCE FIRST-PERSON TEMPLATES (deterministycznie, bez LLM) ---
+function extractPlace(s) {
+  const m = String(s).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
+  return m ? m[0].trim().replace(/\s+$/, '') : '';
+}
+function extractPurpose(s) {
+  const m = String(s).match(/\baby\s+[^.?!]+/i);
+  return m ? m[0].trim() : '';
+}
+function extractMainVerb1st(s) {
+  const m = String(s).match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/); // np. siedzę, czytam, jem
+  return m ? m[0].trim() : '';
+}
+
+if (firstPerson) {
+  const purpose = extractPurpose(text);
+  const place   = extractPlace(text);
+  if (purpose) {
+    question = 'Po co siedzę?';
+    answer   = purpose;                 // dosłownie z tekstu
+  } else if (place) {
+    question = 'Gdzie siedzę?';
+    answer   = place;                   // dosłownie z tekstu
+  } else {
+    const verb = extractMainVerb1st(text) || 'robię';
+    question = 'Co robię?';
+    answer   = verb;                    // 1 słowo z tekstu
+  }
+}
+
 
     // --- HOTFIX v2: 1. osoba musi mieć pytanie w 1. osobie i ekstraktywną odpowiedź ---
     function extractPlace(s) {
