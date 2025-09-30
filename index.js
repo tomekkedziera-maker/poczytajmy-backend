@@ -1012,6 +1012,34 @@ app.post('/agent/comprehend', async (req, res) => {
 
     const firstPerson = isFirstPersonText(text);
 
+// === EARLY RETURN dla 1. osoby: zero LLM, zero fallbacków ===
+function extractPlace(s) {
+  const m = String(s).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
+  return m ? m[0].trim().replace(/\s+$/, '') : '';
+}
+function extractPurpose(s) {
+  const m = String(s).match(/\baby\s+[^.?!]+/i);
+  return m ? m[0].trim() : '';
+}
+function extractMainVerb1st(s) {
+  const m = String(s).match(/\b([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/); // np. siedzę, czytam, jem
+  return m ? m[0].trim() : '';
+}
+
+if (firstPerson) {
+  const purpose = extractPurpose(text);
+  const place   = extractPlace(text);
+  if (purpose) {
+    return res.json({ ok: true, question: 'Po co siedzę?',  answer: purpose });
+  }
+  if (place) {
+    return res.json({ ok: true, question: 'Gdzie siedzę?', answer: place   });
+  }
+  const verb = extractMainVerb1st(text) || 'robię';
+  return res.json({ ok: true, question: 'Co robię?',       answer: verb    });
+}
+
+
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
 
