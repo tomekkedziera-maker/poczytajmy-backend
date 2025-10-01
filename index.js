@@ -805,6 +805,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 /* ===================================================================== */
 /* ===================================================================== */
+/* ===================================================================== */
 /* =====================  QUIZ / COMPREHEND – NOWE  ==================== */
 /* ===================================================================== */
 
@@ -829,13 +830,20 @@ function answerWordCount(a = '') {
 function endsWithQuestionMark(q = '') {
   return /\?\s*$/.test(String(q));
 }
+
+function stripDiacritics(s='') {
+  return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/gi,'l');
+}
 function isFirstPersonText(t = '') {
-  const s = String(t).toLowerCase();
-  return /\b(ja|mnie|mi|mną|mój|moja|moje|jestem|mam|idę|robię|czytam|siedzę|będę|chcę|przeczytam|jem|piję|oglądam|słucham|gram)\b/.test(s);
+  const s1 = String(t).toLowerCase();
+  const s2 = stripDiacritics(s1);
+  const re = /\b(ja|mnie|mi|mną|moj[ea]?|jestem|mam|ide|robie|czytam|siedze|bede|chce|przeczytam|jem|pije|ogladam|slucham|gram)\b/;
+  return /\b(ja|mnie|mi|mną|mój|moja|moje|jestem|mam|idę|robię|czytam|siedzę|będę|chcę|przeczytam|jem|piję|oglądam|słucham|gram)\b/.test(s1)
+      || re.test(s2);
 }
 function answerIsExtractive(text = '', answer = '') {
-  const t = String(text).toLowerCase();
-  const a = String(answer).toLowerCase().trim();
+  const t = stripDiacritics(String(text).toLowerCase());
+  const a = stripDiacritics(String(answer).toLowerCase().trim());
   if (!a) return false;
   return t.includes(a);
 }
@@ -850,29 +858,64 @@ function detectThirdPersonName(text) {
   return name;
 }
 
-/** Ekstrakcja dopełnienia po czasowniku; zatrzymaj się przed przyimkiem lub spójnikiem „i” */
+/**
+ * Ekstrakcja dopełnienia po czasowniku:
+ * - pozwala na „o …” (temat: komiks o robotach)
+ * - dopuszcza „w/na …” gdy jest częścią obiektu (np. „gram w piłkę nożną”),
+ *   ale jeśli obiekt zaczyna się od przyimka i wcześniej nie ma rzeczownika,
+ *   traktujemy to jako BRAK obiektu (np. „czytam w bibliotece” → miejsce).
+ */
 function extractObjectAfterVerb(text, verbRe) {
-  const stopTokens = "(w|we|na|do|przy|po|u|pod|o|i)";
-  const rx = new RegExp(
-    verbRe.source + "\\s+([^.,;!?]*?)(?=(\\s+" + stopTokens + "\\b|,|\\.|$))",
-    verbRe.flags
-  );
-  const m = String(text).match(rx);
-  if (!m) return null;
+  const afterVerb = String(text).split(verbRe);
+  if (afterVerb.length < 2) return null;
 
-  let obj = (m[1] || "").trim();
+  // Weź to co po pierwszym trafieniu czasownika
+  let tail = String(text).match(verbRe);
+  let startIdx = -1;
+  if (tail) {
+    startIdx = text.indexOf(tail[0]) + tail[0].length;
+  }
+  const src = startIdx >= 0 ? text.slice(startIdx).trim() : String(afterVerb[1] || '').trim();
+  if (!src) return null;
 
-  // utnij część celową „, żeby/aby …”
-  obj = obj.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  // Utnij na pierwszym przecinku/kropce
+  let chunk = src.split(/[.?!,]/)[0].trim();
 
-  // usuń wiodący przyimek, jeśli się przykleił
-  obj = obj.replace(/^(w|we|na|do|przy|o)\s+/i, "").trim();
+  // Utnij na spójniku „ i ” jeśli po nim zaczyna się nowa czynność/miejsce
+  chunk = chunk.replace(/\s+i\s+[^,.;!?]+$/i, (m) => {
+    // zachowawczo: zostawimy tylko część przed „ i ”
+    const parts = chunk.split(/\si\s/i);
+    return parts[0] || chunk;
+  });
 
-  // nie zostawiaj samotnego „i”
-  obj = obj.replace(/(?:^|\s)i\s*$/i, "").trim();
+  // Spróbuj wydobyć „co …” – preferuj rzecz przed pierwszym JASNYM miejscem/czasem
+  // heurystycznie tnij przy drugim „w/na/do/przy/u/pod/obok” jeśli wystąpią dwa
+  const cutAt = chunk.search(/\b(w|we|na|do|przy|u|pod|obok)\b/i);
+  let objRaw = chunk;
+  if (cutAt > 0) {
+    // Sprawdź, czy to „w/na …” to pierwsze i jedyne – wtedy zostawiamy (np. „w piłkę nożną”)
+    const preps = chunk.match(/\b(w|we|na|do|przy|u|pod|obok)\b/gi) || [];
+    if (preps.length > 1) objRaw = chunk.slice(0, cutAt).trim();
+  }
+
+  // Jeśli nadal pusto, nic nie zwracamy
+  if (!objRaw) return null;
+
+  // Usuń wiodące przyimki
+  let obj = objRaw.replace(/^(w|we|na|do|przy|u|pod|obok)\s+/i, '').trim();
+
+  // Jeśli obj po usunięciu przyimka jest puste → to był czysty przyimek (miejsce), nie obiekt
+  if (!obj) return null;
+
+  // Utnij część celową „żeby/aby …”
+  obj = obj.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
+
+  // Nie zwracaj samego czasownika jako odpowiedzi
+  const verbsOnly = /\b(czytam|czyta|słucham|słucha|gram|gra|jem|je|piję|pije)\b/i;
+  if (verbsOnly.test(obj) && obj.split(/\s+/).length <= 2) return null;
 
   // kosmetyka
-  obj = obj.replace(/\s{2,}/g, " ");
+  obj = obj.replace(/\s{2,}/g, ' ');
   return obj || null;
 }
 
@@ -890,16 +933,16 @@ function extractPlace(text) {
 
 // mapowanie czasowników (bez grup wyłapujących)
 const VERBS = [
-  { re: /\bczytam\b/i,  type: 'object', q1: 'Co czytam?',   q3: (n)=>`Co czyta ${n}?` },
-  { re: /\bczyta\b/i,   type: 'object', q1: 'Co czytam?',   q3: (n)=>`Co czyta ${n}?` },
-  { re: /\bsłucham\b/i, type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
-  { re: /\bsłucha\b/i,  type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
-  { re: /\bgram\b/i,    type: 'object', q1: 'W co gram?',   q3: (n)=>`W co gra ${n}?` },
-  { re: /\bgra\b/i,     type: 'object', q1: 'W co gram?',   q3: (n)=>`W co gra ${n}?` },
-  { re: /\bjem\b/i,     type: 'object', q1: 'Co jem?',      q3: (n)=>`Co je ${n}?` },
-  { re: /\bje\b/i,      type: 'object', q1: 'Co jem?',      q3: (n)=>`Co je ${n}?` },
-  { re: /\bpiję\b/i,    type: 'object', q1: 'Co piję?',     q3: (n)=>`Co pije ${n}?` },
-  { re: /\bpije\b/i,    type: 'object', q1: 'Co piję?',     q3: (n)=>`Co pije ${n}?` },
+  { re: /\bczytam\b/i,  type: 'object',   q1: 'Co czytam?',      q3: (n)=>`Co czyta ${n}?` },
+  { re: /\bczyta\b/i,   type: 'object',   q1: 'Co czytam?',      q3: (n)=>`Co czyta ${n}?` },
+  { re: /\bsłucham\b/i, type: 'object',   q1: 'Czego słucham?',  q3: (n)=>`Czego słucha ${n}?` },
+  { re: /\bsłucha\b/i,  type: 'object',   q1: 'Czego słucham?',  q3: (n)=>`Czego słucha ${n}?` },
+  { re: /\bgram\b/i,    type: 'object',   q1: 'W co gram?',      q3: (n)=>`W co gra ${n}?` },
+  { re: /\bgra\b/i,     type: 'object',   q1: 'W co gram?',      q3: (n)=>`W co gra ${n}?` },
+  { re: /\bjem\b/i,     type: 'object',   q1: 'Co jem?',         q3: (n)=>`Co je ${n}?` },
+  { re: /\bje\b/i,      type: 'object',   q1: 'Co jem?',         q3: (n)=>`Co je ${n}?` },
+  { re: /\bpiję\b/i,    type: 'object',   q1: 'Co piję?',        q3: (n)=>`Co pije ${n}?` },
+  { re: /\bpije\b/i,    type: 'object',   q1: 'Co piję?',        q3: (n)=>`Co pije ${n}?` },
   { re: /\bidę|idziemy|idzie\b/i, type: 'timePref',  q1: 'Kiedy idę?',   q3: (n)=>`Kiedy idzie ${n}?` },
   { re: /\bsiedzę|siedzi\b/i,     type: 'placePref', q1: 'Gdzie siedzę?', q3: (n)=>`Gdzie siedzi ${n}?` },
 ];
@@ -921,7 +964,8 @@ function comprehendHeuristic(textRaw, age) {
       const obj = extractObjectAfterVerb(text, v.re);
       if (obj) {
         let ans = obj;
-        if (Number(age) <= 7) ans = ans.replace(/\s+po\s+[^,.;!?]+$/i, '').trim(); // krótsza odp. dla młodszych
+        // skróć ogon „po …” dla młodszych
+        if (Number(age) <= 7) ans = ans.replace(/\s+po\s+[^,.;!?]+$/i, '').trim();
         return { question: buildQuestion(v, isThird, name3), answer: ans, fallback: false };
       }
       // brak dopełnienia → czas/miejsce
@@ -1044,7 +1088,7 @@ app.post('/agent/comprehend', async (req, res) => {
     // Heurystyczny fallback przy błędzie (np. timeout)
     const { text = '', age } = req.body || {};
     const hh = comprehendHeuristic(String(text || ''), age);
-    const q = endsWithQuestionMark(hh.question) ? hh.question : 'Gdzie to się dzieje?';
+    const q = endsWithQuestionMark(hh.question) ? hh.question : (isFirstPersonText(text) ? 'Kiedy to robię?' : 'Kiedy to robi?');
     const a = hh.answer || extractPlace(String(text || '')) || extractTime(String(text || '')) || '';
     return res.status(200).json({ ok: true, question: q, answer: a, fallback: true });
   }
