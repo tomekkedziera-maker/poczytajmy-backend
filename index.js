@@ -807,7 +807,8 @@ app.get('/tts-voices', async (_req, res) => {
 /* ===================================================================== */
 /* ===================================================================== */
 /* ===================================================================== */
-/* =====================  QUIZ / COMPREHEND – NOWE  ==================== */
+/* ===================================================================== */
+/* =====================  QUIZ / COMPREHEND – FIXED  ==================== */
 /* ===================================================================== */
 
 function extractJSON(s) {
@@ -816,19 +817,44 @@ function extractJSON(s) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
-/* ---------------------- drobne utilsy ---------------------- */
-function answerWordCount(a = '') {
-  return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
+/* ---------- drobne utils ---------- */
+const DIAC_FALLBACK = { 'ą':'a','ć':'c','ę':'e','ł':'l','ń':'n','ó':'o','ś':'s','ź':'z','ż':'z' };
+function deburrPL(s='') { return s.replace(/[ąćęłńóśźż]/gi, ch => {
+  const low = ch.toLowerCase();
+  const r = DIAC_FALLBACK[low] || low;
+  return ch === low ? r : r.toUpperCase();
+});}
+
+function squeeze(s=''){ return String(s).replace(/\s+/g,' ').trim(); }
+
+/** wyczyść odpowiedź:
+ *  - usuń wiodący czasownik (czytam/piszę/rysuję/gotuję/gram/jem/piję/oglądam/słucham itd.)
+ *  - utnij po pierwszej sensownej frazie (przed " i <czasownik>", " , żeby/aby …")
+ *  - popraw kapitalizację i zbędne przecinki
+ */
+function cleanAnswer(raw='') {
+  let s = squeeze(raw)
+    .replace(/^[-–—,:;\s]+/, '')
+    // odetnij cel
+    .replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '');
+
+  // utnij koordynację, gdy po "i" idzie znów czasownik
+  s = s.replace(/\s+i\s+(czytam|pisz[ęe]|rysuj[ęe]|gotuj[ęe]|gram|jem|pij[ęe]|oglądam|ogląda|słucham|słucha|maluj[ęe]|maluje)\b.*$/i, '');
+
+  // usuń wiodący czasownik
+  s = s.replace(/^(czytam|pisz[ęe]|rysuj[ęe]|gotuj[ęe]|gram|jem|pij[ęe]|oglądam|ogląda|słucham|słucha|maluj[ęe]|maluje|je|pije|gra)\b\s*/i, '');
+
+  // kosmetyka: pojedyncze słowa typu "bibliotece" bez przyimka – zostawiamy,
+  // ale znormalizujmy odstępy/przecinki
+  s = s.replace(/\s*,\s*/g, ', ').replace(/\s+/g,' ').trim();
+
+  // skróć bardzo długie (dla aplikacji dziecięcej)
+  if (s.length > 60) s = s.slice(0,60).replace(/\s+\S*$/, '');
+
+  return s;
 }
-function endsWithQuestionMark(q = '') {
-  return /\?\s*$/.test(String(q));
-}
-function answerIsExtractive(text = '', answer = '') {
-  const t = String(text).toLowerCase();
-  const a = String(answer).toLowerCase().trim();
-  if (!a) return false;
-  return t.includes(a);
-}
+
+/* ---------- detekcje ---------- */
 function isGenericQuestion(q = '') {
   const s = String(q).toLowerCase();
   return /opowiedz.*jednym zdaniem|co.*zapamięta|o czym był|co się wydarzyło|streść|podsumuj/.test(s);
@@ -837,240 +863,167 @@ function isDefinitionQuestion(q='') {
   const s = String(q).toLowerCase();
   return /\bkim jest\b|\bkim był\b|\bco to jest\b|\bczym jest\b/.test(s);
 }
+function answerWordCount(a = '') {
+  return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
+}
+function endsWithQuestionMark(q = '') { return /\?\s*$/.test(String(q)); }
+function answerIsExtractive(text = '', answer = '') {
+  const t = deburrPL(String(text).toLowerCase());
+  const a = deburrPL(String(answer).toLowerCase().trim());
+  if (!a) return false;
+  return t.includes(a);
+}
 
-/* ---------------------- rozpoznanie osoby ---------------------- */
-/** 3. os.: <Imię> + (czyta|słucha|je|pije|gra|idzie|siedzi|pisze|rysuje|gotuje|wycina|klei|ogląda|przygotowuje) */
+/** 3. os.: <Imię> + 3os. czasownika – tylko wtedy traktuj jako 3. os. */
 function detectThirdPersonName(text) {
   const m = String(text).trim()
-    .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)(?:\s+i\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|pisze|rysuje|gotuje|wycina|klei|przygotowuje)\b/u);
+    .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|maluje|pisze|rysuje|gotuje|buduje|naprawia|wycina|klei|przygotowuje)\b/u);
   if (!m) return null;
   const name = m[1];
   if (/^Ja$/i.test(name)) return null;
   return name;
 }
-/** 2. os.: pronoun „Ty …” lub końcówki -sz dla wybranych czasowników */
-function isSecondPerson(text) {
-  const s = String(text).toLowerCase();
-  if (/^\s*ty\b/.test(s)) return true;
-  return /\b(czytasz|pijesz|jesz|idziesz|siedzisz|piszesz|rysujesz|gotujesz|oglądasz|grasz|ucisz|uczy(sz)?)\b/.test(s);
-}
-function isFirstPerson(text) {
-  const s = String(text).toLowerCase();
-  return /\b(ja\b|czytam|piję|jem|idę|siedzę|piszę|rysuję|gotuję|oglądam|gram|uczę)\b/.test(s);
-}
 
-/* ---------------------- ekstrakcje z tekstu ---------------------- */
-/** „jutro wieczorem”, „codziennie rano”, „po obiedzie”, „wczoraj” itd. */
-const TIME_PHRASE_RE = new RegExp(
-  String.raw`\b(?:(?:codziennie|zawsze|czasami)\s+)?(?:rano|wieczorem|w\s+południe|po\s+południu|wczoraj|dzisiaj|dziś|jutro)(?:\s+(rano|wieczorem))?|\bpo\s+(?:obiedzie|szkole|kolacji)\b`,
-  'iu'
-);
+/** proste ekstraktory czasu/miejsca */
+const TIME_HINTS = /\b(rano|wieczorem|w południe|po południu|jutro|dzisiaj|dziś|po (obiedzie|szkole|kolacji)|wczoraj|dzisiaj wieczorem|jutro rano)\b/i;
 function extractTime(text) {
-  const m = String(text).match(TIME_PHRASE_RE);
-  return m ? m[0].replace(/\s+/g,' ').trim() : null;
+  const m = String(text).match(TIME_HINTS);
+  if (!m) return null;
+  return m[0].replace(/poludniu/i, 'po południu');
 }
 function extractPlace(text) {
   const m = String(text).match(/\b(w|we|na|do|przy|pod|obok|u)\s+([^.,;!?]+)/i);
-  return m ? m[0].trim().replace(/[.]+$/, "") : null;
-}
-/** po czasowniku do przecinka/przyimka/celu – zatrzymaj sensowny obiekt */
-function extractObjectAfterVerb(text, verbRe) {
-  const m = String(text).match(new RegExp(
-    verbRe.source + String.raw`\s+([^.,;!?]*?)(?=(\s+(w|we|na|do|przy|po|u|pod|o|żeby|aby)\b|,|\.|$))`
-  , verbRe.flags));
   if (!m) return null;
-  let obj = (m[1] || "").trim();
-
-  // usuń „żeby/aby …” jeśli się załapało
-  obj = obj.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
-
-  // kosmetyka
-  obj = obj.replace(/^(w|we|na|do|przy|o)\s+/i, "").trim();
-  obj = obj.replace(/\s{2,}/g, " ");
-
-  return obj || null;
-}
-/** „Nie X, tylko/lecz Y” → wybierz Y */
-function pickContrastObject(text, fallbackObj='') {
-  const m = String(text).match(/\bnie\s+([^,]+),\s*(tylko|lecz)\s+([^.,;!?]+)/i);
-  if (m && m[3]) return m[3].trim();
-  return fallbackObj;
+  return squeeze(m[0].replace(/[.]+$/, ''));
 }
 
-/* ---------------------- słownik czasowników ---------------------- */
-/**
- * Każdy wpis:
- * - re: regex wykrywający formy (1., 2., 3. os.; czas przeszły/przyszły)
- * - type: 'object' | 'timePref' | 'placePref'
- * - q: funkcje zwracające pytanie dla 1./2./3. osoby
- */
-const V = {
-  // czytać
-  read: {
-    re: /\b(czytam|czytasz|czyta|czytałem|czytałam|będę\s+czytał|będę\s+czytała)\b/i,
-    type: 'object',
-    q: { '1': 'Co czytam?', '2': 'Co czytasz?', '3': n => `Co czyta ${n}?` }
-  },
-  // jeść
-  eat: {
-    re: /\b(jem|jesz|je|zjadłem|zjadłam|zje|będę\s+jadł|będę\s+jadła)\b/i,
-    type: 'object',
-    q: { '1': 'Co jem?', '2': 'Co jesz?', '3': n => `Co je ${n}?` }
-  },
-  // pić
-  drink: {
-    re: /\b(piję|pijesz|pije|pił|piła|będę\s+pił|będę\s+piła)\b/i,
-    type: 'object',
-    q: { '1': 'Co piję?', '2': 'Co pijesz?', '3': n => `Co pije ${n}?` }
-  },
-  // pisać
-  write: {
-    re: /\b(piszę|piszesz|pisze|pisałem|pisałam|będę\s+pisał|będę\s+pisała)\b/i,
-    type: 'object',
-    q: { '1': 'Co piszę?', '2': 'Co piszesz?', '3': n => `Co pisze ${n}?` }
-  },
-  // rysować
-  draw: {
-    re: /\b(rysuję|rysujesz|rysuje)\b/i,
-    type: 'object',
-    q: { '1': 'Co rysuję?', '2': 'Co rysujesz?', '3': n => `Co rysuje ${n}?` }
-  },
-  // gotować
-  cook: {
-    re: /\b(gotuję|gotujesz|gotuje)\b/i,
-    type: 'object',
-    q: { '1': 'Co gotuję?', '2': 'Co gotujesz?', '3': n => `Co gotuje ${n}?` }
-  },
-  // podlewać
-  water: {
-    re: /\b(podlewam|podlewasz|podlewa)\b/i,
-    type: 'object',
-    q: { '1': 'Co podlewam?', '2': 'Co podlewasz?', '3': n => `Co podlewa ${n}?` }
-  },
-  // wycinać
-  cut: {
-    re: /\b(wycinam|wycinasz|wycina)\b/i,
-    type: 'object',
-    q: { '1': 'Co wycinam?', '2': 'Co wycinasz?', '3': n => `Co wycina ${n}?` }
-  },
-  // kleić
-  glue: {
-    re: /\b(kleję|kleisz|klei)\b/i,
-    type: 'object',
-    q: { '1': 'Co kleję?', '2': 'Co kleisz?', '3': n => `Co klei ${n}?` }
-  },
-  // oglądać
-  watch: {
-    re: /\b(oglądam|oglądasz|ogląda)\b/i,
-    type: 'object',
-    q: { '1': 'Co oglądam?', '2': 'Co oglądasz?', '3': n => `Co ogląda ${n}?` }
-  },
-  // grać (w … / na …)
-  playIn: {
-    re: /\b(gram|grasz|gra)\s+w\b/i,
-    type: 'object',
-    q: { '1': 'W co gram?', '2': 'W co grasz?', '3': n => `W co gra ${n}?` }
-  },
-  playOn: {
-    re: /\b(gram|grasz|gra)\s+na\b/i,
-    type: 'object',
-    q: { '1': 'Na czym gram?', '2': 'Na czym grasz?', '3': n => `Na czym gra ${n}?` }
-  },
-  // iść (preferuj czas; jeśli brak – dokąd)
-  go: {
-    re: /\b(idę|idziesz|idzie|idziemy)\b/i,
-    type: 'timePref',
-    q: { '1': 'Kiedy idę?', '2': 'Kiedy idziesz?', '3': n => `Kiedy idzie ${n}?` }
-  },
-  // siedzieć (preferuj miejsce)
-  sit: {
-    re: /\b(siedzę|siedzisz|siedzi)\b/i,
-    type: 'placePref',
-    q: { '1': 'Gdzie siedzę?', '2': 'Gdzie siedzisz?', '3': n => `Gdzie siedzi ${n}?` }
-  },
-  // uczyć się (obiekt = czego)
-  learn: {
-    re: /\b(uczę\s+się|uczysz\s+się|uczy\s+się)\b/i,
-    type: 'object',
-    q: { '1': 'Czego się uczę?', '2': 'Czego się uczysz?', '3': n => `Czego uczy się ${n}?` }
+/** Ekstrakcja dopełnienia po czasowniku (warianty: "gra w X" / "gra na Y") */
+function extractObjectAfterVerb(text, verbRe, opts = {}) {
+  const src = String(text);
+
+  // jeśli "gra na/ w" – wymuś odpowiednią prepozycję
+  if (opts.prep === 'na') {
+    const m = src.match(new RegExp(verbRe.source + "\\s+na\\s+([^.,;!?]*?)(?=(\\s+(w|we|na|do|przy|po|u|pod|o)\\b|,|\\.|$))", verbRe.flags));
+    if (m) return cleanAnswer(m[1] || '');
   }
-};
-const VERB_LIST = Object.values(V);
+  if (opts.prep === 'w') {
+    const m = src.match(new RegExp(verbRe.source + "\\s+w\\s+([^.,;!?]*?)(?=(\\s+(w|we|na|do|przy|po|u|pod|o)\\b|,|\\.|$))", verbRe.flags));
+    if (m) return cleanAnswer(m[1] || '');
+  }
 
-/* ---------------------- budowanie pytania wg osoby ---------------------- */
-function buildQuestion(verbEntry, person, name3=null) {
-  if (person === '3' && name3) return verbEntry.q['3'](name3);
-  if (person === '2' && verbEntry.q['2']) return verbEntry.q['2'];
-  return verbEntry.q['1'];
+  // ogólne: do pierwszej frazy dopełnienia, przed przyimkiem / przecinkiem / końcem
+  const m = src.match(new RegExp(verbRe.source + "\\s+([^.,;!?]*?)(?=(\\s+(w|we|na|do|przy|po|u|pod|o)\\b|,|\\.|$))", verbRe.flags));
+  if (!m) return null;
+  let obj = cleanAnswer(m[1] || '');
+  if (!obj) return null;
+
+  // jeżeli zaczyna się od przyimka, a pytamy o "Co …?" – spróbuj skrócić
+  if (/^(w|we|na|do|przy|o)\s+/i.test(obj) && !opts.allowPrepHead) {
+    // np. "o wulkanach" zostaw ("Co rysuję?" → "obrazek o wulkanach"), ale
+    // gdy było "w bibliotece" i pytanie o "Co czytam?" – to i tak obj będzie pusty wcześniej
+  }
+  return obj;
 }
 
-/* ---------------------- główna heurystyka ---------------------- */
+/* ---------- mapowanie czasowników ---------- */
+const VERBS = [
+  // 1./3. os. – obiekt (Co/Czego/W co/Na czym)
+  { re: /\b(czytam|czyta)\b/i,         type: 'object',  q1: 'Co czytam?',           q3: n => `Co czyta ${n}?` },
+  { re: /\b(pisz[ęe]|pisze)\b/i,       type: 'object',  q1: 'Co piszę?',            q3: n => `Co pisze ${n}?` },
+  { re: /\b(rysuj[ęe]|rysuje)\b/i,     type: 'object',  q1: 'Co rysuję?',           q3: n => `Co rysuje ${n}?` },
+  { re: /\b(gotuj[ęe]|gotuje)\b/i,     type: 'object',  q1: 'Co gotuję?',           q3: n => `Co gotuje ${n}?` },
+  { re: /\b(słucham|słucha)\b/i,       type: 'object',  q1: 'Czego słucham?',       q3: n => `Czego słucha ${n}?` },
+  // gra: rozróżnij "w" vs "na"
+  { re: /\b(gra[m]?|gra)\b/i,          type: 'object',  q1: 'W co gram?',           q3: n => `W co gra ${n}?`, special: 'gra' },
+  { re: /\b(jem|je)\b/i,               type: 'object',  q1: 'Co jem?',              q3: n => `Co je ${n}?` },
+  { re: /\b(pij[ęe]|pije)\b/i,         type: 'object',  q1: 'Co piję?',             q3: n => `Co pije ${n}?` },
+  { re: /\b(oglądam|ogląda)\b/i,       type: 'object',  q1: 'Co oglądam?',          q3: n => `Co ogląda ${n}?` },
+  { re: /\b(maluj[ęe]|maluje)\b/i,     type: 'object',  q1: 'Co maluję?',           q3: n => `Co maluje ${n}?` },
+  { re: /\b(buduje)\b/i,               type: 'object',  q1: 'Co buduję?',           q3: n => `Co buduje ${n}?` },
+  { re: /\b(naprawia)\b/i,             type: 'object',  q1: 'Co naprawiam?',        q3: n => `Co naprawia ${n}?` },
+  { re: /\b(wycina)\b/i,               type: 'object',  q1: 'Co wycinam?',          q3: n => `Co wycina ${n}?` },
+  { re: /\b(klei)\b/i,                 type: 'object',  q1: 'Co kleję?',            q3: n => `Co klei ${n}?` },
+  { re: /\b(przygotowuj[ęe]|przygotowuje)\b/i, type: 'object',  q1: 'Co przygotowuję?', q3: n => `Co przygotowuje ${n}?` },
+  // uczę się – "Czego się uczę?"
+  { re: /\b(uczę się|uczy się)\b/i,    type: 'object',  q1: 'Czego się uczę?',      q3: n => `Czego uczy się ${n}?` },
+
+  // preferencje czas/miejsce
+  { re: /\b(idę|idziemy|idzie)\b/i,    type: 'timePref', q1: 'Kiedy idę?',          q3: n => `Kiedy idzie ${n}?` },
+  { re: /\b(siedzę|siedzi)\b/i,        type: 'placePref', q1: 'Gdzie siedzę?',      q3: n => `Gdzie siedzi ${n}?` },
+];
+
+/* ---------- budowa pytania ---------- */
+function buildQuestion(verbEntry, isThird, nameIf3rd) {
+  return (isThird && nameIf3rd) ? verbEntry.q3(nameIf3rd) : verbEntry.q1;
+}
+
+/* ---------- rdzeń heurystyki ---------- */
 function comprehendHeuristic(textRaw, age) {
   const text = String(textRaw || '').trim();
-
-  // jaka osoba?
   const name3 = detectThirdPersonName(text);
-  const person = name3 ? '3' : (isSecondPerson(text) ? '2' : (isFirstPerson(text) ? '1' : '1'));
+  const isThird = !!name3;
 
-  for (const v of VERB_LIST) {
+  for (const v of VERBS) {
     const found = text.match(v.re);
     if (!found) continue;
 
-    // typ preferujący obiekt → próbuj wydobyć dopełnienie
-    if (v.type === 'object') {
-      let obj = extractObjectAfterVerb(text, v.re);
-
-      // obsługa „Nie X, tylko/lecz Y”
-      obj = pickContrastObject(text, obj);
-
-      // jeśli 'gram na …' / 'gram w …' – usuń wiodące przyimki z dopełnienia
-      if (obj) obj = obj.replace(/^(na|w)\s+/i, '').trim();
-
-      if (obj) {
-        // młodszym utnij ogony typu „… po południu”
-        if (Number(age) <= 7) obj = obj.replace(/\s+po\s+[^,.;!?]+$/i, '').trim();
-        return { question: buildQuestion(v, person, name3), answer: obj, fallback: false };
+    // "gra": wybierz "na czym" jeśli jest "gra na ..."
+    let prepped = null;
+    if (v.special === 'gra') {
+      if (/\bgra\s+na\b/i.test(text)) {
+        prepped = 'na';
+        // podmień treść pytania
+        const q = (isThird && name3) ? `Na czym gra ${name3}?` : 'Na czym gram?';
+        const a = extractObjectAfterVerb(text, v.re, { prep: 'na' });
+        if (a) return { question: q, answer: cleanAnswer(a), fallback: false };
+      } else if (/\bgra\s+w\b/i.test(text)) {
+        prepped = 'w';
       }
+    }
 
-      // brak dopełnienia → spróbuj czas/miejsce
+    if (v.type === 'object') {
+      const obj = extractObjectAfterVerb(text, v.re, prepped ? { prep: prepped } : {});
+      if (obj) {
+        let ans = cleanAnswer(obj);
+        if (Number(age) <= 7) ans = ans.replace(/\s+po\s+[^,.;!?]+$/i, '').trim();
+        return { question: buildQuestion(v, isThird, name3), answer: ans, fallback: false };
+      }
+      // brak dopełnienia → czas/miejsce
       const t = extractTime(text);
-      if (t) return { question: (person === '3' && name3) ? `Kiedy ${found[0].toLowerCase()} ${name3}?` : (person==='2' ? 'Kiedy to robisz?' : 'Kiedy to robię?'), answer: t, fallback: false };
+      if (t) return { question: isThird ? `Kiedy ${found[0].toLowerCase()} ${name3}?` : 'Kiedy to robię?', answer: t, fallback: false };
       const p = extractPlace(text);
-      if (p) return { question: (person === '3' && name3) ? `Gdzie ${found[0].toLowerCase()} ${name3}?` : (person==='2' ? 'Gdzie jestem?' : 'Gdzie jestem?'), answer: p, fallback: false };
-
-      return { question: (person==='2' ? 'O co chodzi w zdaniu?' : 'O co chodzi w zdaniu?'), answer: '', fallback: true };
+      if (p) return { question: isThird ? `Gdzie ${found[0].toLowerCase()} ${name3}?` : 'Gdzie jestem?', answer: p, fallback: false };
+      return { question: isThird ? `Gdzie to robi ${name3}?` : 'Gdzie to robię?', answer: extractPlace(text) || extractTime(text) || '', fallback: true };
     }
 
     if (v.type === 'timePref') {
       const t = extractTime(text);
-      if (t) return { question: buildQuestion(v, person, name3), answer: t, fallback: false };
+      if (t) return { question: buildQuestion(v, isThird, name3), answer: t, fallback: false };
       const p = extractPlace(text);
-      if (p) return { question: (person==='3'&&name3)?`Dokąd idzie ${name3}?`:(person==='2'?'Dokąd idziesz?':'Dokąd idę?'), answer: p, fallback: false };
-      return { question: buildQuestion(v, person, name3), answer: '', fallback: true };
+      if (p) return { question: isThird ? `Dokąd idzie ${name3}?` : 'Dokąd idę?', answer: p, fallback: false };
+      return { question: buildQuestion(v, isThird, name3), answer: '', fallback: true };
     }
 
     if (v.type === 'placePref') {
       const p = extractPlace(text);
-      if (p) return { question: buildQuestion(v, person, name3), answer: p, fallback: false };
+      if (p) return { question: buildQuestion(v, isThird, name3), answer: p, fallback: false };
       const t = extractTime(text);
-      if (t) return { question: (person==='3'&&name3)?`Kiedy siedzi ${name3}?`:(person==='2'?'Kiedy siedzisz?':'Kiedy siedzę?'), answer: t, fallback: false };
-      return { question: buildQuestion(v, person, name3), answer: '', fallback: true };
+      if (t) return { question: isThird ? `Kiedy siedzi ${name3}?` : 'Kiedy siedzę?', answer: t, fallback: false };
+      return { question: buildQuestion(v, isThird, name3), answer: '', fallback: true };
     }
   }
 
-  // ogólne próby: obiekt -> czas -> miejsce
-  const anyVerb = /\b(czytam|słucham|gram|jem|piję|piszę|rysuję|gotuję|oglądam|wycinam|kleię)\b/i;
-  const objTry = extractObjectAfterVerb(text, anyVerb);
-  if (objTry) return { question: (isSecondPerson(text)?'Co robisz?':'Co robię?'), answer: objTry, fallback: true };
+  // ogólny fallback
+  const objTry = extractObjectAfterVerb(text, /\b(czytam|słucham|gram|jem|pij[ęe]|pisz[ęe]|rysuj[ęe]|oglądam|maluj[ęe])\b/i);
+  if (objTry) return { question: 'Co robię?', answer: cleanAnswer(objTry), fallback: true };
   const t = extractTime(text);
-  if (t) return { question: (isSecondPerson(text)?'Kiedy to robisz?':'Kiedy to robię?'), answer: t, fallback: true };
+  if (t) return { question: 'Kiedy to robię?', answer: t, fallback: true };
   const p = extractPlace(text);
-  if (p) return { question: (isSecondPerson(text)?'Gdzie jesteś?':'Gdzie jestem?'), answer: p, fallback: true };
-
+  if (p) return { question: 'Gdzie jestem?', answer: p, fallback: true };
   return { question: 'O co chodzi w zdaniu?', answer: '', fallback: true };
 }
 
-/* ---------------------- LLM fallback do 3. os. (bez zmian) ---------------------- */
+/* ---------- prompt do LLM (zostaje bez zmian) ---------- */
 function buildQuestionPrompt({ text, age }) {
   const wiek = Number(age);
   const target =
@@ -1088,7 +1041,7 @@ WYMAGANIA DLA PYTANIA:
 - Po polsku, ${target}
 - Tylko o KONKRETNYM elemencie (czynność/miejsce/cel/obiekt/czas).
 - Dopuszczalne słowa pytające: Kto, Co, Gdzie, Kiedy, Po co, Czym. Preferuj Gdzie/Co/Po co/Kiedy.
-- Jeśli fragment jest w 1. lub 2. osobie, NIE używaj „Kto…?”. Zadaj „Gdzie/Dokąd/Co/Po co/Kiedy”.
+- Jeśli fragment jest w 1. osobie, NIE używaj „Kto…?”. Zadaj „Gdzie/Dokąd/Co/Po co/Kiedy”.
 - Zakończ „?”.
 
 ZAKAZY:
@@ -1111,19 +1064,18 @@ app.post('/agent/comprehend', async (req, res) => {
     const { text = '', age } = req.body || {};
     if (!text.trim()) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
-    // 1) Heurystyka (1./2./3. os., więcej czasowników, negacje, lepsze TIME)
+    // 1) Heurystyka
     const h = comprehendHeuristic(text, age);
-
-    if (endsWithQuestionMark(h.question) && h.answer && answerWordCount(h.answer) <= 8) {
+    if (endsWithQuestionMark(h.question) && h.answer && answerWordCount(h.answer) <= 6) {
       return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
     }
 
-    // 2) LLM jako wsparcie (gdy heurystyka nie wystarczy)
+    // 2) Wspomaganie LLM + weryfikacja
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
     const j1 = extractJSON(out) || {};
     let question = (j1.question || '').trim().replace(/[„”"']/g, '');
-    let answer   = (j1.answer   || '').trim().replace(/[„”"']/g, '');
+    let answer   = cleanAnswer((j1.answer   || '').trim().replace(/[„”"']/g, ''));
 
     const BAD1 = !question || !answer || !endsWithQuestionMark(question) ||
                  isGenericQuestion(question) || isDefinitionQuestion(question) ||
@@ -1131,11 +1083,11 @@ app.post('/agent/comprehend', async (req, res) => {
 
     if (BAD1) {
       const retry = buildQuestionPrompt({ text, age }) +
-        `\nUWAGA: Poprzednio naruszono zasady. Odpowiedź musi być DOSŁOWNIE z fragmentu (≤6 słów). Zwróć nowy JSON.`;
+        `\nUWAGA: Odpowiedź musi być DOSŁOWNIE z fragmentu (≤6 słów) i bez czasownika typu „czytam/piszę”. Zwróć nowy JSON.`;
       const out2 = await raceLLM({ prompt: retry, max_tokens: 160, temperature: 0.2 });
       const j2 = extractJSON(out2) || {};
       question = (j2.question || question || '').trim().replace(/[„”"']/g, '');
-      answer   = (j2.answer   || answer   || '').trim().replace(/[„”"']/g, '');
+      answer   = cleanAnswer((j2.answer   || answer   || '').trim().replace(/[„”"']/g, ''));
     }
 
     const BAD2 = !question || !answer || !endsWithQuestionMark(question) ||
@@ -1143,14 +1095,10 @@ app.post('/agent/comprehend', async (req, res) => {
                  answerWordCount(answer) > 6 || !answerIsExtractive(text, answer);
 
     if (BAD2) {
-      // miękki fallback
-      const t = extractTime(text);
-      const p = extractPlace(text);
-      const obj = extractObjectAfterVerb(text, /\b(czytam|słucham|gram|jem|piję|piszę|rysuję|gotuję|oglądam|wycinam|kleię)\b/i);
-      if (obj) return res.json({ ok: true, question: 'Co robię?', answer: obj, fallback: true });
-      if (t)   return res.json({ ok: true, question: 'Kiedy to robię?', answer: t, fallback: true });
-      if (p)   return res.json({ ok: true, question: 'Gdzie jestem?', answer: p, fallback: true });
-      return res.json({ ok: true, question: 'O co chodzi w zdaniu?', answer: '', fallback: true });
+      const hh = comprehendHeuristic(text, age);
+      const q = endsWithQuestionMark(hh.question) ? hh.question : 'Gdzie to się dzieje?';
+      const a = cleanAnswer(hh.answer || extractPlace(text) || extractTime(text) || '');
+      return res.json({ ok: true, question: q, answer: a, fallback: true });
     }
 
     return res.json({ ok: true, question, answer, fallback: false });
@@ -1159,7 +1107,7 @@ app.post('/agent/comprehend', async (req, res) => {
     return res.status(200).json({
       ok: true,
       question: 'Gdzie to się dzieje?',
-      answer: extractPlace(String(req.body?.text || '')) || extractTime(String(req.body?.text || '')) || '',
+      answer: cleanAnswer(extractPlace(String(req.body?.text || '')) || extractTime(String(req.body?.text || '')) || ''),
       fallback: true
     });
   }
