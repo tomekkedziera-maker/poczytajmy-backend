@@ -871,20 +871,20 @@ function extractPlace(text) {
   return m[0].trim().replace(/[.]+$/, "");
 }
 
-// mapowanie czasowników
+// mapowanie czasowników (bez grup wyłapujących!)
 const VERBS = [
-  { re: /\b(czytam)\b/i,  type: 'object', q1: 'Co czytam?', q3: (n)=>`Co czyta ${n}?` },
-  { re: /\b(czyta)\b/i,   type: 'object', q1: 'Co czytam?', q3: (n)=>`Co czyta ${n}?` },
-  { re: /\b(słucham)\b/i, type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
-  { re: /\b(słucha)\b/i,  type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
-  { re: /\b(gram)\b/i,    type: 'object', q1: 'W co gram?', q3: (n)=>`W co gra ${n}?` },
-  { re: /\b(gra)\b/i,     type: 'object', q1: 'W co gram?', q3: (n)=>`W co gra ${n}?` },
-  { re: /\b(jem)\b/i,     type: 'object', q1: 'Co jem?', q3: (n)=>`Co je ${n}?` },
-  { re: /\b(je)\b/i,      type: 'object', q1: 'Co jem?', q3: (n)=>`Co je ${n}?` },
-  { re: /\b(piję)\b/i,    type: 'object', q1: 'Co piję?', q3: (n)=>`Co pije ${n}?` },
-  { re: /\b(pije)\b/i,    type: 'object', q1: 'Co piję?', q3: (n)=>`Co pije ${n}?` },
-  { re: /\b(idę|idziemy|idzie)\b/i, type: 'timePref', q1: 'Kiedy idę?', q3: (n)=>`Kiedy idzie ${n}?` },
-  { re: /\b(siedzę|siedzi)\b/i,     type: 'placePref', q1: 'Gdzie siedzę?', q3: (n)=>`Gdzie siedzi ${n}?` },
+  { re: /\bczytam\b/i,  type: 'object', q1: 'Co czytam?', q3: (n)=>`Co czyta ${n}?` },
+  { re: /\bczyta\b/i,   type: 'object', q1: 'Co czytam?', q3: (n)=>`Co czyta ${n}?` },
+  { re: /\bsłucham\b/i, type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
+  { re: /\bsłucha\b/i,  type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
+  { re: /\bgram\b/i,    type: 'object', q1: 'W co gram?', q3: (n)=>`W co gra ${n}?` },
+  { re: /\bgra\b/i,     type: 'object', q1: 'W co gram?', q3: (n)=>`W co gra ${n}?` },
+  { re: /\bjem\b/i,     type: 'object', q1: 'Co jem?', q3: (n)=>`Co je ${n}?` },
+  { re: /\bje\b/i,      type: 'object', q1: 'Co jem?', q3: (n)=>`Co je ${n}?` },
+  { re: /\bpiję\b/i,    type: 'object', q1: 'Co piję?', q3: (n)=>`Co pije ${n}?` },
+  { re: /\bpije\b/i,    type: 'object', q1: 'Co piję?', q3: (n)=>`Co pije ${n}?` },
+  { re: /\bidę|idziemy|idzie\b/i, type: 'timePref',  q1: 'Kiedy idę?',   q3: (n)=>`Kiedy idzie ${n}?` },
+  { re: /\bsiedzę|siedzi\b/i,     type: 'placePref', q1: 'Gdzie siedzę?', q3: (n)=>`Gdzie siedzi ${n}?` },
 ];
 
 function buildQuestion(verbEntry, isThird, nameIf3rd) {
