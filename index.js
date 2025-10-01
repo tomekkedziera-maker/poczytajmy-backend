@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
@@ -75,10 +75,10 @@ async function acquire() { while (inflight >= MAX_CONCURRENCY) await sleep(40); 
 function release() { inflight = Math.max(0, inflight - 1); }
 
 const WHITELIST =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZÄ„Ä†ÄĹĹĂ“ĹšĹąĹ»' +
-  'abcdefghijklmnopqrstuvwxyzÄ…Ä‡Ä™Ĺ‚Ĺ„ĂłĹ›ĹşĹĽ' +
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZĄĆĘŁŃÓŚŹŻ' +
+  'abcdefghijklmnopqrstuvwxyząćęłńóśźż' +
   '0123456789' +
-  ' .,:;!?â€žâ€ť"\'()-â€“â€”/\\[]{}â€¦';
+  ' .,:;!?„”"\'()-–—/\\[]{}…';
 
 async function preprocess(buffer) {
   let img = sharp(buffer)
@@ -120,7 +120,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.15-redeploy' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.13-firstperson-heuristics' });
 });
 
 // Prosty root
@@ -133,9 +133,9 @@ app.get('/', (_req, res) => {
       <ul>
         <li>POST <code>/agent/generate-greeting</code></li>
         <li>POST <code>/agent/generate-text</code></li>
-        <li>POST <code>/agent/comprehend</code> âś… pytanie+klucz</li>
-        <li>POST <code>/agent/check-answer-voice</code> âś… ocena+feedback</li>
-        <li>POST <code>/agent/check-answer-text</code> âś… ocena+feedback (tekst)</li>
+        <li>POST <code>/agent/comprehend</code> ✅ pytanie+klucz</li>
+        <li>POST <code>/agent/check-answer-voice</code> ✅ ocena+feedback</li>
+        <li>POST <code>/agent/check-answer-text</code> ✅ ocena+feedback (tekst)</li>
         <li>POST <code>/asr</code>, <code>/ocr</code></li>
       </ul>
     </body></html>
@@ -275,26 +275,26 @@ app.post('/asr', upload.single('audio'), async (req, res) => {
   }
 });
 
-/* ===================== AGENT POWITAĹ ===================== */
+/* ===================== AGENT POWITAŃ ===================== */
 
 const HERO_THEMES = {
-  'MiĹ›': 'przytulny i cierpliwy, kocha bajki na dobranoc',
-  'LabuĹ›': 'energiczny i wesoĹ‚y, lubi ksiÄ…ĹĽki przygodowe',
-  'KrĂłliczek': 'ciekawski i szybki, uwielbia zagadki w opowieĹ›ciach',
-  'JeĹĽyk': 'ostroĹĽny i mÄ…dry, kocha opowieĹ›ci z moraĹ‚em'
+  'Miś': 'przytulny i cierpliwy, kocha bajki na dobranoc',
+  'Labuś': 'energiczny i wesoły, lubi książki przygodowe',
+  'Króliczek': 'ciekawski i szybki, uwielbia zagadki w opowieściach',
+  'Jeżyk': 'ostrożny i mądry, kocha opowieści z morałem'
 };
 
 const READING_TOPICS = [
-  'ksiÄ…ĹĽki peĹ‚ne magii i zaklÄ™Ä‡',
-  'czytanie bajek na gĹ‚os',
-  'szukanie nowych sĹ‚Ăłw w opowiadaniu',
-  'przeĹĽywanie przygĂłd z bohaterami ksiÄ…ĹĽek',
+  'książki pełne magii i zaklęć',
+  'czytanie bajek na głos',
+  'szukanie nowych słów w opowiadaniu',
+  'przeżywanie przygód z bohaterami książek',
   'poznawanie liter i sylab',
-  'czytanie komiksĂłw z obrazkami',
+  'czytanie komiksów z obrazkami',
   'odkrywanie tajemnic w bibliotece',
-  'pisanie wĹ‚asnej bajki po przeczytaniu ksiÄ…ĹĽki',
-  'czytanie rozdziaĹ‚Ăłw z przygodami',
-  'opowiadanie przeczytanej historii przyjacioĹ‚om'
+  'pisanie własnej bajki po przeczytaniu książki',
+  'czytanie rozdziałów z przygodami',
+  'opowiadanie przeczytanej historii przyjaciołom'
 ];
 
 function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
@@ -302,7 +302,7 @@ function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 function normalize(text) {
   return (text || '')
     .toLowerCase()
-    .replace(/[â€žâ€ť"!?.,;:()\-\â€“â€”[\]{}â€¦]/g, '')
+    .replace(/[„”"!?.,;:()\-\–—[\]{}…]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -325,33 +325,33 @@ function chooseMostNovel(cands, history) {
   return best || cands[0] || '';
 }
 
-function buildGreetingPrompt({ age, character = 'TwĂłj przyjaciel', theme = '', n = 12 }) {
+function buildGreetingPrompt({ age, character = 'Twój przyjaciel', theme = '', n = 12 }) {
   const wiek = Number.isFinite(age) ? age : 'X';
   const tone =
     Number.isFinite(age) && age <= 5
-      ? 'proste, ciepĹ‚e, zabawowe; rytm mowy dziecka; onomatopeje OK'
+      ? 'proste, ciepłe, zabawowe; rytm mowy dziecka; onomatopeje OK'
       : Number.isFinite(age) && age <= 8
-      ? 'ĹĽywe, motywujÄ…ce; mini-misja; 1â€“2 emoji'
-      : 'pewne, partnerskie; cel, sprawczoĹ›Ä‡; max 1â€“2 emoji';
+      ? 'żywe, motywujące; mini-misja; 1–2 emoji'
+      : 'pewne, partnerskie; cel, sprawczość; max 1–2 emoji';
 
   const heroHint = theme ? `Delikatny klimat bohatera: ${theme}.` : '';
   const chosenTopic = pick(READING_TOPICS);
 
-  return `WymyĹ›l ${n} ZUPEĹNIE rĂłĹĽnych, krĂłtkich powitaĹ„ po polsku dla dziecka (wiek: ${wiek}).
-MĂłwi ${character}. Styl: ${tone}. ${heroHint}
+  return `Wymyśl ${n} ZUPEŁNIE różnych, krótkich powitań po polsku dla dziecka (wiek: ${wiek}).
+Mówi ${character}. Styl: ${tone}. ${heroHint}
 Temat przewodni: ${chosenTopic}.
 
-âšˇ KaĹĽde powitanie MUSI odnosiÄ‡ siÄ™ do czytania i ksiÄ…ĹĽek, np. sĹ‚owa: ksiÄ…ĹĽka, czytanie, rozdziaĹ‚, bajka, historia, sylaba, sĹ‚owo, zdanie, ilustracje, narrator, zakĹ‚adka, biblioteka, ksiÄ™garnia, opowieĹ›Ä‡, litery.
-âšˇ NIE uĹĽywaj motywĂłw typu: las, bieganie, sport, piknik, podrĂłĹĽe â€” tylko Ĺ›wiat ksiÄ…ĹĽek.
-âšˇ Zakaz: nie uĹĽywaj sĹ‚Ăłw powitalnych (czeĹ›Ä‡, hej, witaj, siema, halo) oraz NIE uĹĽywaj imienia dziecka w ĹĽadnej formie.
+⚡ Każde powitanie MUSI odnosić się do czytania i książek, np. słowa: książka, czytanie, rozdział, bajka, historia, sylaba, słowo, zdanie, ilustracje, narrator, zakładka, biblioteka, księgarnia, opowieść, litery.
+⚡ NIE używaj motywów typu: las, bieganie, sport, piknik, podróże — tylko świat książek.
+⚡ Zakaz: nie używaj słów powitalnych (cześć, hej, witaj, siema, halo) oraz NIE używaj imienia dziecka w żadnej formie.
 
-đź“š PrzykĹ‚ady:
-- DziĹ› razem odkryjemy nowy rozdziaĹ‚ bajki. đź“–
-- Zajrzymy do ksiÄ…ĹĽki peĹ‚nej czarodziejskich sĹ‚Ăłw. âś¨
-- Sprawdzimy, ile sylab ma najdĹ‚uĹĽsze sĹ‚owo w opowieĹ›ci. đźš€
+📚 Przykłady:
+- Dziś razem odkryjemy nowy rozdział bajki. 📖
+- Zajrzymy do książki pełnej czarodziejskich słów. ✨
+- Sprawdzimy, ile sylab ma najdłuższe słowo w opowieści. 🚀
 
-Zasady: jedno zdanie, 6â€“14 wyrazĂłw, bez cudzysĹ‚owĂłw i bez wstÄ™pĂłw.
-KaĹĽde powitanie w osobnej linii poprzedzone myĹ›lnikiem "- ".`;
+Zasady: jedno zdanie, 6–14 wyrazów, bez cudzysłowów i bez wstępów.
+Każde powitanie w osobnej linii poprzedzone myślnikiem "- ".`;
 }
 
 function parseList(text) {
@@ -368,10 +368,10 @@ function parseList(text) {
   return uniq.slice(0, 20);
 }
 
-const FORBIDDEN_HELLOS = ['czeĹ›Ä‡', 'hej', 'witaj', 'siema', 'halo'];
+const FORBIDDEN_HELLOS = ['cześć', 'hej', 'witaj', 'siema', 'halo'];
 function sanitizeNoName(name, raw) {
   let s = (raw || '').trim();
-  const helloRe = new RegExp(`^\\s*(?:${FORBIDDEN_HELLOS.join('|')})\\b[\\p{L}\\p{M}\\s,!.?â€“â€”-]*`, 'iu');
+  const helloRe = new RegExp(`^\\s*(?:${FORBIDDEN_HELLOS.join('|')})\\b[\\p{L}\\p{M}\\s,!.?–—-]*`, 'iu');
   s = s.replace(helloRe, '').trim();
   if (name) {
     const forms = [name, `${name}u`, `${name}o`, `${name}e`, `${name}a`, `${name}ku`];
@@ -379,7 +379,7 @@ function sanitizeNoName(name, raw) {
     const nameRe = new RegExp(`\\b(?:${escaped.join('|')})\\b[\\s,!.?]*`, 'giu');
     s = s.replace(nameRe, '').trim();
   }
-  s = s.replace(/^[,â€“â€”\-|:;!.\s]+/u, '').trim();
+  s = s.replace(/^[,–—\-|:;!.\s]+/u, '').trim();
   return s;
 }
 
@@ -447,7 +447,7 @@ async function generateGreetingV2({ name, age, character, theme }) {
 
 app.post('/agent/generate-greeting', async (req, res) => {
   try {
-    const { name = '', age, character = 'TwĂłj przyjaciel' } = req.body || {};
+    const { name = '', age, character = 'Twój przyjaciel' } = req.body || {};
     const theme = HERO_THEMES[character] || '';
     const { text, source } = await generateGreetingV2({ name, age, character, theme });
     res.json({ ok: true, text, source });
@@ -463,17 +463,17 @@ app.post('/agent/generate-greeting', async (req, res) => {
 
 function bucketToneByAge(age) {
   const a = Number(age);
-  if (Number.isFinite(a) && a <= 5) return 'bardzo prosto, ciepĹ‚o, Ĺ‚agodnie; krĂłtkie sĹ‚owa; 1 emoji max';
-  if (Number.isFinite(a) && a <= 8) return 'prosto, energicznie, wspierajÄ…co; mini-sugestia co poprawiÄ‡; 1 emoji max';
+  if (Number.isFinite(a) && a <= 5) return 'bardzo prosto, ciepło, łagodnie; krótkie słowa; 1 emoji max';
+  if (Number.isFinite(a) && a <= 8) return 'prosto, energicznie, wspierająco; mini-sugestia co poprawić; 1 emoji max';
   return 'partnersko, konkretnie, z uznaniem; 1 emoji max';
 }
 
 function rubricByAccuracy(acc) {
   const s = Math.max(0, Math.min(100, Math.round(acc || 0)));
-  if (s >= 95) return 'wynik Ĺ›wietny; podkreĹ›l perfekcjÄ™ i zaproponuj trudniejsze sĹ‚owo przy nastÄ™pnej stronie';
-  if (s >= 80) return 'wynik bardzo dobry; pochwal pĹ‚ynnoĹ›Ä‡ i zaproponuj jednÄ… mikro-radÄ™ (np. dokĹ‚adniej koĹ„cĂłwki)';
-  if (s >= 60) return 'wynik dobry; pochwal staranie i podaj jednÄ… prostÄ… wskazĂłwkÄ™ (np. wolniej, sylabizuj trudniejsze sĹ‚owa)';
-  return 'wynik na rozgrzewkÄ™; skup siÄ™ na zachÄ™cie i jednej mini-radzie (np. przeczytaj zdanie jeszcze raz spokojnie)';
+  if (s >= 95) return 'wynik świetny; podkreśl perfekcję i zaproponuj trudniejsze słowo przy następnej stronie';
+  if (s >= 80) return 'wynik bardzo dobry; pochwal płynność i zaproponuj jedną mikro-radę (np. dokładniej końcówki)';
+  if (s >= 60) return 'wynik dobry; pochwal staranie i podaj jedną prostą wskazówkę (np. wolniej, sylabizuj trudniejsze słowa)';
+  return 'wynik na rozgrzewkę; skup się na zachęcie i jednej mini-radzie (np. przeczytaj zdanie jeszcze raz spokojnie)';
 }
 
 function buildMotivationPrompt({ age, accuracy, text, characterName = 'Bohater', lang = 'pl' }) {
@@ -482,31 +482,31 @@ function buildMotivationPrompt({ age, accuracy, text, characterName = 'Bohater',
   const excerpt = trimUserContent(text || '', 220);
 
   return `
-JesteĹ› ${characterName} z aplikacji do nauki czytania dla dzieci. Twoje zadanie:
-napisz 1 krĂłtki komentarz motywacyjny po polsku (${lang}), dopasowany do wieku dziecka i jakoĹ›ci czytania.
+Jesteś ${characterName} z aplikacji do nauki czytania dla dzieci. Twoje zadanie:
+napisz 1 krótki komentarz motywacyjny po polsku (${lang}), dopasowany do wieku dziecka i jakości czytania.
 
 Zasady stylu:
 - Styl: ${tone}.
 - ${rubric}.
-- Maks. 160 znakĂłw. 1 zdanie (wyjÄ…tkowo 2 bardzo krĂłtkie).
-- Brak cudzysĹ‚owĂłw i nawiasĂłw. Bez liczb procentowych ani ocen wprost.
-- MĂłw do dziecka w 2. osobie (â€žczytaszâ€ť, â€ždasz radÄ™â€ť), NIE uĹĽywaj imienia dziecka.
-- UĹĽyj co najwyĹĽej 1 emoji (opcjonalnie).
+- Maks. 160 znaków. 1 zdanie (wyjątkowo 2 bardzo krótkie).
+- Brak cudzysłowów i nawiasów. Bez liczb procentowych ani ocen wprost.
+- Mów do dziecka w 2. osobie („czytasz”, „dasz radę”), NIE używaj imienia dziecka.
+- Użyj co najwyżej 1 emoji (opcjonalnie).
 
-Kontekst (fragment przeczytanego tekstu â€“ opcjonalnie moĹĽesz nawiÄ…zaÄ‡ ogĂłlnie, bez cytowania):
+Kontekst (fragment przeczytanego tekstu – opcjonalnie możesz nawiązać ogólnie, bez cytowania):
 "${excerpt}"
 
-Podaj tylko gotowÄ… wypowiedĹş.`.trim();
+Podaj tylko gotową wypowiedź.`.trim();
 }
 
 function tightenMotivation(s, maxChars = 160) {
   if (!s) return s;
   s = String(s)
-    .replace(/[\"â€śâ€ťâ€žâ€ť'()]/g, '')
+    .replace(/[\"“”„”'()]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  s = s.replace(/[Â«Â»â€žâ€ť"'].*?[Â«Â»â€žâ€ť"']/g, '').replace(/\s+/g, ' ').trim();
-  const parts = s.split(/(?<=[.!?â€¦])\s+/).filter(Boolean);
+  s = s.replace(/[«»„”"'].*?[«»„”"']/g, '').replace(/\s+/g, ' ').trim();
+  const parts = s.split(/(?<=[.!?…])\s+/).filter(Boolean);
   s = parts.slice(0, 2).join(' ').trim();
   const emojiRe = /[\p{Extended_Pictographic}\uFE0F]/gu;
   let seen = 0;
@@ -514,7 +514,7 @@ function tightenMotivation(s, maxChars = 160) {
   if (s.length > maxChars) {
     s = s.slice(0, maxChars).replace(/\s+\S*$/, '').trim();
   }
-  if (!/[.!?â€¦]$/.test(s)) s += '.';
+  if (!/[.!?…]$/.test(s)) s += '.';
   return s;
 }
 
@@ -544,7 +544,7 @@ async function generateMotivation({ age, accuracy, text, characterName, lang = '
 
   const winner = await withDeadline(Promise.any(racers), DEADLINE_MS);
   let out = String(winner.text || '').trim();
-  out = out.replace(/^["'â€žâ€ť]+|["'â€žâ€ť]+$/g, '').trim();
+  out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
   out = tightenMotivation(out, 160);
   if (!out) throw new Error('EMPTY_MOTIVATION');
   return { text: out, source: winner.provider || 'unknown' };
@@ -575,31 +575,31 @@ app.post('/agent/motivate', async (req, res) => {
     return res.status(502).json({
       ok: false,
       error: String(err?.message || err),
-      fallback: 'Ĺšwietna prĂłba! Z kaĹĽdÄ… stronÄ… bÄ™dzie coraz lepiej â€” sprĂłbujmy jeszcze raz! đź’Ş'
+      fallback: 'Świetna próba! Z każdą stroną będzie coraz lepiej — spróbujmy jeszcze raz! 💪'
     });
   }
 });
 
-/* ===================== GENERATOR ZDAĹ DO CZYTANIA ===================== */
+/* ===================== GENERATOR ZDAŃ DO CZYTANIA ===================== */
 
 const BANK_A1 = [
-  "Ala ma kota i lubi czytaÄ‡ bajki wieczorem.",
-  "MiĹ› je miodek, a potem sĹ‚ucha krĂłtkiej opowieĹ›ci.",
-  "PiĹ‚ka leĹĽy na trawie, a Julek czyta na Ĺ‚awce.",
-  "Pies biegnie do domu, gdzie czeka nowa ksiÄ…ĹĽka.",
-  "SĹ‚oĹ„ce Ĺ›wieci jasno, a my czytamy w ogrodzie."
+  "Ala ma kota i lubi czytać bajki wieczorem.",
+  "Miś je miodek, a potem słucha krótkiej opowieści.",
+  "Piłka leży na trawie, a Julek czyta na ławce.",
+  "Pies biegnie do domu, gdzie czeka nowa książka.",
+  "Słońce świeci jasno, a my czytamy w ogrodzie."
 ];
 const BANK_A2 = [
-  "W ogrodzie rosnÄ… kwiaty, a my czytamy o motylach.",
-  "Kasia czyta ksiÄ…ĹĽkÄ™ o zwierzÄ™tach i szuka trudnych sĹ‚Ăłw.",
-  "Na spacerze opowiadamy historiÄ™ o maĹ‚ej latarni morskiej.",
-  "Po poĹ‚udniu wybieramy rozdziaĹ‚ o odwaĹĽnym krĂłliku."
+  "W ogrodzie rosną kwiaty, a my czytamy o motylach.",
+  "Kasia czyta książkę o zwierzętach i szuka trudnych słów.",
+  "Na spacerze opowiadamy historię o małej latarni morskiej.",
+  "Po południu wybieramy rozdział o odważnym króliku."
 ];
 const BANK_B1 = [
-  "ChoÄ‡ padaĹ‚ deszcz, przeczytaliĹ›my rozdziaĹ‚ o podrĂłĹĽy po mapie.",
-  "LubiÄ™ zagadki, bo rozwijajÄ… wyobraĹşniÄ™ i pomagajÄ… w czytaniu.",
-  "Z zachwytem Ĺ›ledziĹ‚em, jak narrator opisuje lot kolorowego motyla.",
-  "Po kolacji wspĂłlnie czytamy i planujemy jutrzejszÄ… przygodÄ™."
+  "Choć padał deszcz, przeczytaliśmy rozdział o podróży po mapie.",
+  "Lubię zagadki, bo rozwijają wyobraźnię i pomagają w czytaniu.",
+  "Z zachwytem śledziłem, jak narrator opisuje lot kolorowego motyla.",
+  "Po kolacji wspólnie czytamy i planujemy jutrzejszą przygodę."
 ];
 function bankByLevel(level = "A1") {
   const L = String(level).toUpperCase();
@@ -609,45 +609,45 @@ function bankByLevel(level = "A1") {
 }
 
 function onlyOneSentence(s) {
-  const parts = String(s).split(/(?<=[.!?â€¦])\s+/).filter(Boolean);
+  const parts = String(s).split(/(?<=[.!?…])\s+/).filter(Boolean);
   return (parts[0] || s).trim();
 }
 function cleanSentence(s) {
   let out = String(s)
-    .replace(/[â€žâ€ť"â€śâ€ť'()Â«Â»]/g, "")
+    .replace(/[„”"“”'()«»]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   out = onlyOneSentence(out);
-  if (!/[.!?â€¦]$/.test(out)) out += ".";
+  if (!/[.!?…]$/.test(out)) out += ".";
   return out;
 }
 function countWords(s) {
   return (String(s).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
 }
 const PROFANITY = [
-  "kurwa","cholera","debil","idiota","gĹ‚upi","szmata",
-  "pedaĹ‚","lesba","spier","nienawidzÄ™","zabij","Ĺ›mierÄ‡"
+  "kurwa","cholera","debil","idiota","głupi","szmata",
+  "pedał","lesba","spier","nienawidzę","zabij","śmierć"
 ];
 function hasForbidden(s) {
   const low = String(s).toLowerCase();
   return PROFANITY.some(p => low.includes(p));
 }
 function hasPolishDiacritics(s) {
-  return /[Ä…Ä‡Ä™Ĺ‚Ĺ„ĂłĹ›ĹşĹĽ]/i.test(String(s));
+  return /[ąćęłńóśźż]/i.test(String(s));
 }
 function validateKidsSentencePL(s, { minWords=8, maxWords=16 } = {}) {
   const issues = [];
   const txt = cleanSentence(onlyOneSentence(s));
   const words = countWords(txt);
   if (words < minWords || words > maxWords) {
-    issues.push(`Liczba sĹ‚Ăłw ${words} poza zakresem ${minWords}â€“${maxWords}.`);
+    issues.push(`Liczba słów ${words} poza zakresem ${minWords}–${maxWords}.`);
   }
-  if (hasForbidden(txt)) issues.push("SĹ‚owa niedozwolone.");
-  if (!hasPolishDiacritics(txt)) issues.push("Brak polskich znakĂłw.");
+  if (hasForbidden(txt)) issues.push("Słowa niedozwolone.");
+  if (!hasPolishDiacritics(txt)) issues.push("Brak polskich znaków.");
   const tokens = (txt.match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []);
-  const long = tokens.filter(w => w.replace(/[^a-zÄ…Ä‡Ä™Ĺ‚Ĺ„ĂłĹ›ĹşĹĽ-]/gi,"").length > 12).length;
+  const long = tokens.filter(w => w.replace(/[^a-ząćęłńóśźż-]/gi,"").length > 12).length;
   const ratio = tokens.length ? long / tokens.length : 0;
-  if (tokens.length > 24 || ratio > 0.4) issues.push("Zbyt trudne lub nienaturalne sĹ‚ownictwo.");
+  if (tokens.length > 24 || ratio > 0.4) issues.push("Zbyt trudne lub nienaturalne słownictwo.");
   return { ok: issues.length === 0, issues, text: txt };
 }
 
@@ -655,10 +655,10 @@ async function correctPolishSentence(raw) {
   const prompt = `
 Popraw zdanie dla dziecka w wieku wczesnoszkolnym.
 Zasady:
-- Jedno zdanie po polsku, 8â€“16 sĹ‚Ăłw.
-- Proste, naturalne, bez ĹĽargonu i cudzysĹ‚owĂłw.
-- Popraw ortografiÄ™ i interpunkcjÄ™.
-ZwrĂłÄ‡ tylko gotowe zdanie.
+- Jedno zdanie po polsku, 8–16 słów.
+- Proste, naturalne, bez żargonu i cudzysłowów.
+- Popraw ortografię i interpunkcję.
+Zwróć tylko gotowe zdanie.
 Tekst:
 ${raw}`.trim();
 
@@ -691,13 +691,13 @@ app.post("/agent/generate-text", async (req, res) => {
     const { language = "pl", level = "A1" } = req.body || {};
 
     const prompt =
-`Napisz jedno proste zdanie po polsku na poziomie ${String(level).toUpperCase()} do gĹ‚oĹ›nego czytania przez dziecko.
+`Napisz jedno proste zdanie po polsku na poziomie ${String(level).toUpperCase()} do głośnego czytania przez dziecko.
 Wymagania:
-- Jedno zdanie (8â€“16 sĹ‚Ăłw), naturalne i poprawne.
-- SĹ‚ownictwo codzienne, bez ĹĽargonu i neologizmĂłw.
-- Zero przemocy, straszenia, polityki, chorĂłb.
-- Brak cudzysĹ‚owĂłw i nawiasĂłw.
-- UĹĽywaj peĹ‚nych polskich znakĂłw.
+- Jedno zdanie (8–16 słów), naturalne i poprawne.
+- Słownictwo codzienne, bez żargonu i neologizmów.
+- Zero przemocy, straszenia, polityki, chorób.
+- Brak cudzysłowów i nawiasów.
+- Używaj pełnych polskich znaków.
 Podaj tylko gotowe zdanie.`;
 
     const racers = [];
@@ -753,11 +753,11 @@ app.post("/generate-text", (req, res) => {
 app.post('/ocr', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'NO_FILE' });
-    if (process.env.MOCK_OCR === '1') return res.json({ ok: true, text: 'PrzykĹ‚adowy tekst z OCR.' });
+    if (process.env.MOCK_OCR === '1') return res.json({ ok: true, text: 'Przykładowy tekst z OCR.' });
 
     if (process.env.USE_OPENAI_OCR === '1' && openai) {
       const b64 = `data:image/jpeg;base64,${req.file.buffer.toString('base64')}`;
-      const prompt = 'WyodrÄ™bnij czysty tekst z obrazu (po polsku). ZwrĂłÄ‡ tylko tekst.';
+      const prompt = 'Wyodrębnij czysty tekst z obrazu (po polsku). Zwróć tylko tekst.';
       const resp = await openai.responses.create({
         model: 'gpt-4o-mini',
         input: [{ role: 'user', content: [
@@ -901,10 +901,10 @@ app.post('/tts-openai', async (req, res) => {
 });
 
 /* ===================================================================== */
-/* =====================  QUIZ / COMPREHEND â€“ NOWE  ==================== */
+/* =====================  QUIZ / COMPREHEND – NOWE  ==================== */
 /* ===================================================================== */
 
-// uniwersalny wyĹ›cig LLM (zwraca tekst)
+// uniwersalny wyścig LLM (zwraca tekst)
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const racers = [];
   if (process.env.GROQ_API_KEY) {
@@ -935,14 +935,14 @@ function extractJSON(s) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
-// pomocnicze walidacje pytaĹ„/odpowiedzi
+// pomocnicze walidacje pytań/odpowiedzi
 function isGenericQuestion(q = '') {
   const s = String(q).toLowerCase();
-  return /opowiedz.*jednym zdaniem|co.*zapamiÄ™ta|o czym byĹ‚|co siÄ™ wydarzyĹ‚o|streĹ›Ä‡|podsumuj/.test(s);
+  return /opowiedz.*jednym zdaniem|co.*zapamięta|o czym był|co się wydarzyło|streść|podsumuj/.test(s);
 }
 function isDefinitionQuestion(q='') {
   const s = String(q).toLowerCase();
-  return /\bkim jest\b|\bkim byĹ‚\b|\bco to jest\b|\bczym jest\b/.test(s);
+  return /\bkim jest\b|\bkim był\b|\bco to jest\b|\bczym jest\b/.test(s);
 }
 function answerWordCount(a = '') {
   return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
@@ -952,7 +952,7 @@ function endsWithQuestionMark(q = '') {
 }
 function isFirstPersonText(t = '') {
   const s = String(t).toLowerCase();
-  return /\b(ja|mnie|mi|mnÄ…|mĂłj|moja|moje|jestem|mam|idÄ™|robiÄ™|czytam|siedzÄ™|bÄ™dÄ™|chcÄ™|przeczytam|jem|pijÄ™|oglÄ…dam|sĹ‚ucham|gram)\b/.test(s);
+  return /\b(ja|mnie|mi|mną|mój|moja|moje|jestem|mam|idę|robię|czytam|siedzę|będę|chcę|przeczytam)\b/.test(s);
 }
 function answerIsExtractive(text = '', answer = '') {
   const t = String(text).toLowerCase();
@@ -961,61 +961,16 @@ function answerIsExtractive(text = '', answer = '') {
   return t.includes(a);
 }
 
-/* === NOWE: 1os twarde dopasowanie i ekstrakcja dopeĹ‚nienia === */
-function findTransitive1stFormHard(text="") {
-  const s = String(text).trim().toLowerCase();
-  let m = s.match(/^(ja\s+)?(czytam|jem|pijÄ™|oglÄ…dam|sĹ‚ucham|gram)\b/i);
-  return m ? (m[2] || '').toLowerCase() : "";
-}
-function extractObjectAfter1st(text="", verbForm="") {
-  if (!verbForm) return "";
-  const rx = new RegExp(`\\b${verbForm}\\b\\s+([^.!?]+)`, "i");
-  const m = String(text).match(rx);
-  if (!m) return "";
-  let seg = m[1].trim();
-
-  if (verbForm === "gram") {
-    return seg.replace(/\s*[,;:].*$/u, "").trim(); // np. "w piĹ‚kÄ™"
-  }
-
-  const cut = seg.split(/\s+(?:(?!o\b)(w|na|przy|pod|obok|koĹ‚o|u|do|z|ze|po))\s+/i)[0];
-  return (cut || seg).replace(/\s*[,;:].*$/u, "").trim();
-}
-
-/* === NOWE: 3os prosta heurystyka (ImiÄ™ + czasownik + dopeĹ‚nienie) === */
-function thirdPersonDirectQA(text="") {
-  const s = String(text).trim();
-  const m = s.match(/\b([A-ZĹĹšĹ»ĹąÄ†Ĺ][a-zÄ…Ä‡Ä™Ĺ‚Ĺ„ĂłĹ›ĹşĹĽ]+)\s+(czyta|oglÄ…da|sĹ‚ucha|je|pije|gra)\b\s+([^.!?]+)/u);
-  if (!m) return null;
-  const name = m[1], verb = m[2].toLowerCase();
-  let rest = m[3].trim();
-
-  if (verb === "gra") {
-    const obj = rest.replace(/\s*[,;:].*$/u,"").trim();
-    if (obj) return { question: `W co gra ${name}?`, answer: obj };
-    return null;
-  }
-  if (verb === "sĹ‚ucha") {
-    const obj = rest.split(/\s+(?:(?!o\b)(w|na|przy|pod|obok|koĹ‚o|u|do|z|ze|po))\s+/i)[0].replace(/\s*[,;:].*$/u,"").trim();
-    if (obj) return { question: `Czego sĹ‚ucha ${name}?`, answer: obj };
-    return null;
-  }
-  const obj = rest.split(/\s+(?:(?!o\b)(w|na|przy|pod|obok|koĹ‚o|u|do|z|ze|po))\s+/i)[0].replace(/\s*[,;:].*$/u,"").trim();
-  if (!obj) return null;
-  const qVerb = (verb === "czyta") ? "czyta" : (verb === "oglÄ…da") ? "oglÄ…da" : (verb === "je") ? "je" : (verb === "pije") ? "pije" : "robi";
-  return { question: `Co ${qVerb} ${name}?`, answer: obj };
-}
-
-/* â€” Pytanie + krĂłtka poprawna odpowiedĹş (klucz) â€” */
+/* — Pytanie + krótka poprawna odpowiedź (klucz) — */
 function buildQuestionPrompt({ text, age }) {
   const wiek = Number(age);
   const target =
     Number.isFinite(wiek) && wiek <= 8
-      ? 'bardzo proste, jednoznaczne pytanie. OdpowiedĹş 1â€“5 sĹ‚Ăłw.'
-      : 'proste, faktograficzne pytanie. OdpowiedĹş krĂłtka (max 6 sĹ‚Ăłw).';
+      ? 'bardzo proste, jednoznaczne pytanie. Odpowiedź 1–5 słów.'
+      : 'proste, faktograficzne pytanie. Odpowiedź krótka (max 6 słów).';
 
   return `
-JesteĹ› nauczycielem w klasach 1â€“3. Na podstawie fragmentu napisz JEDNO pytanie sprawdzajÄ…ce zrozumienie i krĂłtki KLUCZ odpowiedzi.
+Jesteś nauczycielem w klasach 1–3. Na podstawie fragmentu napisz JEDNO pytanie sprawdzające zrozumienie i krótki KLUCZ odpowiedzi.
 
 FRAGMENT:
 """${trimUserContent(text, 1000)}"""
@@ -1023,25 +978,25 @@ FRAGMENT:
 WYMAGANIA DLA PYTANIA:
 - Po polsku, ${target}
 - Gramatycznie poprawne i naturalne dla dziecka.
-- OdnoĹ› siÄ™ do KONKRETNEGO elementu z fragmentu: czynnoĹ›Ä‡, miejsce, cel, obiekt, czas.
-- Dopuszczalne sĹ‚owa pytajÄ…ce: Kto, Co, Gdzie, Kiedy, Po co, Czym. (Preferuj: Gdzie/Co/Po co/Kiedy.)
-- JeĹ›li fragment jest w 1. osobie (np. â€žSiedzÄ™â€¦â€ť, â€žIdÄ™â€¦â€ť, â€žPrzeczytamâ€¦â€ť), NIE uĹĽywaj â€žKtoâ€¦?â€ť. Zadaj â€žGdzieâ€¦?â€ť, â€žDokÄ…dâ€¦?â€ť, â€žCoâ€¦?â€ť, â€žPo coâ€¦?â€ť lub â€žKiedyâ€¦?â€ť.
-- Pytanie zakoĹ„cz znakiem zapytania.
+- Odnoś się do KONKRETNEGO elementu z fragmentu: czynność, miejsce, cel, obiekt, czas.
+- Dopuszczalne słowa pytające: Kto, Co, Gdzie, Kiedy, Po co, Czym. (Preferuj: Gdzie/Co/Po co/Kiedy.)
+- Jeśli fragment jest w 1. osobie (np. „Siedzę…”, „Idę…”, „Przeczytam…”), NIE używaj „Kto…?”. Zadaj „Gdzie…?”, „Dokąd…?”, „Co…?”, „Po co…?” lub „Kiedy…?”.
+- Pytanie zakończ znakiem zapytania.
 
-ZAKAZY (BEZWZGLÄDNIE):
-- OgĂłlne: â€žO czym byĹ‚ tekst?â€ť, â€žCo siÄ™ wydarzyĹ‚o?â€ť, â€žOpowiedz jednym zdaniemâ€¦â€ť, â€žCo zapamiÄ™taĹ‚eĹ›â€¦â€ť
-- Definicyjne: â€žKim jestâ€¦?â€ť, â€žCo to jestâ€¦?â€ť, â€žCzym jestâ€¦?â€ť
-- Nienaturalne formy (â€žKim poszedĹ‚â€¦â€ť, â€žCzym poszedĹ‚â€¦â€ť).
+ZAKAZY (BEZWZGLĘDNIE):
+- Ogólne: „O czym był tekst?”, „Co się wydarzyło?”, „Opowiedz jednym zdaniem…”, „Co zapamiętałeś…”
+- Definicyjne: „Kim jest…?”, „Co to jest…?”, „Czym jest…?”
+- Nienaturalne formy („Kim poszedł…”, „Czym poszedł…”).
 
 WYMAGANIA DLA ODPOWIEDZI (KLUCZA):
-- Bardzo krĂłtka (1â€“5 sĹ‚Ăłw, max 6), jednoznaczna.
-- EKSTRAKTYWNA: odpowiedĹş MUSI byÄ‡ dosĹ‚ownym fragmentem powyĹĽszego tekstu (bez parafrazy).
-- Bez kropek/cudzysĹ‚owĂłw; maĹ‚e/duĹĽe litery dowolnie.
+- Bardzo krótka (1–5 słów, max 6), jednoznaczna.
+- EKSTRAKTYWNA: odpowiedź MUSI być dosłownym fragmentem powyższego tekstu (bez parafrazy).
+- Bez kropek/cudzysłowów; małe/duże litery dowolnie.
 
 FORMAT ZWRACANY (Tylko JSON, bez komentarzy):
 {
-  "question": "â€¦jedno krĂłtkie pytanieâ€¦?",
-  "answer": "â€¦krĂłtka odpowiedĹş â€“ dokĹ‚adny fragment z tekstuâ€¦"
+  "question": "…jedno krótkie pytanie…?",
+  "answer": "…krótka odpowiedź – dokładny fragment z tekstu…"
 }`.trim();
 }
 
@@ -1053,30 +1008,52 @@ app.post('/agent/comprehend', async (req, res) => {
 
     const firstPerson = isFirstPersonText(text);
 
-    // === 1. OSOBA â€” PRIORYTET: dopeĹ‚nienie (Co/Czego/W co) ===
-    function buildFirstPersonQA(txt) {
-      const hard = findTransitive1stFormHard(txt);
-      if (hard) {
-        const obj = extractObjectAfter1st(txt, hard);
-        if (obj) {
-          if (hard === "sĹ‚ucham") return { question: `Czego ${hard}?`, answer: obj };
-          if (hard === "gram")    return { question: `W co ${hard}?`,  answer: obj };
-          return { question: `Co ${hard}?`, answer: obj }; // czytam/jem/pijÄ™/oglÄ…dam
-        }
+    // === EARLY RETURN dla 1. osoby: deterministycznie bez LLM ===
+    function extractPurpose(s) {
+      const m = String(s).match(/\b(żeby|aby)\s+[^.?!,]+/i);
+      return m ? m[0].trim() : '';
+    }
+    function extractTime(s) {
+      const m =
+        String(s).match(/\b(jutro|dzisiaj|dziś|wczoraj|rano|wieczorem|po południu|popołudniu)\b/i) ||
+        String(s).match(/\bw\s+(poniedziałek|wtorek|środę|czwartek|piątek|sobotę|niedzielę)\b/i);
+      return m ? m[0].trim() : '';
+    }
+    function extractPlace(s) {
+      const m = String(s).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i);
+      return m ? m[0].trim().replace(/\s+$/, '') : '';
+    }
+    function extractMainVerb1st(s) {
+      const m = String(s).match(/\b(przeczytam|[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+ę)\b/);
+      return m ? m[0].trim().toLowerCase() : '';
+    }
+    function buildFirstPersonQA(text) {
+      const verb = extractMainVerb1st(text);
+      const purpose = extractPurpose(text);
+      const when = extractTime(text);
+      const place = extractPlace(text);
+      if (purpose) {
+        if (verb === 'idę')        return { question: 'Po co idę?',        answer: purpose };
+        if (verb === 'siedzę')     return { question: 'Po co siedzę?',     answer: purpose };
+        if (verb === 'przeczytam') return { question: 'Po co przeczytam?', answer: purpose };
+        return { question: 'Po co to robię?', answer: purpose };
       }
-
-      // Cel â†’ Czas â†’ Miejsce â†’ fallback
-      const purpose = (String(txt).match(/\b(ĹĽeby|aby)\s+[^.?!,]+/i)?.[0] || '').trim();
-      const when =
-        (String(txt).match(/\b(jutro|dzisiaj|dziĹ›|wczoraj|rano|wieczorem|po poĹ‚udniu|popoĹ‚udniu)\b/i)?.[0] ||
-         String(txt).match(/\bw\s+(poniedziaĹ‚ek|wtorek|Ĺ›rodÄ™|czwartek|piÄ…tek|sobotÄ™|niedzielÄ™)\b/i)?.[0] || '').trim();
-      const place = (String(txt).match(/\b(przy|w|na|pod|obok|do)\s+[^,.!?]+/i)?.[0] || '').trim();
-
-      if (purpose) return { question: 'Po co to robiÄ™?', answer: purpose };
-      if (when)    return { question: 'Kiedy to robiÄ™?', answer: when };
-      if (place)   return { question: 'Gdzie jestem?',   answer: place };
-
-      return { question: 'Co robiÄ™?', answer: 'robiÄ™' };
+      if (when) {
+        if (verb === 'przeczytam') return { question: 'Kiedy przeczytam?', answer: when };
+        if (verb === 'idę')        return { question: 'Kiedy idę?',        answer: when };
+        if (verb === 'siedzę')     return { question: 'Kiedy siedzę?',     answer: when };
+        return { question: 'Kiedy to robię?', answer: when };
+      }
+      if (place) {
+        if (verb === 'idę')        return { question: 'Dokąd idę?',    answer: place };
+        if (verb === 'siedzę')     return { question: 'Gdzie siedzę?', answer: place };
+        if (verb === 'przeczytam') return { question: 'Gdzie przeczytam?', answer: place };
+        return { question: 'Gdzie jestem?', answer: place };
+      }
+      if (verb) {
+        return { question: 'Co robię?', answer: verb };
+      }
+      return { question: 'Co robię?', answer: 'robię' };
     }
 
     if (firstPerson) {
@@ -1084,13 +1061,7 @@ app.post('/agent/comprehend', async (req, res) => {
       return res.json({ ok: true, question: qa.question, answer: qa.answer });
     }
 
-    // === 3. OSOBA â€” sprĂłbuj heurystyki przed LLM
-    const h3 = thirdPersonDirectQA(text);
-    if (h3 && h3.question && h3.answer) {
-      return res.json({ ok: true, question: h3.question, answer: h3.answer });
-    }
-
-    // === 3. osoba â†’ generuje LLM + walidacja ===
+    // === 3. osoba → generuje LLM + walidacja ===
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
 
@@ -1108,16 +1079,16 @@ app.post('/agent/comprehend', async (req, res) => {
 
     if (BAD) {
       const retryPrompt = buildQuestionPrompt({ text, age }) +
-        `\nUWAGA: Poprzednia prĂłba nie speĹ‚niĹ‚a zasad (zbyt ogĂłlna/definicyjna lub odpowiedĹş nie byĹ‚a fragmentem tekstu). ` +
-        `ZwrĂłÄ‡ NOWY JSON. OdpowiedĹş musi byÄ‡ DOSĹOWNIE zaczerpniÄ™ta z fragmentu, maks. 6 sĹ‚Ăłw.`;
+        `\nUWAGA: Poprzednia próba nie spełniła zasad (zbyt ogólna/definicyjna lub odpowiedź nie była fragmentem tekstu). ` +
+        `Zwróć NOWY JSON. Odpowiedź musi być DOSŁOWNIE zaczerpnięta z fragmentu, maks. 6 słów.`;
       const out2 = await raceLLM({ prompt: retryPrompt, max_tokens: 160, temperature: 0.2 });
       const j2 = extractJSON(out2) || {};
       question = (j2.question || question || '').trim();
       answer   = (j2.answer   || answer   || '').trim();
     }
 
-    const qClean = question.replace(/[â€žâ€ť"']/g, '').trim();
-    const aClean = answer.replace(/[â€žâ€ť"']/g, '').trim();
+    const qClean = question.replace(/[„”"']/g, '').trim();
+    const aClean = answer.replace(/[„”"']/g, '').trim();
 
     if (!qClean || !aClean ||
         isGenericQuestion(qClean) ||
@@ -1127,7 +1098,7 @@ app.post('/agent/comprehend', async (req, res) => {
         !answerIsExtractive(text, aClean)) {
       return res.json({
         ok: true,
-        question: 'Gdzie byĹ‚ gĹ‚Ăłwny bohater?',
+        question: 'Gdzie był główny bohater?',
         answer: 'w podanym miejscu',
         fallback: true
       });
@@ -1138,23 +1109,23 @@ app.post('/agent/comprehend', async (req, res) => {
     console.error('comprehend error:', err);
     return res.status(200).json({
       ok: true,
-      question: 'Gdzie byĹ‚ gĹ‚Ăłwny bohater?',
+      question: 'Gdzie był główny bohater?',
       answer: 'w podanym miejscu',
       fallback: true
     });
   }
 });
 
-/* â€” Ocena odpowiedzi gĹ‚osowej dziecka â€” */
+/* — Ocena odpowiedzi głosowej dziecka — */
 function buildCheckPrompt({ text, age, question, childAnswer, expectedAnswer }) {
   const wiek = Number(age);
   const styl =
     Number.isFinite(wiek) && wiek <= 8
-      ? 'feedback jedno krĂłtkie zdanie, bardzo proste i motywujÄ…ce'
-      : 'feedback 1â€“2 krĂłtkie zdania, proste i motywujÄ…ce';
+      ? 'feedback jedno krótkie zdanie, bardzo proste i motywujące'
+      : 'feedback 1–2 krótkie zdania, proste i motywujące';
 
   return `
-Wciel siÄ™ w nauczyciela jÄ™zyka polskiego w klasach 1â€“3 i oceĹ„ odpowiedĹş dziecka.
+Wciel się w nauczyciela języka polskiego w klasach 1–3 i oceń odpowiedź dziecka.
 
 Fragment:
 """${trimUserContent(text, 1000)}"""
@@ -1162,20 +1133,20 @@ Fragment:
 Pytanie:
 "${question}"
 
-OdpowiedĹş dziecka:
+Odpowiedź dziecka:
 "${childAnswer || ''}"
 
-Oczekiwana poprawna odpowiedĹş (klucz):
+Oczekiwana poprawna odpowiedź (klucz):
 "${expectedAnswer || ''}"
 
 Zasady oceny:
-- OceĹ„ TYLKO sens merytoryczny; bĹ‚Ä™dy jÄ™zykowe ignoruj.
-- JeĹ›li odpowiedĹş jest bliska znaczeniowo â€“ zaakceptuj jako poprawnÄ….
-- ZwrĂłÄ‡ TYLKO JSON:
+- Oceń TYLKO sens merytoryczny; błędy językowe ignoruj.
+- Jeśli odpowiedź jest bliska znaczeniowo – zaakceptuj jako poprawną.
+- Zwróć TYLKO JSON:
 {
   "ok": true/false,
-  "feedback": "krĂłtki komentarz dla dziecka",
-  "expectedAnswer": "powtĂłrz poprawnÄ… odpowiedĹş jednym krĂłtkim zdaniem lub 1-5 sĹ‚owami"
+  "feedback": "krótki komentarz dla dziecka",
+  "expectedAnswer": "powtórz poprawną odpowiedź jednym krótkim zdaniem lub 1-5 słowami"
 }
 
 Styl feedbacku: ${styl}. ZAWSZE po polsku.`.trim();
@@ -1249,13 +1220,13 @@ app.post('/agent/check-answer-voice', upload.single('audio'), async (req, res) =
       ok: true,
       recognizedText: '',
       result: 'bad',
-      feedback: 'Nie udaĹ‚o siÄ™ oceniÄ‡ odpowiedzi, sprĂłbuj powiedzieÄ‡ jÄ… jeszcze raz.',
+      feedback: 'Nie udało się ocenić odpowiedzi, spróbuj powiedzieć ją jeszcze raz.',
       expectedAnswer: expectedAnswer || ''
     });
   }
 });
 
-/* â€” Ocena odpowiedzi TEKSTOWEJ dziecka (bez audio) â€” */
+/* — Ocena odpowiedzi TEKSTOWEJ dziecka (bez audio) — */
 app.post('/agent/check-answer-text', async (req, res) => {
   try {
     const {
@@ -1295,7 +1266,7 @@ app.post('/agent/check-answer-text', async (req, res) => {
       ok: true,
       recognizedText: '',
       result: 'bad',
-      feedback: 'Nie udaĹ‚o siÄ™ oceniÄ‡ odpowiedzi, sprĂłbuj wpisaÄ‡ jÄ… ponownie.',
+      feedback: 'Nie udało się ocenić odpowiedzi, spróbuj wpisać ją ponownie.',
       expectedAnswer: ''
     });
   }
@@ -1314,13 +1285,12 @@ async function prewarmOnce() {
 }
 
 app.listen(PORT, () => {
-  console.log(`đźš€ Backend dziaĹ‚a na http://localhost:${PORT}`);
-  console.log(`đźŽ§ Groq ${groq ? 'podĹ‚Ä…czony' : 'OFF'} (model=${GROQ_MODEL})`);
-  console.log(`đź¤– OpenAI ${openai ? 'podĹ‚Ä…czony' : 'OFF'}`);
+  console.log(`🚀 Backend działa na http://localhost:${PORT}`);
+  console.log(`🎧 Groq ${groq ? 'podłączony' : 'OFF'} (model=${GROQ_MODEL})`);
+  console.log(`🤖 OpenAI ${openai ? 'podłączony' : 'OFF'}`);
   prewarmOnce();
   if (PREWARM_EVERY_MIN > 0) {
     setInterval(prewarmOnce, PREWARM_EVERY_MIN * 60_000);
-    console.log(`đź›Ś Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` â†’ ${BASE_URL}/health` : ''}`);
+    console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
   }
 });
-
