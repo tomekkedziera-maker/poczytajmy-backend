@@ -18,6 +18,6 @@
     "tesseract.js": "^5.1.1"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20 <21"
   }
 }
