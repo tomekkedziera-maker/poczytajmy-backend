@@ -804,6 +804,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
+/* ===================================================================== */
 /* =====================  QUIZ / COMPREHEND – NOWE  ==================== */
 /* ===================================================================== */
 
@@ -839,7 +840,7 @@ function answerIsExtractive(text = '', answer = '') {
   return t.includes(a);
 }
 
-// 3. os. – <Imię> + 3. os. czasownika
+/** 3. os.: <Imię> + 3. os. czasownika; jeśli tylko imię — NIE traktujemy jako 3. os. */
 function detectThirdPersonName(text) {
   const m = String(text).trim()
     .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi)\b/u);
@@ -848,13 +849,29 @@ function detectThirdPersonName(text) {
   if (/^Ja$/i.test(name)) return null;
   return name;
 }
-// ekstrakcja dopełnienia po czasowniku; nie rozcinaj na „o …”
+
+/** Ekstrakcja dopełnienia po czasowniku; zatrzymaj się przed przyimkiem lub spójnikiem „i” */
 function extractObjectAfterVerb(text, verbRe) {
-  const m = String(text).match(new RegExp(verbRe.source + "\\s+([^.,;!?]*?)(?=(\\s+(w|we|na|do|przy|po|u|pod|o)\\b|,|\\.|$))", verbRe.flags));
+  const stopTokens = "(w|we|na|do|przy|po|u|pod|o|i)";
+  const rx = new RegExp(
+    verbRe.source + "\\s+([^.,;!?]*?)(?=(\\s+" + stopTokens + "\\b|,|\\.|$))",
+    verbRe.flags
+  );
+  const m = String(text).match(rx);
   if (!m) return null;
+
   let obj = (m[1] || "").trim();
+
+  // utnij część celową „, żeby/aby …”
   obj = obj.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+
+  // usuń wiodący przyimek, jeśli się przykleił
   obj = obj.replace(/^(w|we|na|do|przy|o)\s+/i, "").trim();
+
+  // nie zostawiaj samotnego „i”
+  obj = obj.replace(/(?:^|\s)i\s*$/i, "").trim();
+
+  // kosmetyka
   obj = obj.replace(/\s{2,}/g, " ");
   return obj || null;
 }
@@ -871,18 +888,18 @@ function extractPlace(text) {
   return m[0].trim().replace(/[.]+$/, "");
 }
 
-// mapowanie czasowników (bez grup wyłapujących!)
+// mapowanie czasowników (bez grup wyłapujących)
 const VERBS = [
-  { re: /\bczytam\b/i,  type: 'object', q1: 'Co czytam?', q3: (n)=>`Co czyta ${n}?` },
-  { re: /\bczyta\b/i,   type: 'object', q1: 'Co czytam?', q3: (n)=>`Co czyta ${n}?` },
+  { re: /\bczytam\b/i,  type: 'object', q1: 'Co czytam?',   q3: (n)=>`Co czyta ${n}?` },
+  { re: /\bczyta\b/i,   type: 'object', q1: 'Co czytam?',   q3: (n)=>`Co czyta ${n}?` },
   { re: /\bsłucham\b/i, type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
   { re: /\bsłucha\b/i,  type: 'object', q1: 'Czego słucham?', q3: (n)=>`Czego słucha ${n}?` },
-  { re: /\bgram\b/i,    type: 'object', q1: 'W co gram?', q3: (n)=>`W co gra ${n}?` },
-  { re: /\bgra\b/i,     type: 'object', q1: 'W co gram?', q3: (n)=>`W co gra ${n}?` },
-  { re: /\bjem\b/i,     type: 'object', q1: 'Co jem?', q3: (n)=>`Co je ${n}?` },
-  { re: /\bje\b/i,      type: 'object', q1: 'Co jem?', q3: (n)=>`Co je ${n}?` },
-  { re: /\bpiję\b/i,    type: 'object', q1: 'Co piję?', q3: (n)=>`Co pije ${n}?` },
-  { re: /\bpije\b/i,    type: 'object', q1: 'Co piję?', q3: (n)=>`Co pije ${n}?` },
+  { re: /\bgram\b/i,    type: 'object', q1: 'W co gram?',   q3: (n)=>`W co gra ${n}?` },
+  { re: /\bgra\b/i,     type: 'object', q1: 'W co gram?',   q3: (n)=>`W co gra ${n}?` },
+  { re: /\bjem\b/i,     type: 'object', q1: 'Co jem?',      q3: (n)=>`Co je ${n}?` },
+  { re: /\bje\b/i,      type: 'object', q1: 'Co jem?',      q3: (n)=>`Co je ${n}?` },
+  { re: /\bpiję\b/i,    type: 'object', q1: 'Co piję?',     q3: (n)=>`Co pije ${n}?` },
+  { re: /\bpije\b/i,    type: 'object', q1: 'Co piję?',     q3: (n)=>`Co pije ${n}?` },
   { re: /\bidę|idziemy|idzie\b/i, type: 'timePref',  q1: 'Kiedy idę?',   q3: (n)=>`Kiedy idzie ${n}?` },
   { re: /\bsiedzę|siedzi\b/i,     type: 'placePref', q1: 'Gdzie siedzę?', q3: (n)=>`Gdzie siedzi ${n}?` },
 ];
@@ -904,9 +921,10 @@ function comprehendHeuristic(textRaw, age) {
       const obj = extractObjectAfterVerb(text, v.re);
       if (obj) {
         let ans = obj;
-        if (Number(age) <= 7) ans = ans.replace(/\s+po\s+[^,.;!?]+$/i, '').trim();
+        if (Number(age) <= 7) ans = ans.replace(/\s+po\s+[^,.;!?]+$/i, '').trim(); // krótsza odp. dla młodszych
         return { question: buildQuestion(v, isThird, name3), answer: ans, fallback: false };
       }
+      // brak dopełnienia → czas/miejsce
       const t = extractTime(text);
       if (t) return { question: isThird ? `Kiedy ${found[0].toLowerCase()} ${name3}?` : 'Kiedy to robię?', answer: t, fallback: false };
       const p = extractPlace(text);
@@ -931,16 +949,17 @@ function comprehendHeuristic(textRaw, age) {
     }
   }
 
+  // ogólny fallback
   const objTry = extractObjectAfterVerb(text, /\b(czytam|słucham|gram|jem|piję)\b/i);
-  if (objTry) return { question: 'Co robię?', answer: objTry, fallback: true };
+  if (objTry) return { question: isFirstPersonText(text) ? 'Co robię?' : 'Co robi?', answer: objTry, fallback: true };
   const t = extractTime(text);
-  if (t) return { question: 'Kiedy to robię?', answer: t, fallback: true };
+  if (t) return { question: isFirstPersonText(text) ? 'Kiedy to robię?' : 'Kiedy to robi?', answer: t, fallback: true };
   const p = extractPlace(text);
-  if (p) return { question: 'Gdzie jestem?', answer: p, fallback: true };
+  if (p) return { question: isFirstPersonText(text) ? 'Gdzie jestem?' : 'Gdzie jest?', answer: p, fallback: true };
   return { question: 'O co chodzi w zdaniu?', answer: '', fallback: true };
 }
 
-// — prompt do 3. os. jeśli heurystyka nie zadziała —
+// — prompt do pytania/klucza, gdy heurystyka nie wystarczy —
 function buildQuestionPrompt({ text, age }) {
   const wiek = Number(age);
   const target =
@@ -981,11 +1000,13 @@ app.post('/agent/comprehend', async (req, res) => {
     const { text = '', age } = req.body || {};
     if (!text.trim()) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
+    // 1) Heurystyka (1. i 3. os.)
     const h = comprehendHeuristic(text, age);
     if (endsWithQuestionMark(h.question) && h.answer && answerWordCount(h.answer) <= 6) {
       return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
     }
 
+    // 2) Podeprzyj LLM i zweryfikuj (OpenAI-first, ale używa Twojego raceLLM)
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
     const j1 = extractJSON(out) || {};
@@ -1010,6 +1031,7 @@ app.post('/agent/comprehend', async (req, res) => {
                  answerWordCount(answer) > 6 || !answerIsExtractive(text, answer);
 
     if (BAD2) {
+      // Miękki fallback
       const hh = comprehendHeuristic(text, age);
       const q = endsWithQuestionMark(hh.question) ? hh.question : 'Gdzie to się dzieje?';
       const a = hh.answer || extractPlace(text) || extractTime(text) || '';
@@ -1019,12 +1041,12 @@ app.post('/agent/comprehend', async (req, res) => {
     return res.json({ ok: true, question, answer, fallback: false });
   } catch (err) {
     console.error('comprehend error:', err);
-    return res.status(200).json({
-      ok: true,
-      question: 'Gdzie to się dzieje?',
-      answer: extractPlace(String(req.body?.text || '')) || extractTime(String(req.body?.text || '')) || '',
-      fallback: true
-    });
+    // Heurystyczny fallback przy błędzie (np. timeout)
+    const { text = '', age } = req.body || {};
+    const hh = comprehendHeuristic(String(text || ''), age);
+    const q = endsWithQuestionMark(hh.question) ? hh.question : 'Gdzie to się dzieje?';
+    const a = hh.answer || extractPlace(String(text || '')) || extractTime(String(text || '')) || '';
+    return res.status(200).json({ ok: true, question: q, answer: a, fallback: true });
   }
 });
 
@@ -1071,6 +1093,7 @@ app.post('/agent/check-answer-voice', upload.single('audio'), async (req, res) =
     if (!req.file) return res.status(400).json({ ok: false, error: 'NO_AUDIO' });
     if (!question || !text) return res.status(400).json({ ok: false, error: 'NO_Q_OR_TEXT' });
 
+    // 1) ASR (Groq lub OpenAI — co dostępne)
     const ext = pickAudioExt(req.file);
     const tmpPath = path.join(os.tmpdir(), `ans-${Date.now()}.${ext}`);
     fs.writeFileSync(tmpPath, req.file.buffer);
@@ -1103,6 +1126,7 @@ app.post('/agent/check-answer-voice', upload.single('audio'), async (req, res) =
       fs.unlink(tmpPath, () => {});
     }
 
+    // 2) Ocena
     const checkPrompt = buildCheckPrompt({
       text,
       age,
