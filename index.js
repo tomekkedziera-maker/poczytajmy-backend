@@ -37,9 +37,6 @@ const LLM_PREF = 'openai-only'; // <<<<<<<<<<<<<< TYLKO OPENAI dla pytań/odpowi
 const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
 const now = () => (global.performance?.now?.() ?? Date.now());
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const trimUserContent = (s = '', limit = 1200) => {
-  const compact = String(s || '').replace(/\s+/g, ' ').trim();
-  return compact.length > limit ? compact.slice(-limit) : compact;
 };
 function withDeadline(promise, ms = DEADLINE_MS) {
   return new Promise((resolve, reject) => {
