@@ -804,11 +804,6 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* ===================================================================== */
-/* ===================================================================== */
-/* ===================================================================== */
-/* ===================================================================== */
-/* ===================================================================== */
 /* =====================  QUIZ / COMPREHEND – V2  ====================== */
 /* ===================================================================== */
 
@@ -816,10 +811,6 @@ app.get('/tts-voices', async (_req, res) => {
 function endsWithQuestionMark(q = '') { return /\?\s*$/.test(String(q)); }
 function answerWordCount(a = '') {
   return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
-}
-function trimUserContent(s = '', limit = 1000) {
-  const compact = String(s || '').replace(/\s+/g, ' ').trim();
-  return compact.length > limit ? compact.slice(-limit) : compact;
 }
 
 /* — wykryj imię na początku zdania + 3. os. — */
@@ -834,24 +825,27 @@ function detectThirdPersonName(text) {
 
 /* — wytnij minimalny fragment po czasowniku do separatora — */
 function sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
-  // Zwraca „oryginalny” tekst (z polskimi znakami) do najbliższego separatora
-  // separator: przecinek, kropka, średnik, koniec zdania, „ i/oraz a ”
+  // Zwraca „oryginalny” tekst (z polskimi znakami) do najbliższego separatora:
+  // separator: przecinek, kropka, średnik, „ i/oraz a ” lub koniec.
   const src = String(text);
-  const re = new RegExp(reVerb.source + "\\s+(.+?)\\s*(?=(,|\\.|;|\\s+i\\s+|\\s+oraz\\s+|\\s+a\\s+|$))", reVerb.flags);
+  const re = new RegExp(
+    reVerb.source + "\\s+(.+?)\\s*(?=(,|\\.|;|\\s+i\\s+|\\s+oraz\\s+|\\s+a\\s+|$))",
+    reVerb.flags
+  );
   const m = src.match(re);
   if (!m) return null;
   let out = (m[1] || '').trim();
   // usuń część „, żeby/aby …”
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
-  // kosmetyka: przycięcie zbędnych spacji/duplikatów
+  // kosmetyka
   out = out.replace(/\s{2,}/g, ' ').trim();
   if (!keepPreposition) {
-    out = out.replace(/^(w|we|na|do|przy|pod|o)\s+/i, '').trim();
+    out = out.replace(/^(w|we|na|do|przy|pod|u|obok|o)\s+/i, '').trim();
   }
   return out || null;
 }
 
-/* — ekstrakcje: obiekt, cel (dokąd), czas, miejsce — */
+/* — ekstrakcje: czas / miejsce / cel — */
 const RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b/iu;
 function extractTime(text) { const m = String(text).match(RE_TIME); return m ? m[0] : null; }
 
@@ -892,10 +886,10 @@ const VERBS = {
     { re: /\b(słucha)\b/iu,  q: n => `Czego słucha ${n}?`, genitive: true },
   ],
   // specjalne: gram
-  PLAY_1OS_W: { re: /\b(gram)\b/iu, prep: 'w', q: 'W co gram?' },
-  PLAY_3OS_W: { re: /\b(gra)\b/iu, prep: 'w', q: n => `W co gra ${n}?` },
+  PLAY_1OS_W:  { re: /\b(gram)\b/iu, prep: 'w',  q: 'W co gam?' },         // literówka? poprawimy niżej
+  PLAY_3OS_W:  { re: /\b(gra)\b/iu,  prep: 'w',  q: n => `W co gra ${n}?` },
   PLAY_1OS_NA: { re: /\b(gram)\b/iu, prep: 'na', q: 'Na czym gram?' },
-  PLAY_3OS_NA: { re: /\b(gra)\b/iu, prep: 'na', q: n => `Na czym gra ${n}?` },
+  PLAY_3OS_NA: { re: /\b(gra)\b/iu,  prep: 'na', q: n => `Na czym gra ${n}?` },
   // pozycja ciała → miejsce > czas
   PLACE_1OS: [
     { re: /\b(siedzę)\b/iu, q: 'Gdzie siedzę?' },
@@ -914,9 +908,11 @@ const VERBS = {
   LEARN_1OS: { re: /\b(uczę się)\b/iu, q: 'Czego się uczę?' },
   LEARN_3OS: { re: /\b(uczy się)\b/iu, q: n => `Czego uczy się ${n}?` },
 };
+// poprawka literówki w PLAY_1OS_W
+VERBS.PLAY_1OS_W.q = 'W co gram?';
 
 /* — główna heurystyka — */
-function comprehendHeuristicV2(textRaw, age) {
+function comprehendHeuristicV2(textRaw, age) {  // age zostaje na przyszłość (np. różny poziom trudności)
   const text = String(textRaw || '').trim();
   const name3 = detectThirdPersonName(text);
   const isThird = !!name3;
@@ -961,7 +957,7 @@ function comprehendHeuristicV2(textRaw, age) {
       }
       const t = extractTime(text);
       if (t) {
-        const q = isThird ? v.q(name3).replace(/^Gdzie/, 'Kiedy') : v.q.replace(/^Gdzie/, 'Kiedy');
+        const q = (isThird ? v.q(name3) : v.q).replace(/^Gdzie/, 'Kiedy');
         return { question: q, answer: t, fallback: false };
       }
       const q = isThird ? v.q(name3) : v.q;
@@ -974,9 +970,9 @@ function comprehendHeuristicV2(textRaw, age) {
   if (text.match(move.re)) {
     const dest = extractDestination(text);
     if (dest) {
-      const ans = dest; // zwracamy z „do/na …” – dzieci rozpoznają całość
+      const ans = dest.replace(/\s*,.*$/, '');
       const q = isThird ? move.qDest(name3) : move.qDest;
-      return { question: q, answer: ans.replace(/\s*,.*$/, ''), fallback: false };
+      return { question: q, answer: ans, fallback: false };
     }
     const t = extractTime(text);
     if (t) {
@@ -1004,23 +1000,21 @@ function comprehendHeuristicV2(textRaw, age) {
     // obiekt po czasowniku do najbliższego separatora
     let obj = sliceAfter(text, v.re, { keepPreposition: false });
     if (obj) {
-      // drobne poprawki genetywu dla „Czego słucham/słucha …”
-      if (v.genitive) {
-        // nic nie narzucamy; dzieci dobrze rozumieją „nagrania z opowieści o smokach”
-      }
       const q = isThird ? v.q(name3) : v.q;
       return { question: q, answer: obj, fallback: false };
     }
-    // brak obiektu → spróbuj miejsce/czas
+    // brak obiektu → spróbuj miejsce/czas (fallback)
     const place = extractPlace(text);
     if (place) {
-      const q = isThird ? (typeof v.q === 'function' ? v.q(name3) : v.q).replace(/^Co|^Czego/, 'Gdzie') : v.q.replace(/^Co|^Czego/, 'Gdzie');
+      const q = (isThird ? (typeof v.q === 'function' ? v.q(name3) : v.q) : v.q)
+        .replace(/^Co|^Czego/, 'Gdzie');
       const ans = place.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, '').trim();
       return { question: q, answer: ans, fallback: true };
     }
     const t = extractTime(text);
     if (t) {
-      const q = isThird ? (typeof v.q === 'function' ? v.q(name3) : v.q).replace(/^Co|^Czego/, 'Kiedy') : v.q.replace(/^Co|^Czego/, 'Kiedy');
+      const q = (isThird ? (typeof v.q === 'function' ? v.q(name3) : v.q) : v.q)
+        .replace(/^Co|^Czego/, 'Kiedy');
       return { question: q, answer: t, fallback: true };
     }
     const q = isThird ? (typeof v.q === 'function' ? v.q(name3) : v.q) : v.q;
@@ -1050,14 +1044,14 @@ app.post('/agent/comprehend', async (req, res) => {
       return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
     }
 
-    // Dociśnięcie LLM (OpenAI-only) — ale tylko gdy naprawdę nic sensownego
-    // (krótkie okno i niski temp, żeby nie „filozofował”)
+    // Dociśnięcie LLM (OpenAI-only) — tylko gdy heurystyka nie dała krótkiej odpowiedzi
     const prompt =
 `Na podstawie fragmentu napisz JEDNO pytanie kontrolne (proste) i krótki klucz odpowiedzi (max 6 słów).
 Preferuj pytania o obiekt („Co…?”, „Czego…?”), w ruchu najpierw cel („Dokąd…?”), a dla „siedzę/leżę/stoję” pytaj „Gdzie…?”.
 Fragment:
 """${trimUserContent(text, 600)}"""
-Zwróć JSON: {"question":"…?","answer":"…"}`;
+Zwróć JSON: {"question":"…?","answer":"…"}
+`;
 
     let question = h.question;
     let answer = h.answer;
@@ -1074,7 +1068,7 @@ Zwróć JSON: {"question":"…?","answer":"…"}`;
       }
     } catch { /* miękko ignoruj */ }
 
-    // ostatecznie – jeżeli nadal lipa, wróć sensowny fallback
+    // ostateczny fallback
     if (!endsWithQuestionMark(question) || !answer) {
       const ff = comprehendHeuristicV2(text, age);
       question = endsWithQuestionMark(ff.question) ? ff.question : 'Gdzie to się dzieje?';
@@ -1093,6 +1087,7 @@ Zwróć JSON: {"question":"…?","answer":"…"}`;
     });
   }
 });
+
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
