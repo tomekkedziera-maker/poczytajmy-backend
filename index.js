@@ -31,8 +31,8 @@ const DEADLINE_MS = Number(process.env.FAST_TIMEOUT_MS || 1200);
 const MAX_TOKENS_FAST = Number(process.env.MAX_TOKENS_FAST || 64);
 const PREWARM_EVERY_MIN = Number(process.env.PREWARM_EVERY_MIN || 5); // 0 = tylko na starcie
 const BASE_URL = process.env.BASE_URL || '';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
-const LLM_PREF = (process.env.LLM_PREF || 'openai-first').toLowerCase(); // openai-first | groq-first | openai-only | groq-only | race
+const GROQ_MODEL = process.env.GROQ_MODEL || 'whisper-large-v3';
+const LLM_PREF = 'openai-only'; // <<<<<<<<<<<<<< TYLKO OPENAI dla pytań/odpowiedzi
 
 const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
 const now = () => (global.performance?.now?.() ?? Date.now());
@@ -121,7 +121,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.15-llm-pref-openai-first' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.16-openai-only' });
 });
 
 // Prosty root
@@ -143,8 +143,9 @@ app.get('/', (_req, res) => {
   `);
 });
 
-/* ===================== LLM helpers (OpenAI-first, Groq-fallback) ===================== */
+/* ===================== LLM helpers (OpenAI-only dla czatu) ===================== */
 async function groqChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 0.3, top_p = 0.95 }) {
+  // Zostawione do ewentualnego pingu/prewarm — NIE używamy do pytań/odpowiedzi.
   const t0 = now();
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -174,44 +175,13 @@ async function openaiChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature 
   if (!txt) throw new Error('OPENAI_EMPTY');
   return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
 }
-/** Wspólny entrypoint – respektuje LLM_PREF, zwraca { text, provider } */
+/** ENTRYPOINT — tylko OpenAI */
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95 }) {
+  if (!openai) throw new Error('NO_OPENAI');
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
-
-  const tryOpenAI = async () => withDeadline(openaiChat({ messages, max_tokens, temperature, top_p }), DEADLINE_MS);
-  const tryGroq   = async () => withDeadline(groqChat({ messages, max_tokens, temperature, top_p }), DEADLINE_MS);
-
-  const hasOpenAI = !!openai;
-  const hasGroq   = !!groq;
-
-  const pref = LLM_PREF;
-  if (pref === 'openai-only') {
-    if (!hasOpenAI) throw new Error('NO_LLM');
-    return await tryOpenAI();
-  }
-  if (pref === 'groq-only') {
-    if (!hasGroq) throw new Error('NO_LLM');
-    return await tryGroq();
-  }
-  if (pref === 'groq-first') {
-    try { if (hasGroq) return await tryGroq(); } catch {}
-    if (hasOpenAI) return await tryOpenAI();
-    throw new Error('NO_LLM');
-  }
-  if (pref === 'race') {
-    const racers = [];
-    if (hasOpenAI) racers.push(tryOpenAI());
-    if (hasGroq)   racers.push(tryGroq());
-    if (!racers.length) throw new Error('NO_LLM');
-    return await Promise.any(racers);
-  }
-  // default: openai-first
-  try { if (hasOpenAI) return await tryOpenAI(); } catch {}
-  if (hasGroq) return await tryGroq();
-  throw new Error('NO_LLM');
+  return await withDeadline(openaiChat({ messages, max_tokens, temperature, top_p }), DEADLINE_MS);
 }
-
-/** Kompatybilny wrapper: zwraca sam tekst (dla starych wywołań) */
+/** Wrapper kompatybilny */
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const { text } = await chatPref({ prompt, max_tokens, temperature, top_p: 0.95 });
   return (text || '').trim();
@@ -833,43 +803,6 @@ app.get('/tts-voices', async (_req, res) => {
   }
 });
 
-/* ===================== OpenAI TTS proxy ===================== */
-app.post('/tts-openai', async (req, res) => {
-  try {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return res.status(500).json({ ok: false, error: 'NO_OPENAI_API_KEY' });
-
-    const { text = '', voice = 'alloy', format = 'mp3' } = req.body || {};
-    const clean = String(text).trim().slice(0, 600);
-    if (!clean) return res.status(400).json({ ok: false, error: 'EMPTY_TEXT' });
-
-    const r = await fetch('https://api.openai.com/v1/audio/speech', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: format === 'wav' ? 'audio/wav' : (format === 'ogg' ? 'audio/ogg' : 'audio/mpeg')
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini-tts',
-        voice,
-        input: clean
-      })
-    });
-
-    if (!r.ok) {
-      const errText = await r.text().catch(() => '');
-      return res.status(502).json({ ok: false, error: `OPENAI_HTTP_${r.status}`, details: errText.slice(0, 300) });
-    }
-
-    const buf = Buffer.from(await r.arrayBuffer());
-    res.json({ ok: true, provider: 'openai', format, audioB64: buf.toString('base64') });
-  } catch (err) {
-    console.error('TTS-OPENAI REST error:', err);
-    res.status(500).json({ ok: false, error: 'TTS_OPENAI_FAILED' });
-  }
-});
-
 /* ===================================================================== */
 /* =====================  QUIZ / COMPREHEND – NOWE  ==================== */
 /* ===================================================================== */
@@ -906,7 +839,7 @@ function answerIsExtractive(text = '', answer = '') {
   return t.includes(a);
 }
 
-// 3. os. – <Imię> + 3. os. czasownika; w innym wypadku nie traktuj jako 3. osoby
+// 3. os. – <Imię> + 3. os. czasownika
 function detectThirdPersonName(text) {
   const m = String(text).trim()
     .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi)\b/u);
@@ -920,11 +853,8 @@ function extractObjectAfterVerb(text, verbRe) {
   const m = String(text).match(new RegExp(verbRe.source + "\\s+([^.,;!?]*?)(?=(\\s+(w|we|na|do|przy|po|u|pod|o)\\b|,|\\.|$))", verbRe.flags));
   if (!m) return null;
   let obj = (m[1] || "").trim();
-  // utnij „żeby/aby …”
   obj = obj.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
-  // usuń wiodące przyimki dla Co/Czego/W co
   obj = obj.replace(/^(w|we|na|do|przy|o)\s+/i, "").trim();
-  // kosmetyka
   obj = obj.replace(/\s{2,}/g, " ");
   return obj || null;
 }
@@ -963,8 +893,7 @@ function buildQuestion(verbEntry, isThird, nameIf3rd) {
 
 function comprehendHeuristic(textRaw, age) {
   const text = String(textRaw || '').trim();
-  // ✅ Minimalny fix: jeśli 1. osoba, NIE próbujemy 3. osoby
-  const name3 = isFirstPersonText(text) ? null : detectThirdPersonName(text);
+  const name3 = detectThirdPersonName(text);
   const isThird = !!name3;
 
   for (const v of VERBS) {
@@ -975,11 +904,9 @@ function comprehendHeuristic(textRaw, age) {
       const obj = extractObjectAfterVerb(text, v.re);
       if (obj) {
         let ans = obj;
-        // lekkie skrócenie dla młodszych: obetnij „po …”
         if (Number(age) <= 7) ans = ans.replace(/\s+po\s+[^,.;!?]+$/i, '').trim();
         return { question: buildQuestion(v, isThird, name3), answer: ans, fallback: false };
       }
-      // brak dopełnienia → czas/miejsce
       const t = extractTime(text);
       if (t) return { question: isThird ? `Kiedy ${found[0].toLowerCase()} ${name3}?` : 'Kiedy to robię?', answer: t, fallback: false };
       const p = extractPlace(text);
@@ -1004,7 +931,6 @@ function comprehendHeuristic(textRaw, age) {
     }
   }
 
-  // ogólny fallback
   const objTry = extractObjectAfterVerb(text, /\b(czytam|słucham|gram|jem|piję)\b/i);
   if (objTry) return { question: 'Co robię?', answer: objTry, fallback: true };
   const t = extractTime(text);
@@ -1055,14 +981,11 @@ app.post('/agent/comprehend', async (req, res) => {
     const { text = '', age } = req.body || {};
     if (!text.trim()) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
-    // 1) Heurystyka (1. i 3. os.)
     const h = comprehendHeuristic(text, age);
-    // Jeżeli wygląda dobrze (ma pyt. ze znakiem „?” i krótką, niepustą odp.):
     if (endsWithQuestionMark(h.question) && h.answer && answerWordCount(h.answer) <= 6) {
       return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
     }
 
-    // 2) Dla 3. osoby — podeprzyj LLM i zweryfikuj
     const prompt = buildQuestionPrompt({ text, age });
     const out = await raceLLM({ prompt, max_tokens: 180, temperature: 0.35 });
     const j1 = extractJSON(out) || {};
@@ -1087,7 +1010,6 @@ app.post('/agent/comprehend', async (req, res) => {
                  answerWordCount(answer) > 6 || !answerIsExtractive(text, answer);
 
     if (BAD2) {
-      // miękki fallback (ale sensowny, bez „głównego bohatera”)
       const hh = comprehendHeuristic(text, age);
       const q = endsWithQuestionMark(hh.question) ? hh.question : 'Gdzie to się dzieje?';
       const a = hh.answer || extractPlace(text) || extractTime(text) || '';
@@ -1149,7 +1071,6 @@ app.post('/agent/check-answer-voice', upload.single('audio'), async (req, res) =
     if (!req.file) return res.status(400).json({ ok: false, error: 'NO_AUDIO' });
     if (!question || !text) return res.status(400).json({ ok: false, error: 'NO_Q_OR_TEXT' });
 
-    // 1) ASR
     const ext = pickAudioExt(req.file);
     const tmpPath = path.join(os.tmpdir(), `ans-${Date.now()}.${ext}`);
     fs.writeFileSync(tmpPath, req.file.buffer);
@@ -1182,7 +1103,6 @@ app.post('/agent/check-answer-voice', upload.single('audio'), async (req, res) =
       fs.unlink(tmpPath, () => {});
     }
 
-    // 2) Ocena
     const checkPrompt = buildCheckPrompt({
       text,
       age,
@@ -1266,7 +1186,8 @@ app.post('/agent/check-answer-text', async (req, res) => {
 async function prewarmOnce() {
   try {
     if (process.env.GROQ_API_KEY) {
-      await groqChat({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, temperature: 0.0 });
+      // lekki ping by utrzymać połączenie przy życiu
+      await groqChat({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, temperature: 0.0 }).catch(()=>{});
     }
     if (BASE_URL) {
       await fetch(`${BASE_URL}/health`, { headers: { Connection: 'keep-alive' } }).catch(()=>{});
