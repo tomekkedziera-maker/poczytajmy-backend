@@ -963,7 +963,8 @@ function buildQuestion(verbEntry, isThird, nameIf3rd) {
 
 function comprehendHeuristic(textRaw, age) {
   const text = String(textRaw || '').trim();
-  const name3 = detectThirdPersonName(text);
+  // ✅ Minimalny fix: jeśli 1. osoba, NIE próbujemy 3. osoby
+  const name3 = isFirstPersonText(text) ? null : detectThirdPersonName(text);
   const isThird = !!name3;
 
   for (const v of VERBS) {
