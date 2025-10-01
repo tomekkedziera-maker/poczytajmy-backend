@@ -906,15 +906,15 @@ function answerIsExtractive(text = '', answer = '') {
   return t.includes(a);
 }
 
-// 3. os. – imię na początku
+// 3. os. – <Imię> + 3. os. czasownika; w innym wypadku nie traktuj jako 3. osoby
 function detectThirdPersonName(text) {
-  const m = String(text).trim().match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)/u);
+  const m = String(text).trim()
+    .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi)\b/u);
   if (!m) return null;
   const name = m[1];
   if (/^Ja$/i.test(name)) return null;
   return name;
 }
-
 // ekstrakcja dopełnienia po czasowniku; nie rozcinaj na „o …”
 function extractObjectAfterVerb(text, verbRe) {
   const m = String(text).match(new RegExp(verbRe.source + "\\s+([^.,;!?]*?)(?=(\\s+(w|we|na|do|przy|po|u|pod|o)\\b|,|\\.|$))", verbRe.flags));
