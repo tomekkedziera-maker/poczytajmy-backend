@@ -800,7 +800,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* =====================  QUIZ / COMPREHEND – V3  ====================== */
+/* =====================  QUIZ / COMPREHEND – V3 FINAL  ================= */
 /* ===================================================================== */
 
 /* — drobne utils — */
@@ -1069,7 +1069,7 @@ app.post("/agent/comprehend", async (req, res) => {
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
 Fragment:
 """${qz_trim(src, 600)}"""
-Zwróć JSON: {"question":"…?","answer":"…"}.`;
+Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
 
       try {
         const r = await withDeadline(
@@ -1082,7 +1082,37 @@ Zwróć JSON: {"question":"…?","answer":"…"}.`;
           DEADLINE_MS
         );
         const out = (r?.choices?.[0]?.message?.content || "").trim();
-        const m = out.match(/\{[\s\S
+        const m = out.match(/\{[\s\S]*\}/);
+        if (m) {
+          const j = JSON.parse(m[0]);
+          const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
+          const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
+          if (qz_qmark(q) && a && qz_wc(a) <= 8) {
+            return res.json({ ok: true, question: q, answer: a, fallback: false });
+          }
+        }
+      } catch (_) {
+        // miękki fallback na heurystykę niżej
+      }
+    }
+
+    // 3) Ostateczny fallback na heurystykę
+    h = qz_heuristic(src, age);
+    const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
+    const answer = h.answer || qz_place(src) || qz_time(src) || "";
+    return res.json({ ok: true, question, answer, fallback: true });
+  } catch (err) {
+    console.error("comprehend error:", err);
+    const src = String(req.body?.text || "");
+    return res.status(200).json({
+      ok: true,
+      question: "Gdzie to się dzieje?",
+      answer: qz_place(src) || qz_time(src) || "",
+      fallback: true
+    });
+  }
+});
+
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
