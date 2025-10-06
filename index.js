@@ -804,28 +804,45 @@ app.get('/tts-voices', async (_req, res) => {
 /* ===================================================================== */
 
 /** Utils: bezpieczne normowanie i tokenizacja **/
-function qz_norm(s=""){ return qz_normDiacritics(String(s||"")).toLowerCase(); }
-function qz_words(s=""){
+function qz_norm(s = "") {
+  return qz_normDiacritics(String(s || "")).toLowerCase();
+}
+function qz_words(s = "") {
   return (qz_norm(s).match(/\b[\p{L}0-9'-]+\b/gu) || []).filter(Boolean);
 }
-function qz_jaccard(a="", b=""){
-  const A = new Set(qz_words(a)); const B = new Set(qz_words(b));
+function qz_jaccard(a = "", b = "") {
+  const A = new Set(qz_words(a));
+  const B = new Set(qz_words(b));
   if (!A.size && !B.size) return 1;
-  let inter = 0; for (const x of A) if (B.has(x)) inter++;
+  let inter = 0;
+  for (const x of A) if (B.has(x)) inter++;
   return inter / (A.size + B.size - inter);
 }
 
-/** Jeśli nie masz tych helperów z poprzedniego patcha, odkomentuj:
-function qz_splitSentences(s="") {
-  return String(s||"").split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean);
+/** Rozbijanie na zdania **/
+function qz_splitSentences(s = "") {
+  const raw = String(s || "").replace(/\s+/g, " ").trim();
+  if (!raw) return [];
+  // typowe separatory końca zdania
+  let out = raw.split(/(?<=[.!?…])\s+/u).map((t) => t.trim()).filter(Boolean);
+  // awaryjnie — po enterach/średnikach
+  if (out.length <= 1) {
+    out = raw.split(/[\r\n;]+/u).map((t) => t.trim()).filter(Boolean);
+  }
+  return out;
 }
-**/
 
 /** Scoring zdań: RUCH > OBIEKT > POZYCJA + bonus za imię na starcie **/
-function qz_scoreSentence(sent){
+function qz_scoreSentence(sent) {
   const n = qz_norm(sent);
   let sc = 0;
-  if (/\b(id(e|z|ziemy)|idzie|posz(l|la|li|lem|lam)|wroc(il|ila|imy|ilem|ilam)|wraca)\b/i.test(n) && /\b(do|na)\b/i.test(n)) sc += 100;
+  if (
+    /\b(id(e|z|ziemy)|idzie|posz(l|la|li|lem|lam)|wroc(il|ila|imy|ilem|ilam)|wraca)\b/i.test(
+      n
+    ) &&
+    /\b(do|na)\b/i.test(n)
+  )
+    sc += 100;
   if (/\b(czyt|pisz|rysuj|otwier|jem|pij|sluch|oglada)\b/i.test(n)) sc += 50;
   if (/\b(siedz|stoi|lez|usiad)\b/i.test(n)) sc += 20;
   if (/^[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+\b/u.test(sent)) sc += 5;
@@ -837,44 +854,55 @@ function qz_scoreSentence(sent){
 }
 
 /** MMR – wybór K zdań z różnorodnością **/
-function qz_selectTopSentences(text, k=3){
+function qz_selectTopSentences(text, k = 3) {
   const sents = qz_splitSentences(text);
   if (!sents.length) return [];
   const ranked = sents
-    .map(s => ({ s, score: qz_scoreSentence(s) }))
-    .sort((a,b)=>b.score-a.score);
+    .map((s) => ({ s, score: qz_scoreSentence(s) }))
+    .sort((a, b) => b.score - a.score);
 
   const picked = [];
-  const lambda = 0.75; // balans: trafność vs. różnorodność
-  while (picked.length < k && ranked.length){
-    let bestIdx = 0, bestVal = -1;
-    for (let i=0;i<ranked.length;i++){
+  const lambda = 0.75; // balans: trafność vs różnorodność
+  while (picked.length < k && ranked.length) {
+    let bestIdx = 0,
+      bestVal = -1;
+    for (let i = 0; i < ranked.length; i++) {
       const cand = ranked[i];
-      const sim = picked.length ? Math.max(...picked.map(p => qz_jaccard(p.s, cand.s))) : 0;
-      const val = lambda*cand.score - (1-lambda)*(sim*100);
-      if (val > bestVal){ bestVal = val; bestIdx = i; }
+      const sim = picked.length
+        ? Math.max(...picked.map((p) => qz_jaccard(p.s, cand.s)))
+        : 0;
+      const val = lambda * cand.score - (1 - lambda) * (sim * 100);
+      if (val > bestVal) {
+        bestVal = val;
+        bestIdx = i;
+      }
     }
-    picked.push(ranked.splice(bestIdx,1)[0]);
+    picked.push(ranked.splice(bestIdx, 1)[0]);
   }
-  return picked.map(x=>x.s);
+  return picked.map((x) => x.s);
 }
 
-/** skrócenie odpowiedzi do max 6 słów (zachowaj sens) **/
-function qz_shortAnswer(a=""){
-  const words = (String(a).trim().split(/\s+/)).filter(Boolean);
-  if (words.length <= 6) return words.join(' ');
-  return words.slice(0,6).join(' ');
+/** Skrócenie odpowiedzi do max 6 słów **/
+function qz_shortAnswer(a = "") {
+  const words = String(a).trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 6) return words.join(" ");
+  return words.slice(0, 6).join(" ");
 }
 
-/** Jedno Q/A dla jednego zdania — używa Twojej heurystyki + LLM fallback z istniejących utili **/
-async function qz_makeQAForSentence(sentence, age){
-  // 1) heurystyka (na pojedynczym zdaniu)
+/** Jedno Q/A dla jednego zdania — heurystyka + fallback LLM **/
+async function qz_makeQAForSentence(sentence, age) {
+  // 1) heurystyka
   let h = qz_heuristic(sentence, age);
   if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
-    return { question: h.question, answer: h.answer, fallback: !!h.fallback, sentence };
+    return {
+      question: h.question,
+      answer: h.answer,
+      fallback: !!h.fallback,
+      sentence,
+    };
   }
 
-  // 2) LLM fallback (jeśli dostępny)
+  // 2) LLM fallback (OpenAI)
   if (typeof openai !== "undefined" && openai) {
     const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
@@ -888,7 +916,7 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
           model: "gpt-4o-mini",
           temperature: 0.2,
           max_tokens: 120,
-          messages: [{ role: "user", content: prompt }]
+          messages: [{ role: "user", content: prompt }],
         }),
         DEADLINE_MS
       );
@@ -897,12 +925,16 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
       if (m) {
         const j = JSON.parse(m[0]);
         let q = String(j?.question || "").replace(/[„”"']/g, "").trim();
-        let a = qz_shortAnswer(String(j?.answer || "").replace(/[„”"']/g, "").trim());
+        let a = qz_shortAnswer(
+          String(j?.answer || "").replace(/[„”"']/g, "").trim()
+        );
         if (qz_qmark(q) && a) {
           return { question: q, answer: a, fallback: false, sentence };
         }
       }
-    } catch {/* miękko */}
+    } catch {
+      /* miękko */
+    }
   }
 
   // 3) ostateczny fallback heurystyczny
@@ -913,16 +945,14 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
 }
 
 /** Główna funkcja: z długiego tekstu wybierz K zdań i zrób K par Q/A **/
-async function qz_makeQuestions(text, age, count=3){
-  const k = Math.max(1, Math.min(6, Number(count)||3));
+async function qz_makeQuestions(text, age, count = 3) {
+  const k = Math.max(1, Math.min(6, Number(count) || 3));
   const selected = qz_selectTopSentences(text, k);
   const items = [];
   for (const s of selected) {
-    // dla stabilności: usuń nadmiar białych znaków
-    const sent = s.replace(/\s+/g,' ').trim();
+    const sent = s.replace(/\s+/g, " ").trim();
     const qa = await qz_makeQAForSentence(sent, age);
-    // deduplikuj po pytaniu/odpowiedzi (miękko)
-    if (!items.some(x => x.question === qa.question || x.answer === qa.answer)) {
+    if (!items.some((x) => x.question === qa.question || x.answer === qa.answer)) {
       items.push(qa);
     }
     if (items.length >= k) break;
@@ -931,7 +961,6 @@ async function qz_makeQuestions(text, age, count=3){
 }
 
 /* ===================== /agent/comprehend-multi ===================== */
-/** Body: { text: string, age?: number, count?: number } */
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
     const { text = "", age, count = 3 } = req.body || {};
