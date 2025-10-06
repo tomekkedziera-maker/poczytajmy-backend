@@ -844,11 +844,11 @@ function qz_detectThirdName(text) {
   if (!text) return null;
   let src = String(text).trim();
 
-  // usuń markery dyskursywne na starcie (żeby nie brać „Potem” za imię)
+  // usuń markery na początku, żeby nie brać ich za imię
   src = src.replace(/^(Potem|Na koniec|Dziś|Dzisiaj|Wczoraj|Jutro)\s+/iu, "");
 
-  // dopuszczamy też pozycję/zwrot + ruch w 3. os. i „posz...” / „wróci...”
-  const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
+  // Imię lub dwa wyrazy z wielkiej litery + czasownik w 3. os.
+  const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
   const m = src.match(re);
   if (!m) return null;
   const name = m[1];
@@ -1092,6 +1092,16 @@ function qz_heuristic(textRaw, age) {
                          : (thirdNoName && v.q3 ? v.q3 : v.q)).replace(/^Co|^Czego/, "Kiedy");
         return { question: q, answer: t, fallback: true };
       }
+      // ⬇️ NOWE: jeśli nie udało się wydobyć dopełnienia,
+      // pytaj "Co robi …?" i odpowiedz samym czasownikiem.
+      const vm = text.match(v.re);
+      const verb = vm && vm[1] ? String(vm[1]).trim() : "";
+      if (verb) {
+        const qGeneric = name3 ? `Co robi ${name3}?`
+                               : (thirdNoName ? "Co robi?" : "Co robię?");
+        return { question: qGeneric, answer: verb, fallback: false };
+      }
+
       const q = name3 ? (typeof v.q === "function" ? v.q(name3) : v.q)
                       : (thirdNoName && v.q3 ? v.q3 : v.q);
       return { question: q, answer: "", fallback: true };
