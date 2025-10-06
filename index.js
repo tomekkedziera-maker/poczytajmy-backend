@@ -888,17 +888,21 @@ function qz_sliceAfterPlain(text, plainToken) {
 }
 
 /* ---- CZAS (rozszerzony) ---- */
-const QZ_RE_TIME = /\b(
-  rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|
-  po (obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|
-  przed (szkołą|lekcjami|lekcją|kolacją|treningiem|pracą)
-)\b/iu;
+const QZ_RE_TIME = new RegExp(
+  "\\b(" +
+    "(?:rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|" +
+    "po (?:obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|" +
+    "przed (?:szkołą|lekcjami|lekcją|kolacją|treningiem|pracą))" +
+  ")\\b", "iu"
+);
 
-const QZ_RE_TIME_NODIAC = /\b(
-  rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|
-  po (obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|
-  przed (szkola|lekcjami|lekcja|kolacja|treningiem|praca)
-)\b/i;
+const QZ_RE_TIME_NODIAC = new RegExp(
+  "\\b(" +
+    "(?:rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|" +
+    "po (?:obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|" +
+    "przed (?:szkola|lekcjami|lekcja|kolacja|treningiem|praca))" +
+  ")\\b", "i"
+);
 
 function qz_time(text) {
   const s = String(text);
@@ -917,27 +921,16 @@ function qz_place(text) {
 }
 function qz_destination(text) {
   let s = String(text);
-  // usuń markery dyskursywne z początku
   s = s.replace(/^\s*Na\s+(koniec|końcu)\s+/iu, '');
   s = s.replace(/^\s*(Potem|Następnie|Nastepnie)\s+/iu, '');
-
-  // wybierz ostatnie wystąpienie do/na …
   const matches = [...s.matchAll(/\b(do|na)\s+([^.,;!?]+)/giu)];
   if (!matches.length) return null;
-
   let out = matches[matches.length - 1][0].trim();
-
-  // usuń uzasadnienia i czas
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
-
-  // usuń towarzystwo
   out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, '').trim();
-
-  // usuń „po [cel]” (ale nie „po obiedzie/szkole/…”, które są w RE_TIME)
   out = out.replace(/\s+po\s+(?!obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)\b[^.,;!?]+/iu, '').trim();
-
   return out;
 }
 
@@ -946,15 +939,13 @@ function qz_detectThirdName(text) {
   const s = String(text || "").trim();
   const STOP = /^(Potem|Wtedy|Dziś|Dzis|Wczoraj|Jutro|Następnie|Nastepnie|Później|Pozniej|Na)$/i;
 
-  // podstawowa wersja z ogonkami
   let m = s.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
   if (m && !STOP.test(m[1])) return m[1];
 
-  // fallback bez ogonków
   const sn = qz_normDiacritics(s);
   m = sn.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|oglada|slucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
   if (m && !STOP.test(m[1])) {
-    const tok = s.split(/\s+/u)[0]; // imię z oryginału
+    const tok = s.split(/\s+/u)[0];
     if (/^[A-ZŁŚŻŹĆŃÓ]/.test(tok)) return tok;
   }
   return null;
@@ -1101,7 +1092,6 @@ function qz_heuristic(textRaw, age) {
   {
     const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
 
-    // wykrycie 1os, 3os oraz form przeszłych (poszedł/poszła/poszli, wrócił/a, wyszedł/ wyszła)
     const n = qz_norm(text);
     const has1 = /(ide|idziemy|poszedlem|poszlam|wrocilem|wrocilam|wracam|wychodze)\b/.test(n);
     const has3 = /(idzie|poszedl|poszla|poszli|wrocil|wrocila|wraca|wyszedl|wyszla)\b/.test(n);
@@ -1110,9 +1100,9 @@ function qz_heuristic(textRaw, age) {
       const dest = qz_destination(text);
       if (dest) {
         let q;
-        if (isThird && name3)      q = v.qDest(name3); // „Dokąd idzie Kasia?”
-        else if (has1)             q = v.qDest;        // „Dokąd idę?”
-        else                       q = "Dokąd idzie?"; // neutralne dla 3os bez imienia / czasu przeszłego
+        if (isThird && name3)      q = v.qDest(name3);
+        else if (has1)             q = v.qDest;
+        else                       q = "Dokąd idzie?";
         const ans = dest.replace(/\s*,.*$/, "");
         return { question: q, answer: ans, fallback: false };
       }
@@ -1340,6 +1330,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
     return res.status(200).json({ ok: true, count: 0, items: [] });
   }
 });
+
 
 
 /* ===================== START ===================== */
