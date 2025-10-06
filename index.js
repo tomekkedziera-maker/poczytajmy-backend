@@ -887,8 +887,18 @@ function qz_sliceAfterPlain(text, plainToken) {
   return out || null;
 }
 
-const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji|lekcjach|lekcji)|przed (szkołą|lekcjami|lekcją))\b/iu;
-const QZ_RE_TIME_NODIAC = /\b(rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|po (obiedzie|szkole|kolacji|lekcjach|lekcji)|przed (szkola|lekcjami|lekcja))\b/i;
+/* ---- CZAS (rozszerzony) ---- */
+const QZ_RE_TIME = /\b(
+  rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|
+  po (obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|
+  przed (szkołą|lekcjami|lekcją|kolacją|treningiem|pracą)
+)\b/iu;
+
+const QZ_RE_TIME_NODIAC = /\b(
+  rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|
+  po (obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|
+  przed (szkola|lekcjami|lekcja|kolacja|treningiem|praca)
+)\b/i;
 
 function qz_time(text) {
   const s = String(text);
@@ -906,25 +916,48 @@ function qz_place(text) {
   return out;
 }
 function qz_destination(text) {
-  const s = String(text);
-  const m = s.match(/\b(do|na)\s+([^.,;!?]+)/iu);
-  if (!m) return null;
-  let out = m[0].trim();
-  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  let s = String(text);
+  // usuń markery dyskursywne z początku
+  s = s.replace(/^\s*Na\s+(koniec|końcu)\s+/iu, '');
+  s = s.replace(/^\s*(Potem|Następnie|Nastepnie)\s+/iu, '');
+
+  // wybierz ostatnie wystąpienie do/na …
+  const matches = [...s.matchAll(/\b(do|na)\s+([^.,;!?]+)/giu)];
+  if (!matches.length) return null;
+
+  let out = matches[matches.length - 1][0].trim();
+
+  // usuń uzasadnienia i czas
+  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
-  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, "").trim(); // odetnij „z psem”
+
+  // usuń towarzystwo
+  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, '').trim();
+
+  // usuń „po [cel]” (ale nie „po obiedzie/szkole/…”, które są w RE_TIME)
+  out = out.replace(/\s+po\s+(?!obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)\b[^.,;!?]+/iu, '').trim();
+
   return out;
 }
 
-/* ---------- 3. osoba: wykrycie imienia ---------- */
+/* ---------- 3. osoba: wykrycie imienia (ze STOP-słowami + fallback bez ogonków) ---------- */
 function qz_detectThirdName(text) {
-  const m = String(text).trim()
-    .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
-  if (!m) return null;
-  const name = m[1];
-  if (/^Ja$/i.test(name)) return null;
-  return name;
+  const s = String(text || "").trim();
+  const STOP = /^(Potem|Wtedy|Dziś|Dzis|Wczoraj|Jutro|Następnie|Nastepnie|Później|Pozniej|Na)$/i;
+
+  // podstawowa wersja z ogonkami
+  let m = s.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
+  if (m && !STOP.test(m[1])) return m[1];
+
+  // fallback bez ogonków
+  const sn = qz_normDiacritics(s);
+  m = sn.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|oglada|slucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
+  if (m && !STOP.test(m[1])) {
+    const tok = s.split(/\s+/u)[0]; // imię z oryginału
+    if (/^[A-ZŁŚŻŹĆŃÓ]/.test(tok)) return tok;
+  }
+  return null;
 }
 
 /* ---------- mapa czasowników ---------- */
@@ -979,11 +1012,11 @@ function qz_heuristic(textRaw, age) {
   const name3 = qz_detectThirdName(text);
   const isThird = !!name3;
 
-  // 1) gram NA …
+  // 1) gram W …
   {
-    const v = isThird ? QZ_VERBS.PLAY_3OS_NA : QZ_VERBS.PLAY_1OS_NA;
+    const v = isThird ? QZ_VERBS.PLAY_3OS_W : QZ_VERBS.PLAY_1OS_W;
     if (text.match(v.re)) {
-      const m = text.match(/\bna\s+([^.,;!?]+)/i);
+      const m = text.match(/\bw\s+([^.,;!?]+)/i);
       if (m) {
         let ans = (m[1] || "").trim();
         ans = ans
@@ -995,11 +1028,11 @@ function qz_heuristic(textRaw, age) {
       }
     }
   }
-  // 2) gram W …
+  // 2) gram NA …
   {
-    const v = isThird ? QZ_VERBS.PLAY_3OS_W : QZ_VERBS.PLAY_1OS_W;
+    const v = isThird ? QZ_VERBS.PLAY_3OS_NA : QZ_VERBS.PLAY_1OS_NA;
     if (text.match(v.re)) {
-      const m = text.match(/\bw\s+([^.,;!?]+)/i);
+      const m = text.match(/\bna\s+([^.,;!?]+)/i);
       if (m) {
         let ans = (m[1] || "").trim();
         ans = ans
@@ -1041,7 +1074,7 @@ function qz_heuristic(textRaw, age) {
         let ans = objPlain
           .replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "")
           .trim();
-        const q = isThird ? `Czego słucha ${name3}?` : "Czego słucham?";
+        const q = isThird ? (name3 ? `Czego słucha ${name3}?` : "Czego słucha?") : "Czego słucham?";
         if (ans) return { question: q, answer: ans, fallback: false };
       }
     }
@@ -1058,7 +1091,7 @@ function qz_heuristic(textRaw, age) {
       if (mv) {
         const verb = String(mv[1] || mv[0] || "").toLowerCase().trim();
         if (verb) {
-          const qAct = isThird ? `Co robi ${name3}?` : `Co robię?`;
+          const qAct = isThird ? (name3 ? `Co robi ${name3}?` : `Co robi?`) : `Co robię?`;
           return { question: qAct, answer: verb, fallback: true };
         }
       }
@@ -1102,7 +1135,11 @@ function qz_heuristic(textRaw, age) {
   {
     const list = isThird ? QZ_VERBS.PLACE_3OS : QZ_VERBS.PLACE_1OS;
     for (const v of list) {
-      if (!text.match(v.re)) continue;
+      const ntext = qz_norm(text);
+      const altHit =
+        /\bsiedze\b/i.test(ntext) || /\bstoje\b/i.test(ntext) || /\bleze\b/i.test(ntext);
+      if (!text.match(v.re) && !altHit) continue;
+
       const p = qz_place(text);
       if (p) {
         let ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
@@ -1278,13 +1315,11 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
 }
 async function qz_makeQuestions(text, age, count = 3) {
   const k = Math.max(1, Math.min(6, Number(count) || 3));
-  // większa pula kandydatów, żeby zrekompensować deduplikację
   const pool = qz_selectTopSentences(text, Math.max(k * 3, k + 2));
   const items = [];
   for (const s of pool) {
     const sent = s.replace(/\s+/g, " ").trim();
     const qa = await qz_makeQAForSentence(sent, age);
-    // łagodniejsza deduplikacja (identyczne Q i A)
     const dup = items.some(x => x.question === qa.question && x.answer === qa.answer);
     if (!dup && qa.question && qa.answer) items.push(qa);
     if (items.length >= k) break;
