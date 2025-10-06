@@ -812,6 +812,15 @@ function qz_qmark(q = "") { return /\?\s*$/.test(String(q)); }
 function qz_wc(a = "") {
   return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
 }
+function qz_normDiacritics(s = "") {
+  try { return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+  catch { return String(s); }
+}
+function qz_hasVerb(text, rawRe, plainRe) {
+  const t = String(text).toLowerCase();
+  const n = qz_normDiacritics(t);
+  return rawRe.test(t) || plainRe.test(n);
+}
 
 /* — wykryj imię na początku zdania + 3. os. — */
 function qz_detectThirdName(text) {
@@ -843,6 +852,7 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   }
   return out || null;
 }
+
 /* — ekstrakcje: czas / miejsce / cel — */
 const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b/iu;
 function qz_time(text) { const m = String(text).match(QZ_RE_TIME); return m ? m[0] : null; }
@@ -864,6 +874,7 @@ function qz_destination(text) {
   out = out.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
   return out;
 }
+
 /* — mapa czasowników i strategii — */
 const QZ_VERBS = {
   OBJ_CO_1OS: [
@@ -903,10 +914,11 @@ const QZ_VERBS = {
     { re: /\b(stoi)\b/iu,   q: n => `Gdzie stoi ${n}?` },
     { re: /\b(leży)\b/iu,   q: n => `Gdzie leży ${n}?` },
   ],
+  // re dla MOVE/LEARN zostają, ale wykrywanie i tak robimy przez qz_hasVerb (odporne na ogonki)
   MOVE_1OS: { re: /(idę|idziemy)/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
-MOVE_3OS: { re: /(idzie)/iu, qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?` },
-LEARN_1OS: { re: /(uczę się)/iu, q: "Czego się uczę?" },
-LEARN_3OS: { re: /(uczy się)/iu, q: n => `Czego uczy się ${n}?` },
+  MOVE_3OS: { re: /(idzie)/iu,       qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?` },
+  LEARN_1OS: { re: /(uczę się)/iu,   q: "Czego się uczę?" },
+  LEARN_3OS: { re: /(uczy się)/iu,   q: n => `Czego uczy się ${n}?` },
 };
 
 /* — główna heurystyka — */
@@ -946,7 +958,9 @@ function qz_heuristic(textRaw, age) {
       if (!text.match(v.re)) continue;
       const p = qz_place(text);
       if (p) {
-        const ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
+        let ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
+        // odetnij trailing czas (np. „po południu”)
+        ans = ans.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
         const q = isThird ? v.q(name3) : v.q;
         return { question: q, answer: ans, fallback: false };
       }
@@ -959,10 +973,14 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 4) ruch (cel > czas)
+  // 4) ruch (cel > czas) — odporne na ogonki (idę/idzie)
   {
     const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
-    if (text.match(v.re)) {
+    const moveHit = isThird
+      ? qz_hasVerb(text, /(idzie)/iu, /(idzie)/i)                    // 3 os.
+      : qz_hasVerb(text, /(idę|idziemy)/iu, /(ide|idziemy)/i);       // 1 os.
+
+    if (moveHit) {
       const dest = qz_destination(text);
       if (dest) {
         const q = isThird ? v.qDest(name3) : v.qDest;
@@ -996,13 +1014,11 @@ function qz_heuristic(textRaw, age) {
       if (!text.match(v.re)) continue;
       let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
       if (obj) {
-  obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
-
-  // skróć do samego obiektu (odetnij fragmenty typu „w/na/do ...”)
-  obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, '').trim();
-  const q = isThird ? v.q(name3) : v.q;
-  return { question: q, answer: obj, fallback: false };
-}
+        // skróć do samego obiektu (odetnij fragmenty typu „w/na/do ...”)
+        obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
+        const q = isThird ? v.q(name3) : v.q;
+        return { question: q, answer: obj, fallback: false };
+      }
       const p = qz_place(text);
       if (p) {
         const q = (isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q)
