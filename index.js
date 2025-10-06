@@ -862,8 +862,8 @@ function qz_detectThirdName(text) {
   // usuń markery na początku, żeby nie brać ich za imię
   src = src.replace(/^(Potem|Na koniec|Dziś|Dzisiaj|Wczoraj|Jutro)\s+/iu, "");
 
-  // Imię lub dwa wyrazy z wielkiej litery + czasownik w 3. os.
-  const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
+  // ⬇⬇⬇ DODANO: śpi|spi
+  const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy|śpi|spi)\b/iu;
   const m = src.match(re);
   if (!m) return null;
   const name = m[1];
@@ -874,7 +874,8 @@ function qz_detectThirdName(text) {
 /* — czy mamy 3. os. bez imienia? — */
 function qz_isThirdVerbNoName(text){
   const t = String(text||"");
-  const thirdVerb = /\b(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
+  // ⬇⬇⬇ DODANO: śpi|spi
+  const thirdVerb = /\b(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy|śpi|spi)\b/iu;
   return thirdVerb.test(t) && !qz_detectThirdName(t);
 }
 
@@ -931,9 +932,9 @@ function qz_destination(text) {
 /* — kompresja miejsca: usuń prepozycję i kolejne segmenty po następnym przyimku — */
 function qz_compressPlace(p=""){
   let s = String(p||"").trim();
-  s = s.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();      // „w klasie po południu” -> „klasie po południu”
-  s = s.replace(QZ_RE_TIME, "").trim();                              // wytnij czas
-  s = s.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim(); // „oknie w autobusie” -> „oknie”
+  s = s.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
+  s = s.replace(QZ_RE_TIME, "").trim();
+  s = s.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
   return s;
 }
 
@@ -972,6 +973,8 @@ const QZ_VERBS = {
     { re: /\b(je)\b/iu,      q: n => `Co je ${n}?`,     q3: "Co je?" },
     { re: /\b(pije)\b/iu,    q: n => `Co pije ${n}?`,   q3: "Co pije?" },
     { re: /\b(słucha)\b/iu,  q: n => `Czego słucha ${n}?`, q3: "Czego słucha?", genitive: true },
+    // ⬇⬇⬇ DODANO: śpi (brak dopełnienia → pójdzie „Co robi …?” z odpowiedzią „śpi”)
+    { re: /\b(śpi|spi)\b/iu, q: n => `Co robi ${n}?`, q3: "Co robi?" },
   ],
   PLAY_1OS_W:  { re: /\b(gram)\b/iu, prep: "w",  q: "W co gram?" },
   PLAY_3OS_W:  { re: /\b(gra)\b/iu,  prep: "w",  q: n => `W co gra ${n}?`, q3: "W co gra?" },
@@ -1107,8 +1110,7 @@ function qz_heuristic(textRaw, age) {
                          : (thirdNoName && v.q3 ? v.q3 : v.q)).replace(/^Co|^Czego/, "Kiedy");
         return { question: q, answer: t, fallback: true };
       }
-      // ⬇️ NOWE: jeśli nie udało się wydobyć dopełnienia,
-      // pytaj "Co robi …?" i odpowiedz samym czasownikiem.
+      // ⬇️ jeśli nie udało się wydobyć dopełnienia — pytamy „Co robi …?”
       const vm = text.match(v.re);
       const verb = vm && vm[1] ? String(vm[1]).trim() : "";
       if (verb) {
@@ -1367,10 +1369,6 @@ app.post("/agent/check-answer-text", async (req, res) => {
     });
   }
 });
-
-
-
-
 
 
 /* ===================== START ===================== */
