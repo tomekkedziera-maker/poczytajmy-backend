@@ -832,22 +832,28 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   );
   const m = src.match(re);
   if (!m) return null;
-  let out = (m[1] || "").trim();
+  // WAŻNE: reVerb ma własną ( ) wokół czasownika → nasz fragment to GRUPA 2
+  let out = (m[2] || "").trim();
+  // odcięcie celu/uzasadnienia
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  // kosmetyka
   out = out.replace(/\s{2,}/g, " ").trim();
   if (!keepPreposition) {
     out = out.replace(/^(w|we|na|do|przy|pod|u|obok|o)\s+/i, "").trim();
   }
   return out || null;
 }
-
 /* — ekstrakcje: czas / miejsce / cel — */
 const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b/iu;
 function qz_time(text) { const m = String(text).match(QZ_RE_TIME); return m ? m[0] : null; }
 
 function qz_place(text) {
-  const m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
-  return m ? m[0].trim() : null;
+  let m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
+  if (!m) return null;
+  let out = m[0].trim();
+  // usuń ogony typu „po południu / rano / wieczorem …” jeśli się podczepiły
+  out = out.replace(/\b(po południu|rano|wieczorem|w południe|po (obiedzie|szkole|kolacji))\b.*$/i, "").trim();
+  return out;
 }
 function qz_destination(text) {
   const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/i);
