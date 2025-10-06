@@ -1256,56 +1256,85 @@ app.post("/agent/comprehend", async (req, res) => {
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    // 1) Heurystyka
-    let h = qz_heuristic(src, age);
-    if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8)
-      return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
+    if (!openai) throw new Error("NO_OPENAI");
 
-    // 2) Fallback LLM (OpenAI)
-    if (typeof openai !== "undefined" && openai) {
-      const prompt = `Na podstawie fragmentu napisz JEDNO bardzo proste pytanie kontrolne i krótką odpowiedź (max 6 słów).
-Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
+    // ——— SYSTEM + USER: prosimy o 1 QA w PL, JSON only ———
+    const sys = `You are a Polish reading-comprehension assistant for kids.
+Return STRICT JSON only. No prose, no markdown.`;
+
+    const guide = `
+Zadanie: na podstawie fragmentu przygotuj JEDNO bardzo proste pytanie kontrolne po polsku i krótką odpowiedź (max 6 słów).
+Zwróć JSON: {"question":"…?","answer":"…","fallback":true|false}
+
+Zasady wyboru pytania:
+1) Stan/pozycja: "siedzi", "stoi", "leży", "śpi" → pytanie zaczynaj od "Gdzie …?".
+2) Ruch: "idzie", "poszedł/poszła", "wraca", "wrócił/wróciła" → pytanie "Dokąd …?".
+3) Czynności: "czyta", "pisze", "rysuje", "maluje", "gotuje", "otwiera", "ogląda", "je", "pije" → pytanie "Co …?".
+4) Słuchanie: "słucha" → pytanie "Czego …?".
+5) Jeśli 1. osoba (np. "czytam", "idę", "leżę") użyj odpowiednio "Co robię? / Dokąd idę? / Gdzie leżę?".
+6) Jeśli 3. osoba z imieniem (np. "Piesek Lucek śpi") użyj imienia w pytaniu: "Gdzie śpi Piesek Lucek?".
+7) Odpowiedź ma być krótka (≤ 6 słów), bez cytowania całych zdań.
+8) Jeśli w tekście BRAK informacji potrzebnej do odpowiedzi (np. "gdzie" bez miejsca, "dokąd" bez celu) — ustaw "answer": "" i "fallback": true.
+   W przeciwnym razie "fallback": false.
+
+Przykłady:
+Tekst: "Piesek Lucek śpi."
+JSON: {"question":"Gdzie śpi Piesek Lucek?","answer":"","fallback":true}
+
+Tekst: "Piesek Lucek śpi w koszyku."
+JSON: {"question":"Gdzie śpi Piesek Lucek?","answer":"w koszyku","fallback":false}
+
+Tekst: "Kasia idzie do sklepu po chleb."
+JSON: {"question":"Dokąd idzie Kasia?","answer":"do sklepu po chleb","fallback":false}
+
+Tekst: "Ania czyta książkę w bibliotece."
+JSON: {"question":"Co czyta Ania?","answer":"książkę","fallback":false}
+
+Tekst: "Słucham muzyki wieczorem."
+JSON: {"question":"Czego słucham?","answer":"muzyki","fallback":false}
+
 Fragment:
 """${qz_trim(src, 600)}"""
-Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
+Zwróć TYLKO JSON.`.trim();
 
-      try {
-        const r = await withDeadline(
-          openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            temperature: 0.2,
-            max_tokens: 120,
-            messages: [{ role: "user", content: prompt }]
-          }),
-          DEADLINE_MS
-        );
-        const out = (r?.choices?.[0]?.message?.content || "").trim();
-        const m = out.match(/\{[\s\S]*\}/);
-        if (m) {
-          const j = JSON.parse(m[0]);
-          const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
-          const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
-          if (qz_qmark(q) && a && qz_wc(a) <= 8) {
-            return res.json({ ok: true, question: q, answer: a, fallback: false });
-          }
-        }
-      } catch { /* miękkie pominięcie */ }
+    const r = await withDeadline(
+      openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        temperature: 0.1,
+        max_tokens: 180,
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: guide }
+        ]
+      }),
+      DEADLINE_MS
+    );
+
+    const out = (r?.choices?.[0]?.message?.content || "").trim();
+    const m = out.match(/\{[\s\S]*\}/);
+    const j = JSON.parse(m ? m[0] : out);
+
+    const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
+    const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
+    const fb = !!j?.fallback;
+
+    if (q && /\?\s*$/.test(q)) {
+      return res.json({ ok: true, question: q, answer: a, fallback: fb });
     }
 
-    // 3) Ostateczny fallback na heurystykę
-    h = qz_heuristic(src, age);
-    const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
+    // Gdyby model nie dał sensownego JSON — miękki fallback na heurystykę
+    let h = qz_heuristic(src, age);
+    const question = /\?\s*$/.test(h.question) ? h.question : "Gdzie to się dzieje?";
     const answer = h.answer || qz_place(src) || qz_time(src) || "";
     return res.json({ ok: true, question, answer, fallback: true });
   } catch (err) {
     console.error("comprehend error:", err);
+    // Bezpieczny fallback heurystyczny (zachowanie dotychczasowe)
     const src = String(req.body?.text || "");
-    return res.status(200).json({
-      ok: true,
-      question: "Gdzie to się dzieje?",
-      answer: qz_compressPlace(qz_place(src) || "") || qz_time(src) || "",
-      fallback: true
-    });
+    let h = qz_heuristic(src, req.body?.age);
+    const question = /\?\s*$/.test(h.question) ? h.question : "Gdzie to się dzieje?";
+    const answer = h.answer || qz_place(src) || qz_time(src) || "";
+    return res.status(200).json({ ok: true, question, answer, fallback: true });
   }
 });
 
