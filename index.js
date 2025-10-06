@@ -1282,6 +1282,67 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
   }
 });
 
+/* ===================== /agent/check-answer-text ===================== */
+/** Body: { text, age?, question, expectedAnswer, childAnswer } */
+app.post("/agent/check-answer-text", async (req, res) => {
+  try {
+    const {
+      text = "",
+      age = 8,
+      question = "",
+      expectedAnswer = "",
+      childAnswer = "",
+    } = req.body || {};
+
+    const exp = String(expectedAnswer || "").trim();
+    const usr = String(childAnswer || "").trim();
+
+    if (!usr) {
+      return res.json({
+        result: "retry",
+        feedback: "Powiedz lub wpisz krótką odpowiedź.",
+      });
+    }
+
+    // normy z naszych utili
+    const expN = qz_norm(exp);
+    const usrN = qz_norm(usr);
+
+    // twarde trafienie (zawiera)
+    const contains = usrN.includes(expN) || expN.includes(usrN);
+
+    // miękka zgodność (Jaccard)
+    const sim = qz_jaccard(usrN, expN); // 0..1
+
+    const OK = contains || sim >= 0.5;
+
+    // krótkie, dziecięce feedbacki
+    const feedbackOk = "Świetnie, dokładnie o to chodziło! 💪";
+    let feedbackRetry = "Pomyśl o najważniejszym fragmencie i spróbuj krócej.";
+
+    // jeśli mamy detekcję miejsca/czasu — możemy precyzyjniej podpowiedzieć
+    const hintPlace = qz_compressPlace(qz_place(text) || "");
+    const hintTime = qz_time(text) || "";
+    if (!OK && hintPlace && /Gdzie/i.test(question)) {
+      feedbackRetry = `Sprawdź miejsce akcji. Podpowiedź: „${hintPlace}”.`;
+    } else if (!OK && hintTime && /Kiedy/i.test(question)) {
+      feedbackRetry = `Zwróć uwagę na czas. Podpowiedź: „${hintTime}”.`;
+    }
+
+    return res.json({
+      result: OK ? "ok" : "retry",
+      feedback: OK ? feedbackOk : feedbackRetry,
+      similarity: Math.round(sim * 100),
+    });
+  } catch (err) {
+    console.error("check-answer-text error:", err);
+    return res.status(200).json({
+      result: "retry",
+      feedback: "Coś poszło nie tak. Spróbuj jeszcze raz krócej.",
+    });
+  }
+});
+
 
 
 
