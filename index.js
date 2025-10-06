@@ -433,9 +433,17 @@ function sanitizeNoName(name, raw) {
 
 const recentGreetings = new Map();
 
+// dłuższy limit TYLKO dla powitań (env: GREETING_TIMEOUT_MS)
+const GREETING_TIMEOUT_MS = Number(process.env.GREETING_TIMEOUT_MS || 5000);
+
 async function generateGreetingV2({ name, age, character, theme }) {
   const prompt = buildGreetingPrompt({ age: Number(age), character, theme, n: 12 });
-  const { text: raw, provider } = await chatPref({ prompt, temperature: 0.9, max_tokens: 180 });
+  const { text: raw, provider } = await chatPref({
+    prompt,
+    temperature: 0.9,
+    max_tokens: 180,
+    deadlineMs: GREETING_TIMEOUT_MS, // ⬅️ ważne
+  });
 
   let cands = parseList(raw);
   if (!cands.length && raw) cands = raw.split(/[.\n]/).map(s => s.trim()).filter(Boolean);
@@ -460,10 +468,20 @@ app.post('/agent/generate-greeting', async (req, res) => {
     res.json({ ok: true, text, source });
   } catch (err) {
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
-    if (timedOut) return res.status(504).json({ ok: false, error: 'DEADLINE_EXCEEDED', timed_out: true });
     console.error('agent/generate-greeting error:', err);
-    return res.status(502).json({ ok: false, error: String(err?.message || err) });
+    const fallback = 'Dziś zajrzymy do książki i odkryjemy nowe słowa. 📖';
+    // ZAWSZE 200 z fallbackiem, żeby UI nie wieszał się na 504
+    return res.status(200).json({
+      ok: true,
+      text: fallback,
+      source: timedOut ? 'timeout-fallback' : 'error-fallback',
+    });
   }
+});
+
+// Alias 307 (naprawa 404 na /generate-greeting)
+app.post('/generate-greeting', (req, res) => {
+  res.redirect(307, '/agent/generate-greeting');
 });
 
 /* ===================== AGENT MOTYWACJI ===================== */
@@ -862,8 +880,8 @@ function qz_detectThirdName(text) {
   // usuń markery na początku, żeby nie brać ich za imię
   src = src.replace(/^(Potem|Na koniec|Dziś|Dzisiaj|Wczoraj|Jutro)\s+/iu, "");
 
-  // ⬇⬇⬇ DODANO: śpi|spi
-  const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy|śpi|spi)\b/iu;
+  // Imię lub dwa wyrazy z wielkiej litery + czasownik w 3. os.
+  const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
   const m = src.match(re);
   if (!m) return null;
   const name = m[1];
@@ -874,8 +892,7 @@ function qz_detectThirdName(text) {
 /* — czy mamy 3. os. bez imienia? — */
 function qz_isThirdVerbNoName(text){
   const t = String(text||"");
-  // ⬇⬇⬇ DODANO: śpi|spi
-  const thirdVerb = /\b(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy|śpi|spi)\b/iu;
+  const thirdVerb = /\b(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
   return thirdVerb.test(t) && !qz_detectThirdName(t);
 }
 
@@ -888,8 +905,8 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   );
   const m = src.match(re);
   if (!m) return null;
-  // grupa 2: fragment po czasowniku
-  let out = (m[2] || "").trim();
+  // grupa 1: fragment po czasowniku
+  let out = (m[1] || "").trim();
   // odcięcie celu/uzasadnienia
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
   // kosmetyka
@@ -932,9 +949,9 @@ function qz_destination(text) {
 /* — kompresja miejsca: usuń prepozycję i kolejne segmenty po następnym przyimku — */
 function qz_compressPlace(p=""){
   let s = String(p||"").trim();
-  s = s.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
-  s = s.replace(QZ_RE_TIME, "").trim();
-  s = s.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
+  s = s.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();      // „w klasie po południu” -> „klasie po południu”
+  s = s.replace(QZ_RE_TIME, "").trim();                              // wytnij czas
+  s = s.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim(); // „oknie w autobusie” -> „oknie”
   return s;
 }
 
@@ -973,8 +990,6 @@ const QZ_VERBS = {
     { re: /\b(je)\b/iu,      q: n => `Co je ${n}?`,     q3: "Co je?" },
     { re: /\b(pije)\b/iu,    q: n => `Co pije ${n}?`,   q3: "Co pije?" },
     { re: /\b(słucha)\b/iu,  q: n => `Czego słucha ${n}?`, q3: "Czego słucha?", genitive: true },
-    // ⬇⬇⬇ DODANO: śpi (brak dopełnienia → pójdzie „Co robi …?” z odpowiedzią „śpi”)
-    { re: /\b(śpi|spi)\b/iu, q: n => `Co robi ${n}?`, q3: "Co robi?" },
   ],
   PLAY_1OS_W:  { re: /\b(gram)\b/iu, prep: "w",  q: "W co gram?" },
   PLAY_3OS_W:  { re: /\b(gra)\b/iu,  prep: "w",  q: n => `W co gra ${n}?`, q3: "W co gra?" },
@@ -1110,7 +1125,8 @@ function qz_heuristic(textRaw, age) {
                          : (thirdNoName && v.q3 ? v.q3 : v.q)).replace(/^Co|^Czego/, "Kiedy");
         return { question: q, answer: t, fallback: true };
       }
-      // ⬇️ jeśli nie udało się wydobyć dopełnienia — pytamy „Co robi …?”
+      // ⬇️ NOWE: jeśli nie udało się wydobyć dopełnienia,
+      // pytaj "Co robi …?" i odpowiedz samym czasownikiem.
       const vm = text.match(v.re);
       const verb = vm && vm[1] ? String(vm[1]).trim() : "";
       if (verb) {
@@ -1256,85 +1272,56 @@ app.post("/agent/comprehend", async (req, res) => {
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    if (!openai) throw new Error("NO_OPENAI");
+    // 1) Heurystyka
+    let h = qz_heuristic(src, age);
+    if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8)
+      return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
 
-    // ——— SYSTEM + USER: prosimy o 1 QA w PL, JSON only ———
-    const sys = `You are a Polish reading-comprehension assistant for kids.
-Return STRICT JSON only. No prose, no markdown.`;
-
-    const guide = `
-Zadanie: na podstawie fragmentu przygotuj JEDNO bardzo proste pytanie kontrolne po polsku i krótką odpowiedź (max 6 słów).
-Zwróć JSON: {"question":"…?","answer":"…","fallback":true|false}
-
-Zasady wyboru pytania:
-1) Stan/pozycja: "siedzi", "stoi", "leży", "śpi" → pytanie zaczynaj od "Gdzie …?".
-2) Ruch: "idzie", "poszedł/poszła", "wraca", "wrócił/wróciła" → pytanie "Dokąd …?".
-3) Czynności: "czyta", "pisze", "rysuje", "maluje", "gotuje", "otwiera", "ogląda", "je", "pije" → pytanie "Co …?".
-4) Słuchanie: "słucha" → pytanie "Czego …?".
-5) Jeśli 1. osoba (np. "czytam", "idę", "leżę") użyj odpowiednio "Co robię? / Dokąd idę? / Gdzie leżę?".
-6) Jeśli 3. osoba z imieniem (np. "Piesek Lucek śpi") użyj imienia w pytaniu: "Gdzie śpi Piesek Lucek?".
-7) Odpowiedź ma być krótka (≤ 6 słów), bez cytowania całych zdań.
-8) Jeśli w tekście BRAK informacji potrzebnej do odpowiedzi (np. "gdzie" bez miejsca, "dokąd" bez celu) — ustaw "answer": "" i "fallback": true.
-   W przeciwnym razie "fallback": false.
-
-Przykłady:
-Tekst: "Piesek Lucek śpi."
-JSON: {"question":"Gdzie śpi Piesek Lucek?","answer":"","fallback":true}
-
-Tekst: "Piesek Lucek śpi w koszyku."
-JSON: {"question":"Gdzie śpi Piesek Lucek?","answer":"w koszyku","fallback":false}
-
-Tekst: "Kasia idzie do sklepu po chleb."
-JSON: {"question":"Dokąd idzie Kasia?","answer":"do sklepu po chleb","fallback":false}
-
-Tekst: "Ania czyta książkę w bibliotece."
-JSON: {"question":"Co czyta Ania?","answer":"książkę","fallback":false}
-
-Tekst: "Słucham muzyki wieczorem."
-JSON: {"question":"Czego słucham?","answer":"muzyki","fallback":false}
-
+    // 2) Fallback LLM (OpenAI)
+    if (typeof openai !== "undefined" && openai) {
+      const prompt = `Na podstawie fragmentu napisz JEDNO bardzo proste pytanie kontrolne i krótką odpowiedź (max 6 słów).
+Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
 Fragment:
 """${qz_trim(src, 600)}"""
-Zwróć TYLKO JSON.`.trim();
+Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
 
-    const r = await withDeadline(
-      openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.1,
-        max_tokens: 180,
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: guide }
-        ]
-      }),
-      DEADLINE_MS
-    );
-
-    const out = (r?.choices?.[0]?.message?.content || "").trim();
-    const m = out.match(/\{[\s\S]*\}/);
-    const j = JSON.parse(m ? m[0] : out);
-
-    const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
-    const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
-    const fb = !!j?.fallback;
-
-    if (q && /\?\s*$/.test(q)) {
-      return res.json({ ok: true, question: q, answer: a, fallback: fb });
+      try {
+        const r = await withDeadline(
+          openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            temperature: 0.2,
+            max_tokens: 120,
+            messages: [{ role: "user", content: prompt }]
+          }),
+          DEADLINE_MS
+        );
+        const out = (r?.choices?.[0]?.message?.content || "").trim();
+        const m = out.match(/\{[\s\S]*\}/);
+        if (m) {
+          const j = JSON.parse(m[0]);
+          const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
+          const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
+          if (qz_qmark(q) && a && qz_wc(a) <= 8) {
+            return res.json({ ok: true, question: q, answer: a, fallback: false });
+          }
+        }
+      } catch { /* miękkie pominięcie */ }
     }
 
-    // Gdyby model nie dał sensownego JSON — miękki fallback na heurystykę
-    let h = qz_heuristic(src, age);
-    const question = /\?\s*$/.test(h.question) ? h.question : "Gdzie to się dzieje?";
+    // 3) Ostateczny fallback na heurystykę
+    h = qz_heuristic(src, age);
+    const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
     const answer = h.answer || qz_place(src) || qz_time(src) || "";
     return res.json({ ok: true, question, answer, fallback: true });
   } catch (err) {
     console.error("comprehend error:", err);
-    // Bezpieczny fallback heurystyczny (zachowanie dotychczasowe)
     const src = String(req.body?.text || "");
-    let h = qz_heuristic(src, req.body?.age);
-    const question = /\?\s*$/.test(h.question) ? h.question : "Gdzie to się dzieje?";
-    const answer = h.answer || qz_place(src) || qz_time(src) || "";
-    return res.status(200).json({ ok: true, question, answer, fallback: true });
+    return res.status(200).json({
+      ok: true,
+      question: "Gdzie to się dzieje?",
+      answer: qz_compressPlace(qz_place(src) || "") || qz_time(src) || "",
+      fallback: true
+    });
   }
 });
 
@@ -1367,10 +1354,23 @@ app.post("/agent/check-answer-text", async (req, res) => {
     // twarde trafienie (zawiera)
     const contains = usrN.includes(expN) || expN.includes(usrN);
 
-    // miękka zgodność (Jaccard)
-    const sim = qz_jaccard(usrN, expN); // 0..1
+    // tokenizacja do pokrycia
+    const expSet = new Set(qz_words(expN));
+    const usrSet = new Set(qz_words(usrN));
+    let inter = 0;
+    for (const t of expSet) if (usrSet.has(t)) inter++;
 
-    const OK = contains || sim >= 0.5;
+    // coverage: jaki % klucza pokrył użytkownik (ekstra słowa nie karzą)
+    const coverage = expSet.size ? inter / expSet.size : 0;
+
+    // Jaccard (symetryczny) – zachowujemy jako wsparcie
+    const jac = qz_jaccard(usrN, expN); // 0..1
+
+    // akceptacja: zawiera || 80% klucza || Jaccard >= 0.5
+    const OK = contains || coverage >= 0.8 || jac >= 0.5;
+
+    // raportowane similarity: bardziej intuicyjne (preferuj coverage)
+    const similarityPct = Math.round(Math.max(coverage * 100, jac * 100));
 
     // krótkie, dziecięce feedbacki
     const feedbackOk = "Świetnie, dokładnie o to chodziło! 💪";
@@ -1388,7 +1388,7 @@ app.post("/agent/check-answer-text", async (req, res) => {
     return res.json({
       result: OK ? "ok" : "retry",
       feedback: OK ? feedbackOk : feedbackRetry,
-      similarity: Math.round(sim * 100),
+      similarity: similarityPct, // np. 100 dla "do sklepu po chleb" vs "do sklepu"
     });
   } catch (err) {
     console.error("check-answer-text error:", err);
@@ -1398,7 +1398,6 @@ app.post("/agent/check-answer-text", async (req, res) => {
     });
   }
 });
-
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
