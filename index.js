@@ -855,23 +855,34 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
 
 /* — ekstrakcje: czas / miejsce / cel — */
 const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b/iu;
-function qz_time(text) { const m = String(text).match(QZ_RE_TIME); return m ? m[0] : null; }
+const QZ_RE_TIME_NODIAC = /\b(rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|po (obiedzie|szkole|kolacji))\b/i;
+
+function qz_time(text) {
+  const s = String(text);
+  const m = s.match(QZ_RE_TIME) || qz_normDiacritics(s).match(QZ_RE_TIME_NODIAC);
+  return m ? m[0] : null;
+}
 
 function qz_place(text) {
-  let m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
+  const s = String(text);
+  let m = s.match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
   if (!m) return null;
   let out = m[0].trim();
-  // odetnij trailing czas (np. „po południu”)
-  out = out.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
+  // odetnij trailing czas (z i bez ogonków)
+  out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
+  out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
   return out;
 }
+
 function qz_destination(text) {
-  const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/iu);
+  const s = String(text);
+  const m = s.match(/\b(do|na)\s+([^.,;!?]+)/iu);
   if (!m) return null;
   let out = m[0].trim();
-  // wytnij ogon czasu/uzasadnienia
+  // wytnij ogon czasu/uzasadnienia (z i bez ogonków)
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
-  out = out.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
+  out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
+  out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
   return out;
 }
 
@@ -959,8 +970,9 @@ function qz_heuristic(textRaw, age) {
       const p = qz_place(text);
       if (p) {
         let ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
-        // odetnij trailing czas (np. „po południu”)
-        ans = ans.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
+        // odetnij trailing czas (z i bez ogonków)
+        ans = ans.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
+        ans = ans.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
         const q = isThird ? v.q(name3) : v.q;
         return { question: q, answer: ans, fallback: false };
       }
