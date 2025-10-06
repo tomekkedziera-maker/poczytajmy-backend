@@ -172,6 +172,12 @@ async function openaiChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature 
   return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
 }
 /** ENTRYPOINT — tylko OpenAI */
+/* ===== Tekst helper: skróć/wyczyść prompt od użytkownika ===== */
+function trimUserContent(s = "", limit = 800) {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > limit ? t.slice(0, limit) : t;
+}
+
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95 }) {
   if (!openai) throw new Error('NO_OPENAI');
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
