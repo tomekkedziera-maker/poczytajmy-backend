@@ -800,8 +800,10 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* ==============  QUIZ / COMPREHEND — V3 FINAL + MULTI  ================ */
+/* =========  QUIZ / COMPREHEND — V3 FINAL (SINGLE + MULTI)  ============ */
 /* ===================================================================== */
+/*  Samowystarczalny blok. Wymaga jedynie: openai, withDeadline, DEADLINE_MS
+    Nie zostawiaj starych wersji /agent/comprehend ani /agent/comprehend-multi. */
 
 /* ---------- Utils wspólne ---------- */
 function qz_trim(s = "", limit = 600) {
@@ -873,7 +875,6 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   return out || null;
 }
 function qz_sliceAfterPlain(text, plainToken) {
-  // plainToken bez ogonków, np. 'slucha', 'ucze sie'
   const n = qz_norm(text);
   const idx = n.indexOf(plainToken + " ");
   if (idx < 0) return null;
@@ -901,6 +902,7 @@ function qz_place(text) {
   let out = m[0].trim();
   out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
+  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, "").trim(); // obetnij „z psem/ze znajomymi”
   return out;
 }
 function qz_destination(text) {
@@ -972,7 +974,6 @@ const QZ_VERBS = {
 
 /* ---------- Heurystyka główna ---------- */
 function qz_heuristic(textRaw, age) {
-  // pracujemy na najlepszym jednym zdaniu (gdy przyjdzie cała historia)
   const picked = qz_pickBestSentence(String(textRaw || "").trim());
   const text = picked;
   const name3 = qz_detectThirdName(text);
@@ -1033,7 +1034,7 @@ function qz_heuristic(textRaw, age) {
   {
     const bucket = isThird ? QZ_VERBS.OBJ_CO_3OS : QZ_VERBS.OBJ_CO_1OS;
 
-    // Priorytet dla „słucha …” (również bez ogonków)
+    // priorytet dla „słucha …” (również bez ogonków)
     if (/\bslucha\b/.test(qz_norm(text))) {
       let objPlain = qz_sliceAfterPlain(text, "slucha");
       if (objPlain) {
@@ -1063,7 +1064,30 @@ function qz_heuristic(textRaw, age) {
       }
     }
   }
-  // 5) pozycja (miejsce > czas)
+  // 5) RUCH (cel > czas) — PRIORYTET przed pozycją
+  {
+    const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
+    const moveHit = isThird
+      ? qz_hasVerb(text, /(idzie)/iu, /(idzie)/i)
+      : qz_hasVerb(text, /(idę|idziemy)/iu, /(ide|idziemy)/i);
+
+    if (moveHit) {
+      const dest = qz_destination(text);
+      if (dest) {
+        const q = isThird ? v.qDest(name3) : v.qDest;
+        const ans = dest.replace(/\s*,.*$/, "");
+        return { question: q, answer: ans, fallback: false };
+      }
+      const t = qz_time(text);
+      if (t) {
+        const q = isThird ? v.qTime(name3) : v.qTime;
+        return { question: q, answer: t, fallback: false };
+      }
+      const q = isThird ? v.qDest(name3) : v.qDest;
+      return { question: q, answer: "", fallback: true };
+    }
+  }
+  // 6) POZYCJA (miejsce > czas)
   {
     const list = isThird ? QZ_VERBS.PLACE_3OS : QZ_VERBS.PLACE_1OS;
     for (const v of list) {
@@ -1084,29 +1108,6 @@ function qz_heuristic(textRaw, age) {
         return { question: q, answer: t, fallback: false };
       }
       const q = isThird ? v.q(name3) : v.q;
-      return { question: q, answer: "", fallback: true };
-    }
-  }
-  // 6) ruch (cel > czas)
-  {
-    const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
-    const moveHit = isThird
-      ? qz_hasVerb(text, /(idzie)/iu, /(idzie)/i)
-      : qz_hasVerb(text, /(idę|idziemy)/iu, /(ide|idziemy)/i);
-
-    if (moveHit) {
-      const dest = qz_destination(text);
-      if (dest) {
-        const q = isThird ? v.qDest(name3) : v.qDest;
-        const ans = dest.replace(/\s*,.*$/, "");
-        return { question: q, answer: ans, fallback: false };
-      }
-      const t = qz_time(text);
-      if (t) {
-        const q = isThird ? v.qTime(name3) : v.qTime;
-        return { question: q, answer: t, fallback: false };
-      }
-      const q = isThird ? v.qDest(name3) : v.qDest;
       return { question: q, answer: "", fallback: true };
     }
   }
@@ -1266,14 +1267,15 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
 }
 async function qz_makeQuestions(text, age, count = 3) {
   const k = Math.max(1, Math.min(6, Number(count) || 3));
-  const selected = qz_selectTopSentences(text, k);
+  // większa pula kandydatów, żeby zrekompensować deduplikację
+  const pool = qz_selectTopSentences(text, Math.max(k * 3, k + 2));
   const items = [];
-  for (const s of selected) {
+  for (const s of pool) {
     const sent = s.replace(/\s+/g, " ").trim();
     const qa = await qz_makeQAForSentence(sent, age);
-    if (!items.some(x => x.question === qa.question || x.answer === qa.answer)) {
-      items.push(qa);
-    }
+    // łagodniejsza deduplikacja (identyczne Q i A)
+    const dup = items.some(x => x.question === qa.question && x.answer === qa.answer);
+    if (!dup && qa.question && qa.answer) items.push(qa);
     if (items.length >= k) break;
   }
   return items;
@@ -1293,68 +1295,6 @@ app.post("/agent/comprehend-multi", async (req, res) => {
   }
 });
 
-
-/* ===================== /agent/comprehend ===================== */
-app.post("/agent/comprehend", async (req, res) => {
-  try {
-    const { text = "", age } = req.body || {};
-    const src = String(text || "").trim();
-    if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
-
-    // 1) Heurystyka
-    let h = qz_heuristic(src, age);
-    if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8)
-      return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
-
-    // 2) Fallback LLM (OpenAI)
-    if (typeof openai !== "undefined" && openai) {
-      const prompt = `Na podstawie fragmentu napisz JEDNO bardzo proste pytanie kontrolne i krótką odpowiedź (max 6 słów).
-Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
-Fragment:
-"""${qz_trim(src, 600)}"""
-Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
-
-      try {
-        const r = await withDeadline(
-          openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            temperature: 0.2,
-            max_tokens: 120,
-            messages: [{ role: "user", content: prompt }]
-          }),
-          DEADLINE_MS
-        );
-        const out = (r?.choices?.[0]?.message?.content || "").trim();
-        const m = out.match(/\{[\s\S]*\}/);
-        if (m) {
-          const j = JSON.parse(m[0]);
-          const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
-          const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
-          if (qz_qmark(q) && a && qz_wc(a) <= 8) {
-            return res.json({ ok: true, question: q, answer: a, fallback: false });
-          }
-        }
-      } catch (_) {
-        // miękki fallback na heurystykę niżej
-      }
-    }
-
-    // 3) Ostateczny fallback na heurystykę
-    h = qz_heuristic(src, age);
-    const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
-    const answer = h.answer || qz_place(src) || qz_time(src) || "";
-    return res.json({ ok: true, question, answer, fallback: true });
-  } catch (err) {
-    console.error("comprehend error:", err);
-    const src = String(req.body?.text || "");
-    return res.status(200).json({
-      ok: true,
-      question: "Gdzie to się dzieje?",
-      answer: qz_place(src) || qz_time(src) || "",
-      fallback: true
-    });
-  }
-});
 
 
 /* ===================== START ===================== */
