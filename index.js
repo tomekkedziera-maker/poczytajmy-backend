@@ -37,14 +37,13 @@ const LLM_PREF = 'openai-only'; // <<<<<<<<<<<<<< TYLKO OPENAI dla pytań/odpowi
 const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
 const now = () => (global.performance?.now?.() ?? Date.now());
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-};
+
 function withDeadline(promise, ms = DEADLINE_MS) {
   return new Promise((resolve, reject) => {
     const to = setTimeout(() => reject(new Error('DEADLINE_EXCEEDED')), ms);
     promise.then(v => { clearTimeout(to); resolve(v); }, e => { clearTimeout(to); reject(e); });
   });
 }
-
 /* ===== Uploads ===== */
 const upload = multer({
   storage: multer.memoryStorage(),
