@@ -851,13 +851,19 @@ function qz_place(text) {
   let m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
   if (!m) return null;
   let out = m[0].trim();
-  // usuń ogony typu „po południu / rano / wieczorem …” jeśli się podczepiły
-  out = out.replace(/\b(po południu|rano|wieczorem|w południe|po (obiedzie|szkole|kolacji))\b.*$/i, "").trim();
+  // odetnij trailing time (np. „po południu”)
+  out = out.replace(new RegExp('\\s*' + QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   return out;
 }
 function qz_destination(text) {
-  const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/i);
-  return m ? m[0].trim() : null;
+  const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/iu);
+  if (!m) return null;
+  let out = m[0].trim();
+  // usuń czas, jeśli się podczepił
+  out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
+  // usuń ogon celu/uzasadnienia
+  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
+  return out;
 }
 
 /* — mapa czasowników i strategii — */
@@ -992,9 +998,11 @@ function qz_heuristic(textRaw, age) {
       if (!text.match(v.re)) continue;
       let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
       if (obj) {
-        const q = isThird ? v.q(name3) : v.q;
-        return { question: q, answer: obj, fallback: false };
-      }
+  // skróć do samego obiektu (odetnij fragmenty typu „w/na/do ...”)
+  obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, '').trim();
+  const q = isThird ? v.q(name3) : v.q;
+  return { question: q, answer: obj, fallback: false };
+}
       const p = qz_place(text);
       if (p) {
         const q = (isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q)
