@@ -902,7 +902,7 @@ function qz_place(text) {
   let out = m[0].trim();
   out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
-  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, "").trim(); // obetnij „z psem/ze znajomymi”
+  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, "").trim(); // odetnij „z psem/ze znajomymi”
   return out;
 }
 function qz_destination(text) {
@@ -1064,26 +1064,37 @@ function qz_heuristic(textRaw, age) {
       }
     }
   }
-  // 5) RUCH (cel > czas) — PRIORYTET przed pozycją
+  // 5) RUCH (cel > czas) — teraźniejszy i przeszły
   {
     const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
-    const moveHit = isThird
-      ? qz_hasVerb(text, /(idzie)/iu, /(idzie)/i)
-      : qz_hasVerb(text, /(idę|idziemy)/iu, /(ide|idziemy)/i);
 
-    if (moveHit) {
+    // wykrycie 1os, 3os oraz form przeszłych (poszedł/poszła/poszli, wrócił/a, wyszedł/ wyszła)
+    const n = qz_norm(text);
+    const has1 = /(ide|idziemy|poszedlem|poszlam|wrocilem|wrocilam|wracam|wychodze)\b/.test(n);
+    const has3 = /(idzie|poszedl|poszla|poszli|wrocil|wrocila|wraca|wyszedl|wyszla)\b/.test(n);
+
+    if (has1 || has3) {
       const dest = qz_destination(text);
       if (dest) {
-        const q = isThird ? v.qDest(name3) : v.qDest;
+        let q;
+        if (isThird && name3)      q = v.qDest(name3); // „Dokąd idzie Kasia?”
+        else if (has1)             q = v.qDest;        // „Dokąd idę?”
+        else                       q = "Dokąd idzie?"; // neutralne dla 3os bez imienia / czasu przeszłego
         const ans = dest.replace(/\s*,.*$/, "");
         return { question: q, answer: ans, fallback: false };
       }
       const t = qz_time(text);
       if (t) {
-        const q = isThird ? v.qTime(name3) : v.qTime;
+        let q;
+        if (isThird && name3) q = v.qTime(name3);
+        else if (has1)        q = v.qTime;
+        else                  q = "Kiedy idzie?";
         return { question: q, answer: t, fallback: false };
       }
-      const q = isThird ? v.qDest(name3) : v.qDest;
+      let q;
+      if (isThird && name3) q = v.qDest(name3);
+      else if (has1)        q = v.qDest;
+      else                  q = "Dokąd idzie?";
       return { question: q, answer: "", fallback: true };
     }
   }
@@ -1294,7 +1305,6 @@ app.post("/agent/comprehend-multi", async (req, res) => {
     return res.status(200).json({ ok: true, count: 0, items: [] });
   }
 });
-
 
 
 /* ===================== START ===================== */
