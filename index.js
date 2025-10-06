@@ -800,10 +800,10 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* =====================  QUIZ / COMPREHEND – V2  ====================== */
+/* =====================  QUIZ / COMPREHEND – V3  ====================== */
 /* ===================================================================== */
 
-/* — drobne utils (lokalne, z prefiksem qz_) — */
+/* — drobne utils — */
 function qz_trim(s = "", limit = 600) {
   const t = String(s || "").replace(/\s+/g, " ").trim();
   return t.length > limit ? t.slice(0, limit) : t;
@@ -822,7 +822,7 @@ function qz_hasVerb(text, rawRe, plainRe) {
   return rawRe.test(t) || plainRe.test(n);
 }
 
-/* — wykryj imię na początku zdania + 3. os. — */
+/* — wykryj imię + 3. os. — */
 function qz_detectThirdName(text) {
   const m = String(text).trim()
     .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
@@ -832,7 +832,7 @@ function qz_detectThirdName(text) {
   return name;
 }
 
-/* — wytnij minimalny fragment po czasowniku do separatora — */
+/* — fragment po czasowniku — */
 function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   const src = String(text);
   const re = new RegExp(
@@ -841,21 +841,17 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   );
   const m = src.match(re);
   if (!m) return null;
-  // WAŻNE: reVerb ma własną ( ) wokół czasownika → nasz fragment to GRUPA 2
   let out = (m[2] || "").trim();
-  // odcięcie celu/uzasadnienia
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
-  // kosmetyka
   out = out.replace(/\s{2,}/g, " ").trim();
-  if (!keepPreposition) {
+  if (!keepPreposition)
     out = out.replace(/^(w|we|na|do|przy|pod|u|obok|o)\s+/i, "").trim();
-  }
   return out || null;
 }
 
 /* — ekstrakcje: czas / miejsce / cel — */
-const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b/iu;
-const QZ_RE_TIME_NODIAC = /\b(rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|po (obiedzie|szkole|kolacji))\b/i;
+const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji|lekcjach|lekcji)|przed (szkołą|lekcjami|lekcją))\b/iu;
+const QZ_RE_TIME_NODIAC = /\b(rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|po (obiedzie|szkole|kolacji|lekcjach|lekcji)|przed (szkola|lekcjami|lekcja))\b/i;
 
 function qz_time(text) {
   const s = String(text);
@@ -868,7 +864,6 @@ function qz_place(text) {
   let m = s.match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
   if (!m) return null;
   let out = m[0].trim();
-  // odetnij trailing czas (z i bez ogonków)
   out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
   return out;
@@ -879,14 +874,13 @@ function qz_destination(text) {
   const m = s.match(/\b(do|na)\s+([^.,;!?]+)/iu);
   if (!m) return null;
   let out = m[0].trim();
-  // wytnij ogon czasu/uzasadnienia (z i bez ogonków)
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
   out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
   out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
   return out;
 }
 
-/* — mapa czasowników i strategii — */
+/* — mapa czasowników — */
 const QZ_VERBS = {
   OBJ_CO_1OS: [
     { re: /\b(czytam)\b/iu, q: "Co czytam?" },
@@ -925,14 +919,13 @@ const QZ_VERBS = {
     { re: /\b(stoi)\b/iu,   q: n => `Gdzie stoi ${n}?` },
     { re: /\b(leży)\b/iu,   q: n => `Gdzie leży ${n}?` },
   ],
-  // re dla MOVE/LEARN zostają, ale wykrywanie i tak robimy przez qz_hasVerb (odporne na ogonki)
   MOVE_1OS: { re: /(idę|idziemy)/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
   MOVE_3OS: { re: /(idzie)/iu,       qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?` },
   LEARN_1OS: { re: /(uczę się)/iu,   q: "Czego się uczę?" },
   LEARN_3OS: { re: /(uczy się)/iu,   q: n => `Czego uczy się ${n}?` },
 };
 
-/* — główna heurystyka — */
+/* — heurystyka — */
 function qz_heuristic(textRaw, age) {
   const text = String(textRaw || "").trim();
   const name3 = qz_detectThirdName(text);
@@ -944,7 +937,11 @@ function qz_heuristic(textRaw, age) {
     if (text.match(v.re)) {
       const m = text.match(/\bna\s+([^.,;!?]+)/i);
       if (m) {
-        const ans = (m[1] || "").trim();
+        let ans = (m[1] || "").trim();
+        ans = ans
+          .replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '')
+          .replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '')
+          .trim();
         const q = isThird ? v.q(name3) : v.q;
         if (ans) return { question: q, answer: ans, fallback: false };
       }
@@ -956,13 +953,49 @@ function qz_heuristic(textRaw, age) {
     if (text.match(v.re)) {
       const m = text.match(/\bw\s+([^.,;!?]+)/i);
       if (m) {
-        const ans = (m[1] || "").trim();
+        let ans = (m[1] || "").trim();
+        ans = ans
+          .replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '')
+          .replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '')
+          .trim();
         const q = isThird ? v.q(name3) : v.q;
         if (ans) return { question: q, answer: ans, fallback: false };
       }
     }
   }
-  // 3) pozycja (miejsce > czas)
+  // 3) uczę się …
+  {
+    const v = isThird ? QZ_VERBS.LEARN_3OS : QZ_VERBS.LEARN_1OS;
+    if (text.match(v.re)) {
+      const obj = qz_sliceAfter(text, v.re, { keepPreposition: false }) || "";
+      const ans = obj.replace(/^się\s+/i, "").replace(/^(czego|z|o)\s+/i, "").trim();
+      const q = isThird ? v.q(name3) : v.q;
+      if (ans) return { question: q, answer: ans, fallback: false };
+      return { question: q, answer: "", fallback: true };
+    }
+  }
+  // 4) Co/Czego…
+  {
+    const bucket = isThird ? QZ_VERBS.OBJ_CO_3OS : QZ_VERBS.OBJ_CO_1OS;
+    for (const v of bucket) {
+      if (!text.match(v.re)) continue;
+      let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
+      if (obj) {
+        obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
+        const q = isThird ? v.q(name3) : v.q;
+        return { question: q, answer: obj, fallback: false };
+      }
+      const mv = text.match(v.re);
+      if (mv) {
+        const verb = String(mv[1] || mv[0] || "").toLowerCase().trim();
+        if (verb) {
+          const qAct = isThird ? `Co robi ${name3}?` : `Co robię?`;
+          return { question: qAct, answer: verb, fallback: true };
+        }
+      }
+    }
+  }
+  // 5) pozycja (miejsce > czas)
   {
     const list = isThird ? QZ_VERBS.PLACE_3OS : QZ_VERBS.PLACE_1OS;
     for (const v of list) {
@@ -970,9 +1003,10 @@ function qz_heuristic(textRaw, age) {
       const p = qz_place(text);
       if (p) {
         let ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
-        // odetnij trailing czas (z i bez ogonków)
-        ans = ans.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
-        ans = ans.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
+        ans = ans
+          .replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '')
+          .replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '')
+          .trim();
         const q = isThird ? v.q(name3) : v.q;
         return { question: q, answer: ans, fallback: false };
       }
@@ -985,12 +1019,12 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 4) ruch (cel > czas) — odporne na ogonki (idę/idzie)
+  // 6) ruch (cel > czas)
   {
     const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
     const moveHit = isThird
-      ? qz_hasVerb(text, /(idzie)/iu, /(idzie)/i)                    // 3 os.
-      : qz_hasVerb(text, /(idę|idziemy)/iu, /(ide|idziemy)/i);       // 1 os.
+      ? qz_hasVerb(text, /(idzie)/iu, /(idzie)/i)
+      : qz_hasVerb(text, /(idę|idziemy)/iu, /(ide|idziemy)/i);
 
     if (moveHit) {
       const dest = qz_destination(text);
@@ -1008,49 +1042,10 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 5) uczę się …
-  {
-    const v = isThird ? QZ_VERBS.LEARN_3OS : QZ_VERBS.LEARN_1OS;
-    if (text.match(v.re)) {
-      const obj = qz_sliceAfter(text, v.re, { keepPreposition: false }) || "";
-      const ans = obj.replace(/^się\s+/i, "").replace(/^(czego|z|o)\s+/i, "").trim();
-      const q = isThird ? v.q(name3) : v.q;
-      if (ans) return { question: q, answer: ans, fallback: false };
-      return { question: q, answer: "", fallback: true };
-    }
-  }
-  // 6) Co/Czego…
-  {
-    const bucket = isThird ? QZ_VERBS.OBJ_CO_3OS : QZ_VERBS.OBJ_CO_1OS;
-    for (const v of bucket) {
-      if (!text.match(v.re)) continue;
-      let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
-      if (obj) {
-        // skróć do samego obiektu (odetnij fragmenty typu „w/na/do ...”)
-        obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
-        const q = isThird ? v.q(name3) : v.q;
-        return { question: q, answer: obj, fallback: false };
-      }
-      const p = qz_place(text);
-      if (p) {
-        const q = (isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q)
-          .replace(/^Co|^Czego/, "Gdzie");
-        const ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
-        return { question: q, answer: ans, fallback: true };
-      }
-      const t = qz_time(text);
-      if (t) {
-        const q = (isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q)
-          .replace(/^Co|^Czego/, "Kiedy");
-        return { question: q, answer: t, fallback: true };
-      }
-      const q = isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q;
-      return { question: q, answer: "", fallback: true };
-    }
-  }
-  // 7) fallback ogólny
+  // 7) fallback
   const p = qz_place(text);
-  if (p) return { question: "Gdzie to się dzieje?", answer: p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim(), fallback: true };
+  if (p)
+    return { question: "Gdzie to się dzieje?", answer: p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim(), fallback: true };
   const t = qz_time(text);
   if (t) return { question: "Kiedy to się dzieje?", answer: t, fallback: true };
   return { question: "O co chodzi w zdaniu?", answer: "", fallback: true };
@@ -1065,18 +1060,16 @@ app.post("/agent/comprehend", async (req, res) => {
 
     // 1) Heurystyka
     let h = qz_heuristic(src, age);
-    if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
+    if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8)
       return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
-    }
 
-    // 2) Delikatny fallback LLM (OpenAI, jeśli dostępny) — bez zależności od zewn. trimUserContent
+    // 2) Fallback LLM (OpenAI)
     if (typeof openai !== "undefined" && openai) {
-      const prompt =
-`Na podstawie fragmentu napisz JEDNO bardzo proste pytanie kontrolne i krótki klucz odpowiedzi (max 6 słów).
-Preferuj: „Co…?”, „Czego…?”, dla ruchu: „Dokąd…?”, dla pozycji: „Gdzie…?”.
+      const prompt = `Na podstawie fragmentu napisz JEDNO bardzo proste pytanie kontrolne i krótką odpowiedź (max 6 słów).
+Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
 Fragment:
 """${qz_trim(src, 600)}"""
-Zwróć wyłącznie JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
+Zwróć JSON: {"question":"…?","answer":"…"}.`;
 
       try {
         const r = await withDeadline(
@@ -1089,37 +1082,7 @@ Zwróć wyłącznie JSON: {"question":"…?","answer":"…"} — bez komentarza.
           DEADLINE_MS
         );
         const out = (r?.choices?.[0]?.message?.content || "").trim();
-        const m = out.match(/\{[\s\S]*\}/);
-        if (m) {
-          const j = JSON.parse(m[0]);
-          const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
-          const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
-          if (qz_qmark(q) && a && qz_wc(a) <= 8) {
-            return res.json({ ok: true, question: q, answer: a, fallback: false });
-          }
-        }
-      } catch (_) {
-        // miękki fallback na heurystykę niżej
-      }
-    }
-
-    // 3) Ostateczny fallback na heurystykę
-    h = qz_heuristic(src, age);
-    const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
-    const answer = h.answer || qz_place(src) || qz_time(src) || "";
-    return res.json({ ok: true, question, answer, fallback: true });
-  } catch (err) {
-    console.error("comprehend error:", err);
-    const src = String(req.body?.text || "");
-    return res.status(200).json({
-      ok: true,
-      question: "Gdzie to się dzieje?",
-      answer: qz_place(src) || qz_time(src) || "",
-      fallback: true
-    });
-  }
-});
-
+        const m = out.match(/\{[\s\S
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
