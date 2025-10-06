@@ -178,10 +178,11 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95 }) {
+// --- PODMIEŃ TĘ FUNKCJĘ chatPref (ta wersja wspiera deadlineMs) ---
+async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
   if (!openai) throw new Error('NO_OPENAI');
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
-  return await withDeadline(openaiChat({ messages, max_tokens, temperature, top_p }), DEADLINE_MS);
+  return await withDeadline(openaiChat({ messages, max_tokens, temperature, top_p }), deadlineMs);
 }
 /** Wrapper kompatybilny */
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
@@ -467,6 +468,9 @@ app.post('/agent/generate-greeting', async (req, res) => {
 
 /* ===================== AGENT MOTYWACJI ===================== */
 
+// dłuższy limit TYLKO dla motywacji (możesz nadpisać envem MOTIVATE_TIMEOUT_MS)
+const MOTIVATE_TIMEOUT_MS = Number(process.env.MOTIVATE_TIMEOUT_MS || 6000);
+
 function bucketToneByAge(age) {
   const a = Number(age);
   if (Number.isFinite(a) && a <= 5) return 'bardzo prosto, ciepło, łagodnie; krótkie słowa; 1 emoji max';
@@ -485,7 +489,7 @@ function rubricByAccuracy(acc) {
 function buildMotivationPrompt({ age, accuracy, text, characterName = 'Bohater', lang = 'pl' }) {
   const tone = bucketToneByAge(age);
   const rubric = rubricByAccuracy(accuracy);
-  const excerpt = trimUserContent(text || '', 220);
+  const excerpt = trimUserContent(text || '', 220); // używa istniejącej funkcji z pliku
 
   return `
 Jesteś ${characterName} z aplikacji do nauki czytania dla dzieci. Twoje zadanie:
@@ -526,7 +530,12 @@ function tightenMotivation(s, maxChars = 160) {
 
 async function generateMotivation({ age, accuracy, text, characterName, lang = 'pl' }) {
   const prompt = buildMotivationPrompt({ age, accuracy, text, characterName, lang });
-  const { text: raw, provider } = await chatPref({ prompt, temperature: 0.9, max_tokens: 120 });
+  const { text: raw, provider } = await chatPref({
+    prompt,
+    temperature: 0.9,
+    max_tokens: 120,
+    deadlineMs: MOTIVATE_TIMEOUT_MS, // ważne: dłuższy limit tylko tutaj
+  });
   let out = String(raw || '').trim();
   out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
   out = tightenMotivation(out, 160);
@@ -549,16 +558,16 @@ app.post('/agent/motivate', async (req, res) => {
     });
 
     const msg = tightenMotivation(rawMsg, 160);
-
     res.json({ ok: true, text: msg, source });
   } catch (err) {
+    // Zamiast 504/502 — zawsze zwracamy OK z bezpiecznym fallbackiem
+    const fallback = 'Świetna próba! Z każdą stroną będzie coraz lepiej — spróbujmy jeszcze raz! 💪';
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
-    if (timedOut) return res.status(504).json({ ok: false, error: 'DEADLINE_EXCEEDED', timed_out: true });
     console.error('agent/motivate error:', err);
-    return res.status(502).json({
-      ok: false,
-      error: String(err?.message || err),
-      fallback: 'Świetna próba! Z każdą stroną będzie coraz lepiej — spróbujmy jeszcze raz! 💪'
+    return res.status(200).json({
+      ok: true,
+      text: fallback,
+      source: timedOut ? 'timeout-fallback' : 'error-fallback'
     });
   }
 });
