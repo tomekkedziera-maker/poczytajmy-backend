@@ -851,21 +851,19 @@ function qz_place(text) {
   let m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
   if (!m) return null;
   let out = m[0].trim();
-  // odetnij trailing time (np. „po południu”)
-  out = out.replace(new RegExp('\\s*' + QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
+  // odetnij trailing czas (np. „po południu”)
+  out = out.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
   return out;
 }
 function qz_destination(text) {
   const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/iu);
   if (!m) return null;
   let out = m[0].trim();
-  // usuń czas, jeśli się podczepił
-  out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
-  // usuń ogon celu/uzasadnienia
-  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
+  // wytnij ogon czasu/uzasadnienia
+  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  out = out.replace(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (obiedzie|szkole|kolacji))\b.*$/iu, "").trim();
   return out;
 }
-
 /* — mapa czasowników i strategii — */
 const QZ_VERBS = {
   OBJ_CO_1OS: [
@@ -905,10 +903,10 @@ const QZ_VERBS = {
     { re: /\b(stoi)\b/iu,   q: n => `Gdzie stoi ${n}?` },
     { re: /\b(leży)\b/iu,   q: n => `Gdzie leży ${n}?` },
   ],
-  MOVE_1OS: { re: /\b(idę|idziemy)\b/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
-  MOVE_3OS: { re: /\b(idzie)\b/iu, qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?` },
-  LEARN_1OS: { re: /\b(uczę się)\b/iu, q: "Czego się uczę?" },
-  LEARN_3OS: { re: /\b(uczy się)\b/iu, q: n => `Czego uczy się ${n}?` },
+  MOVE_1OS: { re: /(idę|idziemy)/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
+MOVE_3OS: { re: /(idzie)/iu, qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?` },
+LEARN_1OS: { re: /(uczę się)/iu, q: "Czego się uczę?" },
+LEARN_3OS: { re: /(uczy się)/iu, q: n => `Czego uczy się ${n}?` },
 };
 
 /* — główna heurystyka — */
@@ -998,6 +996,8 @@ function qz_heuristic(textRaw, age) {
       if (!text.match(v.re)) continue;
       let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
       if (obj) {
+  obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
+
   // skróć do samego obiektu (odetnij fragmenty typu „w/na/do ...”)
   obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, '').trim();
   const q = isThird ? v.q(name3) : v.q;
