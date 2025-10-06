@@ -800,158 +800,82 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* =========  QUIZ / COMPREHEND — V3 FINAL (SINGLE + MULTI)  ============ */
+/* =====================  QUIZ / COMPREHEND – V2+  ===================== */
 /* ===================================================================== */
-/*  Samowystarczalny blok. Wymaga jedynie: openai, withDeadline, DEADLINE_MS
-    Nie zostawiaj starych wersji /agent/comprehend ani /agent/comprehend-multi. */
 
-/* ---------- Utils wspólne ---------- */
+/* ——— Utils podstawowe ——— */
 function qz_trim(s = "", limit = 600) {
   const t = String(s || "").replace(/\s+/g, " ").trim();
   return t.length > limit ? t.slice(0, limit) : t;
 }
 function qz_qmark(q = "") { return /\?\s*$/.test(String(q)); }
-function qz_wc(a = "") {
-  return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
-}
+function qz_wc(a = "") { return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length; }
+
+/* Diakrytyki → ASCII (do skoringu, nie do ekstrakcji) */
 function qz_normDiacritics(s = "") {
-  try { return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
-  catch { return String(s); }
+  try { return String(s || "").normalize('NFKD').replace(/[\u0300-\u036f]/g, ""); }
+  catch { return String(s || ""); }
 }
 function qz_norm(s = "") { return qz_normDiacritics(String(s || "")).toLowerCase(); }
-function qz_hasVerb(text, rawRe, plainRe) {
-  const t = String(text).toLowerCase();
-  const n = qz_norm(t);
-  return rawRe.test(t) || plainRe.test(n);
+function qz_words(s = "") { return (qz_norm(s).match(/\b[\p{L}0-9'-]+\b/gu) || []).filter(Boolean); }
+function qz_jaccard(a = "", b = "") {
+  const A = new Set(qz_words(a)); const B = new Set(qz_words(b));
+  if (!A.size && !B.size) return 1;
+  let inter = 0; for (const x of A) if (B.has(x)) inter++;
+  return inter / (A.size + B.size - inter);
 }
 
-/* ---------- Rozbijanie na zdania + wybór najlepszego ---------- */
+/* ——— Segmentacja zdań ——— */
 function qz_splitSentences(s = "") {
-  const raw = String(s || "").replace(/\s+/g, " ").trim();
-  if (!raw) return [];
-  let out = raw.split(/(?<=[.!?…])\s+/u).map(t => t.trim()).filter(Boolean);
-  if (out.length <= 1) {
-    out = raw.split(/[\r\n;]+/u).map(t => t.trim()).filter(Boolean);
-  }
-  return out;
-}
-function qz_pickBestSentence(text = "") {
-  const S = qz_splitSentences(text);
-  if (!S.length) return String(text || "").trim();
-  function score(sent) {
-    const n = qz_norm(sent);
-    let sc = 0;
-    if (/\b(id(e|z|ziemy)|idzie|posz(l|la|li|lem|lam)|wroc(il|ila|imy|ilem|ilam)|wraca)\b/i.test(n) && /\b(do|na)\b/i.test(n)) sc += 100;
-    if (/\b(czyt|pisz|rysuj|otwier|jem|pij|sluch|oglada)\b/i.test(n)) sc += 50;
-    if (/\b(siedz|stoi|lez|usiad)\b/i.test(n)) sc += 20;
-    if (/^[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+\b/u.test(sent)) sc += 5;
-    const wc = (sent.match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
-    const dist = Math.abs(wc - 12);
-    sc += Math.max(0, 18 - dist);
-    return sc;
-  }
-  let best = S[0], bestSc = score(S[0]);
-  for (let i = 1; i < S.length; i++) {
-    const sc = score(S[i]);
-    if (sc > bestSc) { best = S[i]; bestSc = sc; }
-  }
-  return best;
+  return String(s || "").split(/(?<=[.!?…])\s+/u).map(t => t.trim()).filter(Boolean);
 }
 
-/* ---------- Ekstrakcje i parsy ---------- */
+/* ——— Wykryj imię/zaimek 3. os. na początku ——— */
+function qz_detectThirdName(text) {
+  const m = String(text).trim()
+    .match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|oglad[aą]|słucha|slucha|je|pije|gra|idzie|posz(?:ed[łl]|ła|li)|wr[oó]ci(?:ł|ła)|wraca|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
+  if (!m) return null;
+  const name = m[1];
+  if (/^Ja$/i.test(name)) return null;
+  return name;
+}
+
+/* ——— Wytnij minimalny fragment po czasowniku (do separatora) ——— */
 function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   const src = String(text);
-  const re = new RegExp(
-    reVerb.source + "\\s+(.+?)\\s*(?=(,|\\.|;|\\s+i\\s+|\\s+oraz\\s+|\\s+a\\s+|$))",
-    reVerb.flags
-  );
+  const re = new RegExp(reVerb.source + "\\s+(.+?)\\s*(?=(,|\\.|;|\\s+i\\s+|\\s+oraz\\s+|\\s+a\\s+|$))", reVerb.flags);
   const m = src.match(re);
   if (!m) return null;
-  let out = (m[2] || "").trim();
-  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  let out = (m[2] || "").trim(); // grupa po czasowniku
+  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim(); // odetnij cel
   out = out.replace(/\s{2,}/g, " ").trim();
-  if (!keepPreposition)
-    out = out.replace(/^(w|we|na|do|przy|pod|u|obok|o)\s+/i, "").trim();
-  return out || null;
-}
-function qz_sliceAfterPlain(text, plainToken) {
-  const n = qz_norm(text);
-  const idx = n.indexOf(plainToken + " ");
-  if (idx < 0) return null;
-  const after = text.slice(idx + plainToken.length + 1);
-  const m = after.match(/^(.+?)\s*(?=(,|\.|;|\s+i\s+|\s+oraz\s+|\s+a\s+|$))/i);
-  if (!m) return null;
-  let out = (m[1] || "").trim();
-  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
-  out = out.replace(/\s{2,}/g, " ").trim();
+  if (!keepPreposition) out = out.replace(/^(w|we|na|do|przy|pod|u|obok|o)\s+/i, "").trim();
   return out || null;
 }
 
-/* ---- CZAS (rozszerzony) ---- */
-const QZ_RE_TIME = new RegExp(
-  "\\b(" +
-    "(?:rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|" +
-    "po (?:obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|" +
-    "przed (?:szkołą|lekcjami|lekcją|kolacją|treningiem|pracą))" +
-  ")\\b", "iu"
-);
+/* ——— Ekstrakcje: czas / miejsce / cel ——— */
+const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po (?:obiedzie|szkole|kolacji))\b/iu;
+function qz_time(text) { const m = String(text).match(QZ_RE_TIME); return m ? m[0] : null; }
 
-const QZ_RE_TIME_NODIAC = new RegExp(
-  "\\b(" +
-    "(?:rano|wieczorem|w poludnie|po poludniu|wczoraj|dzisiaj|dzis|jutro|" +
-    "po (?:obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)|" +
-    "przed (?:szkola|lekcjami|lekcja|kolacja|treningiem|praca))" +
-  ")\\b", "i"
-);
-
-function qz_time(text) {
-  const s = String(text);
-  const m = s.match(QZ_RE_TIME) || qz_norm(s).match(QZ_RE_TIME_NODIAC);
-  return m ? m[0] : null;
-}
 function qz_place(text) {
-  const s = String(text);
-  let m = s.match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
+  let m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
   if (!m) return null;
   let out = m[0].trim();
-  out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
-  out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
-  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, "").trim(); // odetnij „z psem/ze znajomymi”
+  // usuń ogony czasowe/uzasadnienia
+  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  out = out.replace(QZ_RE_TIME, "").trim();
   return out;
 }
 function qz_destination(text) {
-  let s = String(text);
-  s = s.replace(/^\s*Na\s+(koniec|końcu)\s+/iu, '');
-  s = s.replace(/^\s*(Potem|Następnie|Nastepnie)\s+/iu, '');
-  const matches = [...s.matchAll(/\b(do|na)\s+([^.,;!?]+)/giu)];
-  if (!matches.length) return null;
-  let out = matches[matches.length - 1][0].trim();
-  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, '').trim();
-  out = out.replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '').trim();
-  out = out.replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '').trim();
-  out = out.replace(/\s+(z|ze)\s+[^.,;!?]+.*$/i, '').trim();
-  out = out.replace(/\s+po\s+(?!obiedzie|szkole|kolacji|lekcjach|lekcji|treningu|treningach|pracy)\b[^.,;!?]+/iu, '').trim();
+  const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/iu);
+  if (!m) return null;
+  let out = m[0].trim();
+  out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
+  out = out.replace(QZ_RE_TIME, "").trim();
   return out;
 }
 
-/* ---------- 3. osoba: wykrycie imienia (ze STOP-słowami + fallback bez ogonków) ---------- */
-function qz_detectThirdName(text) {
-  const s = String(text || "").trim();
-  const STOP = /^(Potem|Wtedy|Dziś|Dzis|Wczoraj|Jutro|Następnie|Nastepnie|Później|Pozniej|Na)$/i;
-
-  let m = s.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
-  if (m && !STOP.test(m[1])) return m[1];
-
-  const sn = qz_normDiacritics(s);
-  m = sn.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)\s+(czyta|oglada|slucha|je|pije|gra|idzie|siedzi|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/u);
-  if (m && !STOP.test(m[1])) {
-    const tok = s.split(/\s+/u)[0];
-    if (/^[A-ZŁŚŻŹĆŃÓ]/.test(tok)) return tok;
-  }
-  return null;
-}
-
-/* ---------- mapa czasowników ---------- */
+/* ——— Mapa czasowników i szablonów pytań ——— */
 const QZ_VERBS = {
   OBJ_CO_1OS: [
     { re: /\b(czytam)\b/iu, q: "Co czytam?" },
@@ -962,7 +886,7 @@ const QZ_VERBS = {
     { re: /\b(oglądam)\b/iu,  q: "Co oglądam?" },
     { re: /\b(jem)\b/iu,      q: "Co jem?" },
     { re: /\b(piję)\b/iu,     q: "Co piję?" },
-    { re: /\b(słucham)\b/iu,  q: "Czego słucham?", genitive: true },
+    { re: /\b(słucham|slucham)\b/iu,  q: "Czego słucham?", genitive: true },
   ],
   OBJ_CO_3OS: [
     { re: /\b(czyta)\b/iu,   q: n => `Co czyta ${n}?` },
@@ -971,10 +895,10 @@ const QZ_VERBS = {
     { re: /\b(maluje)\b/iu,  q: n => `Co maluje ${n}?` },
     { re: /\b(gotuje)\b/iu,  q: n => `Co gotuje ${n}?` },
     { re: /\b(otwiera)\b/iu, q: n => `Co otwiera ${n}?` },
-    { re: /\b(ogląda)\b/iu,  q: n => `Co ogląda ${n}?` },
+    { re: /\b(ogląda|oglada)\b/iu,  q: n => `Co ogląda ${n}?` },
     { re: /\b(je)\b/iu,      q: n => `Co je ${n}?` },
     { re: /\b(pije)\b/iu,    q: n => `Co pije ${n}?` },
-    { re: /\b(słucha)\b/iu,  q: n => `Czego słucha ${n}?`, genitive: true },
+    { re: /\b(słucha|slucha)\b/iu,  q: n => `Czego słucha ${n}?`, genitive: true },
   ],
   PLAY_1OS_W:  { re: /\b(gram)\b/iu, prep: "w",  q: "W co gram?" },
   PLAY_3OS_W:  { re: /\b(gra)\b/iu,  prep: "w",  q: n => `W co gra ${n}?` },
@@ -990,153 +914,63 @@ const QZ_VERBS = {
     { re: /\b(stoi)\b/iu,   q: n => `Gdzie stoi ${n}?` },
     { re: /\b(leży)\b/iu,   q: n => `Gdzie leży ${n}?` },
   ],
-  MOVE_1OS: { re: /(idę|idziemy)/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
-  MOVE_3OS: { re: /(idzie)/iu,       qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?` },
-  LEARN_1OS: { re: /(uczę się)/iu,   q: "Czego się uczę?" },
-  LEARN_3OS: { re: /(uczy się)/iu,   q: n => `Czego uczy się ${n}?` },
+  // RUCH — rozszerzone o formy przeszłe i „wraca”
+  MOVE_1OS: { re: /(idę|idziemy|wracam)/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
+  MOVE_3OS: {
+    re: /(idzie|posz(?:ed[łl]|ła|li)|wr[oó]ci(?:ł|ła)|wraca)/iu,
+    qDest: n => `Dokąd idzie ${n}?`,
+    qTime: n => `Kiedy idzie ${n}?`
+  },
+  LEARN_1OS: { re: /(uczę się|ucze sie)/iu, q: "Czego się uczę?" },
+  LEARN_3OS: { re: /(uczy się|uczy sie)/iu, q: n => `Czego uczy się ${n}?` },
 };
 
-/* ---------- Heurystyka główna ---------- */
+/* ——— Główna heurystyka (z poprawkami PLAY NA + markery „potem/na koniec”) ——— */
 function qz_heuristic(textRaw, age) {
-  const picked = qz_pickBestSentence(String(textRaw || "").trim());
-  const text = picked;
+  // Zjedz markery dyskursywne z początku zdania, które nie powinny wpływać na pytanie
+  const text = String(textRaw || "")
+    .replace(/^\s*(potem|na\s+koniec|nast[eę]pnie|najpierw)\s+/iu, "")
+    .trim();
+
   const name3 = qz_detectThirdName(text);
   const isThird = !!name3;
 
-  // 1) gram W …
-  {
-    const v = isThird ? QZ_VERBS.PLAY_3OS_W : QZ_VERBS.PLAY_1OS_W;
-    if (text.match(v.re)) {
-      const m = text.match(/\bw\s+([^.,;!?]+)/i);
-      if (m) {
-        let ans = (m[1] || "").trim();
-        ans = ans
-          .replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '')
-          .replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '')
-          .trim();
-        const q = isThird ? v.q(name3) : v.q;
-        if (ans) return { question: q, answer: ans, fallback: false };
-      }
-    }
-  }
-  // 2) gram NA …
+  // 1) „gram na …” (instrument) – preferuj instrument bez miejsca/czasu
   {
     const v = isThird ? QZ_VERBS.PLAY_3OS_NA : QZ_VERBS.PLAY_1OS_NA;
     if (text.match(v.re)) {
       const m = text.match(/\bna\s+([^.,;!?]+)/i);
       if (m) {
-        let ans = (m[1] || "").trim();
-        ans = ans
-          .replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '')
-          .replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '')
+        const ans = (m[1] || "")
+          .replace(/\s+(w|we|do|na|przy|pod|u|obok)\s+.*$/i, "") // utnij od kolejnego przyimka
           .trim();
         const q = isThird ? v.q(name3) : v.q;
         if (ans) return { question: q, answer: ans, fallback: false };
       }
     }
   }
-  // 3) uczę się …
-  {
-    const v = isThird ? QZ_VERBS.LEARN_3OS : QZ_VERBS.LEARN_1OS;
-    const learnHit = isThird
-      ? qz_hasVerb(text, /(uczy się)/iu, /(uczy sie)/i)
-      : qz_hasVerb(text, /(uczę się)/iu, /(ucze sie)/i);
-    if (learnHit) {
-      let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
-      if (!obj) obj = qz_sliceAfterPlain(text, isThird ? "uczy sie" : "ucze sie");
-      let ans = (obj || "")
-        .replace(/^się\s+/i, "")
-        .replace(/^(czego|z|o)\s+/i, "")
-        .replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "")
-        .trim();
-      const q = isThird ? v.q(name3) : v.q;
-      if (ans) return { question: q, answer: ans, fallback: false };
-      return { question: q, answer: "", fallback: true };
-    }
-  }
-  // 4) Co/Czego…
-  {
-    const bucket = isThird ? QZ_VERBS.OBJ_CO_3OS : QZ_VERBS.OBJ_CO_1OS;
 
-    // priorytet dla „słucha …” (również bez ogonków)
-    if (/\bslucha\b/.test(qz_norm(text))) {
-      let objPlain = qz_sliceAfterPlain(text, "slucha");
-      if (objPlain) {
-        let ans = objPlain
-          .replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "")
-          .trim();
-        const q = isThird ? (name3 ? `Czego słucha ${name3}?` : "Czego słucha?") : "Czego słucham?";
+  // 2) „gram w …” (gra)
+  {
+    const v = isThird ? QZ_VERBS.PLAY_3OS_W : QZ_VERBS.PLAY_1OS_W;
+    if (text.match(v.re)) {
+      const m = text.match(/\bw\s+([^.,;!?]+)/i);
+      if (m) {
+        const ans = (m[1] || "").trim();
+        const q = isThird ? v.q(name3) : v.q;
         if (ans) return { question: q, answer: ans, fallback: false };
       }
     }
-
-    for (const v of bucket) {
-      if (!text.match(v.re)) continue;
-      let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
-      if (obj) {
-        obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
-        const q = isThird ? v.q(name3) : v.q;
-        return { question: q, answer: obj, fallback: false };
-      }
-      const mv = text.match(v.re);
-      if (mv) {
-        const verb = String(mv[1] || mv[0] || "").toLowerCase().trim();
-        if (verb) {
-          const qAct = isThird ? (name3 ? `Co robi ${name3}?` : `Co robi?`) : `Co robię?`;
-          return { question: qAct, answer: verb, fallback: true };
-        }
-      }
-    }
   }
-  // 5) RUCH (cel > czas) — teraźniejszy i przeszły
-  {
-    const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
 
-    const n = qz_norm(text);
-    const has1 = /(ide|idziemy|poszedlem|poszlam|wrocilem|wrocilam|wracam|wychodze)\b/.test(n);
-    const has3 = /(idzie|poszedl|poszla|poszli|wrocil|wrocila|wraca|wyszedl|wyszla)\b/.test(n);
-
-    if (has1 || has3) {
-      const dest = qz_destination(text);
-      if (dest) {
-        let q;
-        if (isThird && name3)      q = v.qDest(name3);
-        else if (has1)             q = v.qDest;
-        else                       q = "Dokąd idzie?";
-        const ans = dest.replace(/\s*,.*$/, "");
-        return { question: q, answer: ans, fallback: false };
-      }
-      const t = qz_time(text);
-      if (t) {
-        let q;
-        if (isThird && name3) q = v.qTime(name3);
-        else if (has1)        q = v.qTime;
-        else                  q = "Kiedy idzie?";
-        return { question: q, answer: t, fallback: false };
-      }
-      let q;
-      if (isThird && name3) q = v.qDest(name3);
-      else if (has1)        q = v.qDest;
-      else                  q = "Dokąd idzie?";
-      return { question: q, answer: "", fallback: true };
-    }
-  }
-  // 6) POZYCJA (miejsce > czas)
+  // 3) Pozycja (miejsce > czas)
   {
     const list = isThird ? QZ_VERBS.PLACE_3OS : QZ_VERBS.PLACE_1OS;
     for (const v of list) {
-      const ntext = qz_norm(text);
-      const altHit =
-        /\bsiedze\b/i.test(ntext) || /\bstoje\b/i.test(ntext) || /\bleze\b/i.test(ntext);
-      if (!text.match(v.re) && !altHit) continue;
-
+      if (!text.match(v.re)) continue;
       const p = qz_place(text);
       if (p) {
-        let ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
-        ans = ans
-          .replace(new RegExp(QZ_RE_TIME.source + '.*$', 'iu'), '')
-          .replace(new RegExp(QZ_RE_TIME_NODIAC.source + '.*$', 'i'), '')
-          .trim();
+        const ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
         const q = isThird ? v.q(name3) : v.q;
         return { question: q, answer: ans, fallback: false };
       }
@@ -1149,16 +983,180 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 7) fallback
+
+  // 4) Ruch (cel > czas)
+  {
+    const v = isThird ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
+    if (text.match(v.re)) {
+      const dest = qz_destination(text);
+      if (dest) {
+        const q = isThird ? v.qDest(name3) : v.qDest;
+        const ans = dest.replace(/\s*,.*$/, "");
+        return { question: q, answer: ans, fallback: false };
+      }
+      const t = qz_time(text);
+      if (t) {
+        const q = isThird ? v.qTime(name3) : v.qTime;
+        return { question: q, answer: t, fallback: false };
+      }
+      const q = isThird ? v.qDest(name3) : v.qDest;
+      return { question: q, answer: "", fallback: true };
+    }
+  }
+
+  // 5) „uczę się …”
+  {
+    const v = isThird ? QZ_VERBS.LEARN_3OS : QZ_VERBS.LEARN_1OS;
+    if (text.match(v.re)) {
+      const obj = qz_sliceAfter(text, v.re, { keepPreposition: false }) || "";
+      const ans = obj.replace(/^się\s+/i, "").replace(/^(czego|z|o)\s+/i, "").trim();
+      const q = isThird ? v.q(name3) : v.q;
+      if (ans) return { question: q, answer: ans, fallback: false };
+      return { question: q, answer: "", fallback: true };
+    }
+  }
+
+  // 6) Ogólne Co/Czego…
+  {
+    const bucket = isThird ? QZ_VERBS.OBJ_CO_3OS : QZ_VERBS.OBJ_CO_1OS;
+    for (const v of bucket) {
+      if (!text.match(v.re)) continue;
+      let obj = qz_sliceAfter(text, v.re, { keepPreposition: false });
+      if (obj) {
+        // skróć do „samego obiektu”: odetnij dalsze okoliczniki miejsca/czasu
+        obj = obj.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
+        const q = isThird ? v.q(name3) : v.q;
+        return { question: q, answer: obj, fallback: false };
+      }
+      const p = qz_place(text);
+      if (p) {
+        const q = (isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q)
+          .replace(/^Co|^Czego/, "Gdzie");
+        const ans = p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
+        return { question: q, answer: ans, fallback: true };
+      }
+      const t = qz_time(text);
+      if (t) {
+        const q = (isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q)
+          .replace(/^Co|^Czego/, "Kiedy");
+        return { question: q, answer: t, fallback: true };
+      }
+      const q = isThird ? (typeof v.q === "function" ? v.q(name3) : v.q) : v.q;
+      return { question: q, answer: "", fallback: true };
+    }
+  }
+
+  // 7) Fallback ogólny
   const p = qz_place(text);
-  if (p)
-    return { question: "Gdzie to się dzieje?", answer: p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim(), fallback: true };
+  if (p) return { question: "Gdzie to się dzieje?", answer: p.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim(), fallback: true };
   const t = qz_time(text);
   if (t) return { question: "Kiedy to się dzieje?", answer: t, fallback: true };
   return { question: "O co chodzi w zdaniu?", answer: "", fallback: true };
 }
 
-/* ===================== /agent/comprehend (SINGLE) ===================== */
+/* ——— Skracacz odpowiedzi ——— */
+function qz_shortAnswer(a = "") {
+  const words = (String(a).trim().split(/\s+/)).filter(Boolean);
+  if (words.length <= 6) return words.join(" ");
+  return words.slice(0, 6).join(" ");
+}
+
+/* ——— Q/A z jednego zdania (heurystyka + LLM fallback) ——— */
+async function qz_makeQAForSentence(sentence, age) {
+  let h = qz_heuristic(sentence, age);
+  if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
+    return { question: h.question, answer: h.answer, fallback: !!h.fallback, sentence };
+  }
+  if (typeof openai !== "undefined" && openai) {
+    const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
+Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
+Zdanie:
+"""${qz_trim(sentence, 600)}"""
+Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
+    try {
+      const r = await withDeadline(
+        openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0.2,
+          max_tokens: 120,
+          messages: [{ role: "user", content: prompt }]
+        }),
+        DEADLINE_MS
+      );
+      const out = (r?.choices?.[0]?.message?.content || "").trim();
+      const m = out.match(/\{[\s\S]*\}/);
+      if (m) {
+        const j = JSON.parse(m[0]);
+        let q = String(j?.question || "").replace(/[„”"']/g, "").trim();
+        let a = qz_shortAnswer(String(j?.answer || "").replace(/[„”"']/g, "").trim());
+        if (qz_qmark(q) && a) return { question: q, answer: a, fallback: false, sentence };
+      }
+    } catch { /* miękko */ }
+  }
+  h = qz_heuristic(sentence, age);
+  const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
+  const answer = qz_shortAnswer(h.answer || "");
+  return { question, answer, fallback: true, sentence };
+}
+
+/* ——— Scoring i wybór K zdań (MMR) ——— */
+function qz_scoreSentence(sent) {
+  const n = qz_norm(sent);
+  let sc = 0;
+  if (/\b(id(e|z|ziemy)|idzie|posz(l|la|li|lem|lam)|wroc(il|ila|imy|ilem|ilam)|wraca)\b/i.test(n) && /\b(do|na)\b/i.test(n)) sc += 100;
+  if (/\b(czyt|pisz|rysuj|otwier|jem|pij|sluch|oglad)\b/i.test(n)) sc += 50;
+  if (/\b(siedz|stoi|lez|usiad)\b/i.test(n)) sc += 20;
+  if (/^[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+\b/u.test(sent)) sc += 5;
+  const wc = (sent.match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
+  const dist = Math.abs(wc - 12); sc += Math.max(0, 18 - dist);
+  return sc;
+}
+function qz_selectTopSentences(text, k = 3) {
+  const sents = qz_splitSentences(text);
+  if (!sents.length) return [];
+  const ranked = sents.map(s => ({ s, score: qz_scoreSentence(s) })).sort((a, b) => b.score - a.score);
+  const picked = []; const lambda = 0.75;
+  while (picked.length < k && ranked.length) {
+    let bestIdx = 0, bestVal = -1;
+    for (let i = 0; i < ranked.length; i++) {
+      const cand = ranked[i];
+      const sim = picked.length ? Math.max(...picked.map(p => qz_jaccard(p.s, cand.s))) : 0;
+      const val = lambda * cand.score - (1 - lambda) * (sim * 100);
+      if (val > bestVal) { bestVal = val; bestIdx = i; }
+    }
+    picked.push(ranked.splice(bestIdx, 1)[0]);
+  }
+  return picked.map(x => x.s);
+}
+async function qz_makeQuestions(text, age, count = 3) {
+  const k = Math.max(1, Math.min(6, Number(count) || 3));
+  const selected = qz_selectTopSentences(text, k);
+  const items = [];
+  for (const s of selected) {
+    const sent = s.replace(/\s+/g, " ").trim();
+    const qa = await qz_makeQAForSentence(sent, age);
+    if (!items.some(x => x.question === qa.question || x.answer === qa.answer)) items.push(qa);
+    if (items.length >= k) break;
+  }
+  return items;
+}
+
+/* ===================== /agent/comprehend-multi ===================== */
+/** Body: { text: string, age?: number, count?: number } */
+app.post("/agent/comprehend-multi", async (req, res) => {
+  try {
+    const { text = "", age, count = 3 } = req.body || {};
+    const src = String(text || "").trim();
+    if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
+    const items = await qz_makeQuestions(src, age, count);
+    return res.json({ ok: true, count: items.length, items });
+  } catch (err) {
+    console.error("comprehend-multi error:", err);
+    return res.status(200).json({ ok: true, count: 0, items: [] });
+  }
+});
+
+/* ===================== /agent/comprehend ===================== */
 app.post("/agent/comprehend", async (req, res) => {
   try {
     const { text = "", age } = req.body || {};
@@ -1194,11 +1192,10 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
           const j = JSON.parse(m[0]);
           const q = String(j?.question || "").replace(/[„”"']/g, "").trim();
           const a = String(j?.answer || "").replace(/[„”"']/g, "").trim();
-          if (qz_qmark(q) && a && qz_wc(a) <= 8) {
+          if (qz_qmark(q) && a && qz_wc(a) <= 8)
             return res.json({ ok: true, question: q, answer: a, fallback: false });
-          }
         }
-      } catch (_) { /* miękko */ }
+      } catch { /* miękko */ }
     }
 
     // 3) Ostateczny fallback na heurystykę
@@ -1218,118 +1215,6 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
   }
 });
 
-/* ===================== MULTI: wybór K zdań i K Q/A ===================== */
-function qz_wordsTokens(s = "") {
-  return (qz_norm(s).match(/\b[\p{L}0-9'-]+\b/gu) || []).filter(Boolean);
-}
-function qz_jaccard(a = "", b = "") {
-  const A = new Set(qz_wordsTokens(a));
-  const B = new Set(qz_wordsTokens(b));
-  if (!A.size && !B.size) return 1;
-  let inter = 0; for (const x of A) if (B.has(x)) inter++;
-  return inter / (A.size + B.size - inter);
-}
-function qz_scoreSentence(sent) {
-  const n = qz_norm(sent);
-  let sc = 0;
-  if (/\b(id(e|z|ziemy)|idzie|posz(l|la|li|lem|lam)|wroc(il|ila|imy|ilem|ilam)|wraca)\b/i.test(n) && /\b(do|na)\b/i.test(n)) sc += 100;
-  if (/\b(czyt|pisz|rysuj|otwier|jem|pij|sluch|oglada)\b/i.test(n)) sc += 50;
-  if (/\b(siedz|stoi|lez|usiad)\b/i.test(n)) sc += 20;
-  if (/^[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+\b/u.test(sent)) sc += 5;
-  const wc = (sent.match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
-  const dist = Math.abs(wc - 12);
-  sc += Math.max(0, 18 - dist);
-  return sc;
-}
-function qz_selectTopSentences(text, k = 3) {
-  const sents = qz_splitSentences(text);
-  if (!sents.length) return [];
-  const ranked = sents.map(s => ({ s, score: qz_scoreSentence(s) }))
-                      .sort((a, b) => b.score - a.score);
-  const picked = [];
-  const lambda = 0.75;
-  while (picked.length < k && ranked.length) {
-    let bestIdx = 0, bestVal = -1;
-    for (let i = 0; i < ranked.length; i++) {
-      const cand = ranked[i];
-      const sim = picked.length ? Math.max(...picked.map(p => qz_jaccard(p.s, cand.s))) : 0;
-      const val = lambda * cand.score - (1 - lambda) * (sim * 100);
-      if (val > bestVal) { bestVal = val; bestIdx = i; }
-    }
-    picked.push(ranked.splice(bestIdx, 1)[0]);
-  }
-  return picked.map(x => x.s);
-}
-function qz_shortAnswer(a = "") {
-  const words = String(a).trim().split(/\s+/).filter(Boolean);
-  if (words.length <= 6) return words.join(" ");
-  return words.slice(0, 6).join(" ");
-}
-async function qz_makeQAForSentence(sentence, age) {
-  let h = qz_heuristic(sentence, age);
-  if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
-    return { question: h.question, answer: h.answer, fallback: !!h.fallback, sentence };
-  }
-  if (typeof openai !== "undefined" && openai) {
-    const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
-Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
-Zdanie:
-"""${qz_trim(sentence, 600)}"""
-Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
-    try {
-      const r = await withDeadline(
-        openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          temperature: 0.2,
-          max_tokens: 120,
-          messages: [{ role: "user", content: prompt }]
-        }),
-        DEADLINE_MS
-      );
-      const out = (r?.choices?.[0]?.message?.content || "").trim();
-      const m = out.match(/\{[\s\S]*\}/);
-      if (m) {
-        const j = JSON.parse(m[0]);
-        let q = String(j?.question || "").replace(/[„”"']/g, "").trim();
-        let a = qz_shortAnswer(String(j?.answer || "").replace(/[„”"']/g, "").trim());
-        if (qz_qmark(q) && a) {
-          return { question: q, answer: a, fallback: false, sentence };
-        }
-      }
-    } catch { /* miękko */ }
-  }
-  h = qz_heuristic(sentence, age);
-  const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
-  const answer = qz_shortAnswer(h.answer || "");
-  return { question, answer, fallback: true, sentence };
-}
-async function qz_makeQuestions(text, age, count = 3) {
-  const k = Math.max(1, Math.min(6, Number(count) || 3));
-  const pool = qz_selectTopSentences(text, Math.max(k * 3, k + 2));
-  const items = [];
-  for (const s of pool) {
-    const sent = s.replace(/\s+/g, " ").trim();
-    const qa = await qz_makeQAForSentence(sent, age);
-    const dup = items.some(x => x.question === qa.question && x.answer === qa.answer);
-    if (!dup && qa.question && qa.answer) items.push(qa);
-    if (items.length >= k) break;
-  }
-  return items;
-}
-
-/* ===================== /agent/comprehend-multi ===================== */
-app.post("/agent/comprehend-multi", async (req, res) => {
-  try {
-    const { text = "", age, count = 3 } = req.body || {};
-    const src = String(text || "").trim();
-    if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
-    const items = await qz_makeQuestions(src, age, count);
-    return res.json({ ok: true, count: items.length, items });
-  } catch (err) {
-    console.error("comprehend-multi error:", err);
-    return res.status(200).json({ ok: true, count: 0, items: [] });
-  }
-});
 
 
 
