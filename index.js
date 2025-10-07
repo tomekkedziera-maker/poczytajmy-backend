@@ -1352,7 +1352,7 @@ async function qz_makeQAForSentence(sentence, age, { forceLlm = false, wantRaw =
     };
   }
 
-  // 2) LLM przez chatPref (OpenAI→Groq via Twoja funkcja chatPref)
+  // 2) LLM przez chatPref
   try {
     const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
@@ -1555,7 +1555,7 @@ app.post("/agent/comprehend", async (req, res) => {
     });
   }
 });
-*/
+
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
