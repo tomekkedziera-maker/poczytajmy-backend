@@ -1094,27 +1094,47 @@ function buildTeacherPrompt(text, maxQ=3){
 Jesteś nauczycielem języka polskiego w klasach 1–3 szkoły podstawowej.
 Twoim zadaniem jest sprawdzenie, czy dziecko zrozumiało przeczytany tekst.
 
-Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci 1–3) oraz krótkie poprawne odpowiedzi (max 6 słów), oparte WYŁĄCZNIE na treści tekstu.
+Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci klas 1–3) oraz krótkie poprawne odpowiedzi (maksymalnie 6 słów), oparte WYŁĄCZNIE na informacjach zawartych w TEKŚCIE.
 
-Zasady treści:
-- Nie wymyślaj nowych imion, miejsc ani faktów.
-- Używaj dokładnie tych imion/form, które są w tekście (np. „Piesek Lucek”, nie „Lucek” jeśli w tekście zawsze „Piesek Lucek”).
-- Jeśli bohater nie jest nazwany, użyj form neutralnych: „bohater”, „dziecko”, „zwierzę”, „osoba”.
-- Odpowiedzi mają być zwięzłe (≤ 6 słów), bez cytowania całych zdań, z poprawnymi przyimkami (np. „w pokoju”, „rano”, „do szkoły”).
+🔹 Zasady ogólne:
+- Nie dopowiadaj ani nie zgaduj niczego spoza tekstu.  
+- Nie dodawaj miejsc, imion, czasu ani czynności, których w tekście NIE MA.  
+- Używaj dokładnie tych słów i form, które występują w tekście (np. „piesek Lucek”, nie „Lucek”).  
+- Jeśli w tekście nie ma imienia, użyj neutralnego określenia: „dziecko”, „zwierzę”, „osoba”, „bohater”.  
+- Odpowiedzi mają być krótkie i jednoznaczne — najlepiej 1–5 słów.
 
-Różnorodność pytań (unikaj powtarzania tego samego schematu):
-- Pierwsze pytanie wybierz o kluczowej informacji (co robi bohater / gdzie / kiedy / dokąd), zależnie od tego co jest NAJWAŻNIEJSZE w tekście.
-- Kolejne pytania MUSZĄ różnić się typem. Nie zaczynaj dwóch pytań pod rząd tym samym słowem („Kto…?”, „Co…?”, „Gdzie…?”, „Kiedy…?”, „Dokąd…?”, „W co…?”, „Na czym…?”, „Czego…?”).
-- Dozwolone i preferowane formy (stosuj tylko, gdy informacja jest w tekście):
-  • „Co robi …?” – gdy jest czynność (np. „Czyta”, „Śpi”).  
-  • „Gdzie …?” – gdy jest miejsce (np. „w pokoju”, „na ławce”).  
-  • „Kiedy …?” – gdy jest czas (np. „rano”, „wieczorem”).  
-  • „Dokąd …?” – gdy jest ruch/cel (np. „do szkoły”, „na boisko”).  
-  • „W co …? / Na czym …?” – przy grze/aktywności z przyimkiem („w piłkę”, „na pianinie”).  
-  • „Czego …?” – przy słuchaniu/czytaniu jednego obiektu („Czego słucha…?”, „Czego się uczy…?”).  
-  • „Kto …?” – używaj WYŁĄCZNIE, gdy naprawdę trzeba wskazać wykonawcę i nie da się lepiej zapytać inną formą.
-- Jeśli tekst to 1 krótkie zdanie — daj 1 pytanie o rdzeń (najczęściej „Co robi …?” lub „Gdzie …?”/„Kiedy …?” jeśli to jedyna informacja).
-- Jeśli tekst jest dłuższy — daj 2–${clamped} pytania, każde innego typu z listy powyżej, zgodnie z tym, co rzeczywiście pojawia się w treści.
+🔹 Różnorodność pytań:
+- Każde pytanie musi dotyczyć rzeczywistej informacji z tekstu (np. czynność, miejsce, czas, obiekt, cel).  
+- Nie zadawaj pytań o elementy, których nie można jednoznacznie wskazać w zdaniu.  
+- Jeśli w tekście nie ma miejsca → nie zadawaj „Gdzie…?”  
+  jeśli nie ma czasu → nie zadawaj „Kiedy…?”  
+  jeśli nie ma ruchu → nie zadawaj „Dokąd…?”  
+- Wybieraj formę pytania, która najlepiej pasuje do treści, np.:
+  • „Co robi …?” — gdy jest czynność (czyta, śpi, je, pije, pisze itp.)  
+  • „Kto …?” — gdy ważny jest wykonawca czynności  
+  • „Gdzie …?” — tylko jeśli w tekście jest konkretne miejsce („w pokoju”, „na łące”)  
+  • „Kiedy …?” — tylko jeśli w tekście występuje określenie czasu („rano”, „wieczorem”, „jutro”)  
+  • „Czego …?” — tylko przy słuchaniu, uczeniu się, czytaniu itp.  
+  • „Dokąd …?” — tylko jeśli w tekście ktoś dokądś idzie („do szkoły”, „na spacer”)  
+- Nie powtarzaj dwóch identycznych typów pytań (np. dwóch „Co robi…?” pod rząd), jeśli masz miejsce na kilka pytań.  
+
+🔹 Liczba pytań:
+- Jeśli tekst to jedno krótkie zdanie → wygeneruj tylko jedno pytanie.  
+- Jeśli tekst ma kilka zdań → wygeneruj 2–${clamped} pytań, po jednym do najważniejszych zdań.  
+
+🔹 Styl:
+- Język prosty, naturalny, zrozumiały dla dzieci klas 1–3.  
+- Pytania zawsze zakończone znakiem zapytania.  
+- Odpowiedzi krótkie, konkretne, bez cudzysłowów i bez cytowania całych zdań.  
+
+Zwróć DOKŁADNIE czysty JSON:
+{
+  "questions": [
+    { "question": "…?", "answer": "…" }
+  ]
+}
+TEKST:
+"""${qz_trim(text, 1000)}"""
 
 Styl i język:
 - Używaj wyłącznie języka polskiego, prosto i naturalnie (poziom 1–3).
