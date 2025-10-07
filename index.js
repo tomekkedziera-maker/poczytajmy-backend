@@ -1019,7 +1019,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* ==================  QUIZ / COMPREHEND – V2 + MULTI  ================== */
+/* ==================  QUIZ / COMPREHEND – LLM-FIRST  =================== */
 /* ===================================================================== */
 
 /* ===== Flagi debug (ENV) ===== */
@@ -1031,11 +1031,11 @@ function flag(v) {
   return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
 }
 
-/* ===== Bezpieczne nagłówki ASCII (żadne polskie znaki, brak CR/LF) ===== */
+/* ===== Nagłówki: tylko ASCII (żeby Node nie krzyczał) ===== */
 function safeHeaderASCII(v) {
   const s = String(v ?? '')
-    .replace(/[\r\n]+/g, ' ')       // usuń nowe linie
-    .replace(/[^\x20-\x7E]/g, '')   // usuń nie-ASCII (polskie litery, kontrolne)
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[^\x20-\x7E]/g, '')
     .trim()
     .slice(0, 160);
   return s;
@@ -1057,25 +1057,7 @@ function qz_trim(s = "", limit = 600) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 function qz_qmark(q = "") { return /\?\s*$/.test(String(q)); }
-function qz_wc(a = "") {
-  return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
-}
-function qz_normDiacritics(s=""){
-  return String(s||"")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g,"")
-    .replace(/ł/g,"l").replace(/Ł/g,"L");
-}
-function qz_norm(s=""){ return qz_normDiacritics(String(s||"")).toLowerCase(); }
-function qz_words(s=""){
-  return (qz_norm(s).match(/\b[\p{L}0-9'-]+\b/gu) || []).filter(Boolean);
-}
-function qz_jaccard(a="", b=""){
-  const A = new Set(qz_words(a)); const B = new Set(qz_words(b));
-  if (!A.size && !B.size) return 1;
-  let inter = 0; for (const x of A) if (B.has(x)) inter++;
-  return inter / (A.size + B.size - inter);
-}
+function qz_wc(a = "") { return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length; }
 function qz_splitSentences(s="") {
   return String(s||"")
     .replace(/\s*[\r\n]+\s*/g, " ")
@@ -1083,68 +1065,110 @@ function qz_splitSentences(s="") {
     .map(t=>t.trim())
     .filter(Boolean);
 }
-
-/* ===== Mini heurystyka dla QA ===== */
-function qz_heuristic(sentence) {
-  const text = String(sentence || "").trim();
-  const m = text.match(/\b(w|na|do|przy|pod|u)\s+([\p{L}\p{M}]+)/iu);
-  if (m) {
-    return { question: "Gdzie to się dzieje?", answer: m[2], fallback: false };
-  }
-  const t = text.match(/\b(rano|wieczorem|dzisiaj|jutro|wczoraj)\b/i);
-  if (t) {
-    return { question: "Kiedy to się dzieje?", answer: t[1], fallback: false };
-  }
-  return { question: "O co chodzi w zdaniu?", answer: "", fallback: true };
-}
-
-/* ===== Skracanie odpowiedzi ===== */
 function qz_shortAnswer(a=""){
   const words = (String(a).trim().split(/\s+/)).filter(Boolean);
   if (words.length <= 6) return words.join(' ');
   return words.slice(0,6).join(' ');
 }
 
-/* ===== Jedno Q/A dla zdania ===== */
-async function qz_makeQAForSentence(sentence, age, { forceLlm = false, wantRaw = false } = {}) {
-  let h = !forceLlm ? qz_heuristic(sentence) : null;
-  if (!forceLlm && h && qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
-    return { ...h, sentence, source_path: "heuristic" };
+/* ===== Minimalny fallback heurystyczny (tylko w razie porażki LLM) ===== */
+function qz_heuristic(sentence) {
+  const text = String(sentence || "").trim();
+  const mPlace = text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/iu);
+  if (mPlace) {
+    const place = String(mPlace[2] || "").trim().split(/\s+/)[0];
+    if (place) return { question: "Gdzie to się dzieje?", answer: place, fallback: true };
   }
+  const mTime = text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu);
+  if (mTime) return { question: "Kiedy to się dzieje?", answer: mTime[1], fallback: true };
+  // jeżeli brak miejsca/czasu — zapytaj o czynność/podmiot ogólnie
+  const mVerb = text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|slucha|słucha)\b/iu);
+  if (mVerb) return { question: "Co się dzieje w zdaniu?", answer: mVerb[1].toLowerCase(), fallback: true };
+  return { question: "O co chodzi w zdaniu?", answer: "", fallback: true };
+}
 
-  try {
-    const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedz (max 6 slow).
-Preferuj: "Co…?", "Czego…?", "Dokad…?", "Gdzie…?".
+/* ===== LLM helper: najpierw OpenAI (chatPref), potem Groq (jeśli dostępny) ===== */
+async function llmQA_JSON(sentence) {
+  const prompt = `Na podstawie zdania napisz JEDNO bardzo proste pytanie kontrolne i krótką odpowiedź (max 6 słów).
+Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
 Zdanie:
 """${qz_trim(sentence, 600)}"""
-Zwróc JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
+Zwróć dokładnie JSON: {"question":"…?","answer":"…"} — bez komentarza, bez dodatkowego tekstu.`;
 
+  // 1) OpenAI przez chatPref (masz to w pliku — używamy spójnie)
+  try {
     const { text: out, provider } = await chatPref({
       prompt,
       temperature: 0.2,
       max_tokens: 120,
       top_p: 0.95,
-      deadlineMs: Math.max(1500, DEADLINE_MS)
+      deadlineMs: Math.max(2000, (typeof DEADLINE_MS !== 'undefined' ? DEADLINE_MS : 1500))
     });
-
     const m = String(out || '').match(/\{[\s\S]*\}/);
     if (m) {
       const j = JSON.parse(m[0]);
       let q = String(j?.question || "").replace(/[„”"']/g, "").trim();
       let a = qz_shortAnswer(String(j?.answer || "").replace(/[„”"']/g, "").trim());
       if (qz_qmark(q) && a) {
-        return { question: q, answer: a, fallback: false, sentence, source_path: "llm", llm_provider: provider };
+        return { ok: true, question: q, answer: a, provider: provider || 'openai' };
       }
     }
-  } catch {}
+  } catch (e) {
+    // zostawiamy szansę Groq, jeżeli jest
+  }
 
-  h = qz_heuristic(sentence);
-  const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
-  const answer = qz_shortAnswer(h.answer || "");
-  return { question, answer, fallback: true, sentence, source_path: "heuristic-fallback" };
+  // 2) Groq fallback (jeśli zdefiniowany groqChat w Twoim pliku)
+  if (typeof groqChat === 'function') {
+    try {
+      const { text: out, provider } = await groqChat({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 120,
+        temperature: 0.2,
+        top_p: 0.95
+      });
+      const m = String(out || '').match(/\{[\s\S]*\}/);
+      if (m) {
+        const j = JSON.parse(m[0]);
+        let q = String(j?.question || "").replace(/[„”"']/g, "").trim();
+        let a = qz_shortAnswer(String(j?.answer || "").replace(/[„”"']/g, "").trim());
+        if (qz_qmark(q) && a) {
+          return { ok: true, question: q, answer: a, provider: provider || 'groq' };
+        }
+      }
+    } catch {}
+  }
+
+  return { ok: false };
 }
 
-/* ===== Wybór najlepszych zdań ===== */
+/* ===== Jedno Q/A dla zdania — LLM FIRST ===== */
+async function qz_makeQAForSentence(sentence, age, { wantRaw = false } = {}) {
+  // 1) LLM próba
+  const llm = await llmQA_JSON(sentence);
+  if (llm.ok) {
+    return {
+      question: llm.question,
+      answer: llm.answer,
+      fallback: false,
+      sentence,
+      source_path: 'llm',
+      llm_provider: llm.provider || 'openai_or_groq'
+    };
+  }
+
+  // 2) Fallback — heurystyka (awaryjnie)
+  const h = qz_heuristic(sentence);
+  return {
+    question: h.question,
+    answer: h.answer,
+    fallback: true,
+    sentence,
+    source_path: 'heuristic-fallback',
+    llm_provider: null
+  };
+}
+
+/* ===== Wybór zdań (prosto: pierwsze K) ===== */
 function qz_selectTopSentences(text, k=3){
   const sents = qz_splitSentences(text);
   return sents.slice(0, k);
@@ -1164,26 +1188,29 @@ async function qz_makeQuestions(text, age, count=3, opts = {}) {
 /* ===================== /agent/comprehend-multi ===================== */
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
-    const debug     = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG || ALWAYS_INCLUDE_DEBUG;
-    const forceLlm  = flag(req.query?.force_llm) || flag(req.body?.force_llm);
-    const rawLlm    = flag(req.query?.raw_llm)   || flag(req.body?.raw_llm);
-
+    const debug   = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG || ALWAYS_INCLUDE_DEBUG;
+    const rawLlm  = flag(req.query?.raw_llm) || flag(req.body?.raw_llm);
     const { text = "", age, count = 3 } = req.body || {};
+
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    const full = await qz_makeQuestions(src, age, count, { forceLlm, wantRaw: rawLlm });
-
+    const full = await qz_makeQuestions(src, age, count, { wantRaw: rawLlm });
     const head = full[0] || {};
     setComprehendHeaders(res, head);
 
     if (debug) {
-      console.log('[COMPREHEND-MULTI]', full.map(i => ({
-        path: i.source_path, q: i.question, a: i.answer
+      console.log('[COMPREHEND:MULTI]', full.map(i => ({
+        path: i.source_path, q: i.question, a: i.answer, sent: i.sentence, provider: i.llm_provider
       })));
     }
 
-    return res.json({ ok: true, count: full.length, items: full });
+    return res.json({
+      ok: true,
+      count: full.length,
+      items: full,
+      ...(debug ? { _debug: { first: head } } : {})
+    });
   } catch (err) {
     console.error("comprehend-multi error:", err);
     return res.status(200).json({ ok: true, count: 0, items: [] });
@@ -1193,21 +1220,22 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 /* ===================== /agent/comprehend ===================== */
 app.post("/agent/comprehend", async (req, res) => {
   try {
-    const debug     = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG || ALWAYS_INCLUDE_DEBUG;
-    const forceLlm  = flag(req.query?.force_llm) || flag(req.body?.force_llm);
-    const rawLlm    = flag(req.query?.raw_llm)   || flag(req.body?.raw_llm);
-
+    const debug   = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG || ALWAYS_INCLUDE_DEBUG;
+    const rawLlm  = flag(req.query?.raw_llm) || flag(req.body?.raw_llm);
     const { text = "", age } = req.body || {};
+
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
     const best = qz_selectTopSentences(src, 1)[0] || src;
-    const qa = await qz_makeQAForSentence(best, age, { forceLlm, wantRaw: rawLlm });
+    const qa = await qz_makeQAForSentence(best, age, { wantRaw: rawLlm });
 
     setComprehendHeaders(res, qa);
 
     if (debug) {
-      console.log('[COMPREHEND]', { path: qa.source_path, q: qa.question, a: qa.answer, sent: qa.sentence, provider: qa.llm_provider });
+      console.log('[COMPREHEND:ONE]', {
+        path: qa.source_path, q: qa.question, a: qa.answer, sent: qa.sentence, provider: qa.llm_provider
+      });
     }
 
     return res.json({
@@ -1215,7 +1243,8 @@ app.post("/agent/comprehend", async (req, res) => {
       question: qa.question,
       answer: qa.answer,
       fallback: !!qa.fallback,
-      source_path: qa.source_path
+      source_path: qa.source_path,
+      ...(debug ? { _debug: { sentence_used: qa.sentence, llm_provider: qa.llm_provider } } : {})
     });
   } catch (err) {
     console.error("comprehend error:", err);
