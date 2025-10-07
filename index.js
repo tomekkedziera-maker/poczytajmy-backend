@@ -1031,6 +1031,15 @@ function flag(v) {
   return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
 }
 
+/* ===== Bezpieczne nagłówki (bez CR/LF i znaków kontrolnych) ===== */
+function safeHeader(v) {
+  return String(v ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[^\x20-\x7E\xA0-\uD7FF\uE000-\uFFFD]/g, '')
+    .trim()
+    .slice(0, 200);
+}
+
 /* ===== Utilsy tekstowe ===== */
 function qz_trim(s = "", limit = 600) {
   const t = String(s || "").replace(/\s+/g, " ").trim();
@@ -1181,7 +1190,7 @@ const QZ_VERBS = {
   LEARN_3OS: { re: /\b(uczy się)\b/iu, q: n => `Czego uczy się ${n}?`, q3: "Czego uczy się?" },
 };
 
-/* ===== Heurystyka z metadanymi (dla diagnostyki) ===== */
+/* ===== Heurystyka z metadanymi ===== */
 function qz_heuristic(textRaw, age) {
   const text = String(textRaw || "").trim();
   const name3 = qz_detectThirdName(text);
@@ -1323,7 +1332,6 @@ function qz_heuristic(textRaw, age) {
     }
   }
 
-  // fallback ogólny
   const p = qz_place(text);
   if (p) return { question: "Gdzie to się dzieje?", answer: qz_compressPlace(p), fallback: true,
     meta: { ...metaBase, strategy: 'GEN_PLACE' } };
@@ -1341,9 +1349,8 @@ function qz_shortAnswer(a=""){
   return words.slice(0,6).join(' ');
 }
 
-/* ===== Jedno Q/A dla jednego zdania z diagnostyką i wymuszeniem LLM ===== */
+/* ===== Jedno Q/A dla jednego zdania ===== */
 async function qz_makeQAForSentence(sentence, age, { forceLlm = false, wantRaw = false } = {}) {
-  // 1) Heurystyka, jeśli nie wymuszono
   let h = !forceLlm ? qz_heuristic(sentence, age) : null;
   if (!forceLlm && h && qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
     return {
@@ -1352,7 +1359,6 @@ async function qz_makeQAForSentence(sentence, age, { forceLlm = false, wantRaw =
     };
   }
 
-  // 2) LLM przez chatPref
   try {
     const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
@@ -1383,10 +1389,9 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
       }
     }
   } catch {
-    // miękko — spróbujemy heurystyki niżej
+    // miękko
   }
 
-  // 3) Ostateczny fallback — heurystyka
   h = qz_heuristic(sentence, age);
   const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
   const answer = qz_shortAnswer(h.answer || "");
@@ -1461,12 +1466,11 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 
     const full = await qz_makeQuestions(src, age, count, { forceLlm, wantRaw: rawLlm });
 
-    // nagłówki do logów (na podstawie pierwszego wpisu)
     const head = full[0] || {};
-    res.setHeader('X-Comprehend-Path', full.some(i => i.source_path === 'llm') ? 'llm' : (head.source_path || 'heuristic/mixed'));
-    res.setHeader('X-Comprehend-Question', head.question || '');
-    res.setHeader('X-Comprehend-Answer', head.answer || '');
-    res.setHeader('X-Comprehend-Sentence', head.sentence || '');
+    res.setHeader('X-Comprehend-Path', safeHeader(full.some(i => i.source_path === 'llm') ? 'llm' : (head.source_path || 'heuristic/mixed')));
+    res.setHeader('X-Comprehend-Question', safeHeader(head.question || ''));
+    res.setHeader('X-Comprehend-Answer', safeHeader(head.answer || ''));
+    res.setHeader('X-Comprehend-Sentence', safeHeader(head.sentence || ''));
 
     const items = full.map(qa => {
       const base = {
@@ -1510,7 +1514,6 @@ app.post("/agent/comprehend", async (req, res) => {
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    // jeśli jest kilka zdań – wybierz najlepsze
     const best = qz_selectTopSentences(src, 1)[0] || src;
 
     const qa = await qz_makeQAForSentence(best, age, {
@@ -1518,11 +1521,10 @@ app.post("/agent/comprehend", async (req, res) => {
       wantRaw: rawLlm
     });
 
-    // nagłówki do logów / proxy
-    res.setHeader('X-Comprehend-Path', qa.source_path || 'unknown');
-    res.setHeader('X-Comprehend-Question', qa.question || '');
-    res.setHeader('X-Comprehend-Answer', qa.answer || '');
-    res.setHeader('X-Comprehend-Sentence', qa.sentence || '');
+    res.setHeader('X-Comprehend-Path', safeHeader(qa.source_path || 'unknown'));
+    res.setHeader('X-Comprehend-Question', safeHeader(qa.question || ''));
+    res.setHeader('X-Comprehend-Answer', safeHeader(qa.answer || ''));
+    res.setHeader('X-Comprehend-Sentence', safeHeader(qa.sentence || ''));
 
     const payload = {
       ok: true,
@@ -1555,6 +1557,7 @@ app.post("/agent/comprehend", async (req, res) => {
     });
   }
 });
+
 
 
 /* ===================== START ===================== */
