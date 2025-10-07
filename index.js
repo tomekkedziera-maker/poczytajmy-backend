@@ -1057,6 +1057,28 @@ function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLower
 function qz_trim(s="", limit=900){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
 function qz_splitSentences(s=""){ return String(s||"").replace(/\s*[\r\n]+\s*/g," ").split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean); }
 function safeHeaderASCII(v){ return String(v ?? '').replace(/[\r\n]+/g,' ').replace(/[^\x20-\x7E]/g,'').trim().slice(0,160); }
+function setComprehendHeaders(req, res, payload){
+  if (flag(req?.query?.nohdr)) return; // ?nohdr=1 -> brak nagłówków (PowerShell-friendly)
+  if (!payload) return;
+
+  const providerRaw =
+    payload.llm_provider ||            // preferuj to, co przeszło w itemie
+    payload.provider     ||            // (gdybyś kiedyś dodał)
+    (payload.source_path === 'llm' ? 'unknown-llm' : ''); // cokolwiek sensownego
+
+  const q = safeHeaderASCII(payload.question || '');
+  const a = safeHeaderASCII(payload.answer   || '');
+  const s = safeHeaderASCII(payload.sentence || '');
+  const p = safeHeaderASCII(payload.source_path || payload.path || 'unknown');
+  const prov = safeHeaderASCII(providerRaw || '');
+
+  res.setHeader('X-Comprehend-Path', p || '-');
+  if (prov) res.setHeader('X-Comprehend-Provider', prov);
+  if (q)    res.setHeader('X-Comprehend-Question', q);
+  if (a)    res.setHeader('X-Comprehend-Answer', a);
+  if (s)    res.setHeader('X-Comprehend-Sentence', s);
+}
+
 /* twardy timeout: zawsze coś zwrócimy */
 function hardTimeout(promise, ms) {
   return new Promise((resolve) => {
@@ -1219,7 +1241,7 @@ app.post('/agent/comprehend-multi', async (req, res) => {
       }));
     }
 
-    setComprehendHeaders(req, res, out[0]);
+    setComprehendHeaders(res, out[0]);
     if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a:i.answer,s:i.sentence})));
     return res.json({ ok: true, count: out.length, items: out });
   } catch (err) {
@@ -1256,7 +1278,7 @@ app.post('/agent/comprehend', async (req, res) => {
       qa = { question: h.question, answer: h.answer, fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
 
-    setComprehendHeaders(req, res, qa);
+    setComprehendHeaders(res, qa);
     if (dbg) console.log('[COMPREHEND-ONE]', { path: qa.source_path, provider: qa.llm_provider, q: qa.question, a: qa.answer, sent: qa.sentence });
     return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: !!qa.fallback, source_path: qa.source_path });
   } catch (err) {
