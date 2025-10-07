@@ -1117,24 +1117,36 @@ function parseQuestionsFromJSON(raw){
 }
 
 /* PROMPT — krótki i twardy: zero wymysłów, zero miejsca/czasu jeśli nie ma w tekście */
-function buildTeacherPrompt(text, maxQ=3){
-  const clamped = Math.max(1, Math.min(5, Number(maxQ)||3));
+function buildTeacherPrompt(text, maxQ = 3) {
+  const clamped = Math.max(1, Math.min(5, Number(maxQ) || 3));
   return `
-Jesteś nauczycielem języka polskiego (klasy 1–3).
-Na podstawie TEKSTU przygotuj od 1 do ${clamped} PROSTYCH pytań i krótkich poprawnych odpowiedzi (max 6 słów) — WYŁĄCZNIE z treści.
+Jesteś nauczycielem języka polskiego w klasach 1–3 szkoły podstawowej.
+Twoim zadaniem jest sprawdzenie, czy dziecko zrozumiało przeczytany tekst.
 
-Zasady:
-- Nie wymyślaj nowych imion/miejsc/czasów/celów.
-- Jeśli w tekście NIE ma miejsca → nie pytaj „Gdzie…?”.
-- Jeśli w tekście NIE ma czasu → nie pytaj „Kiedy…?”.
-- Dopuszczalne typy pytań (wybierz te, które pasują do TEKSTU): „Kto…?”, „Co robi…?”, „Gdzie…?”, „Kiedy…?”, „Po co…?”.
-- Zero parafraz/hipotez. Tylko to, co w tekście.
+Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci 1–3) oraz krótkie poprawne odpowiedzi (max 6 słów), oparte WYŁĄCZNIE na treści tekstu.
+Nie wymyślaj nowych imion ani faktów.
 
-Zwróć dokładnie JSON:
-{"questions":[{"question":"…?","answer":"…"}]}
+RÓŻNORODNOŚĆ PYTAŃ (stosuj TYLKO, jeśli dana informacja występuje w tekście):
+- o bohatera: „Kto…?” (max 1 takie pytanie),
+- o czynność: „Co robi …?”,
+- o przedmiot/cel: „Co … (czyta/je/pije)?” lub „Po co …?”,
+- o miejsce: „Gdzie …?”,
+- o czas: „Kiedy …?”.
+Nie zadawaj „Gdzie/Kiedy”, jeśli w tekście brak miejsca/czasu.
+Jeśli tekst ma 1 zdanie — daj 1 pytanie; jeśli dłuższy — 2–${clamped} pytania.
+Unikaj powtarzania tego samego typu pytania częściej niż raz; preferuj miks (np. „Kto…?”, „Co robi…?”, „Gdzie…?”).
+Odpowiedzi mają być krótkie, wprost z tekstu (bez parafrazy, bez domysłów).
+
+Zwróć DOKŁADNIE czysty JSON:
+{
+  "questions": [
+    { "question": "…?", "answer": "…" }
+  ]
+}
 
 TEKST:
-"""${qz_trim(text, 900)}"""`.trim();
+"""${qz_trim(text, 1000)}"""
+`.trim();
 }
 
 /* równoległy wyścig: OpenAI i Groq jednocześnie — bierzemy pierwszą sensowną odpowiedź */
