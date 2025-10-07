@@ -1051,6 +1051,8 @@ app.get('/tts-voices', async (_req, res) => {
 
 /** Możesz włączyć stały tryb debug: COMPREHEND_DEBUG=1 w ENV */
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
+/** Dłuższy deadline tylko dla comprehend (ms) */
+const COMPREHEND_TIMEOUT_MS = Number(process.env.COMPREHEND_TIMEOUT_MS || 6000);
 
 /* — drobne utils — */
 function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
@@ -1165,9 +1167,9 @@ Pytaj tylko o to, co naprawdę jest w tekście. W szczególności:
 - „Co robi…?” — gdy jest jasno opisana czynność.
 - „Gdzie…?” — tylko jeśli miejsce jest podane (np. „w pokoju”, „na boisku”).
 - „Kiedy…?” — tylko jeśli czas jest podany (np. „rano”, „po obiedzie”).
-- „Po co…?” (cel) — tylko jeśli cel jest wyraźnie podany (np. „żeby…”).
+- „Po co…?” — tylko jeśli cel jest wyraźnie podany (np. „żeby…”).
 Jeśli tekst to 1 zdanie, daj 1 pytanie. Jeśli dłuższy — 2–${clamped} pytań.
-Urozmaicaj typy pytań: nie zadawaj kilku „Kto…?” pod rząd, jeśli da się zapytać o czynność/miejsce/czas wynikające z treści.
+Urozmaicaj typy pytań: nie dawaj wielu „Kto…?” pod rząd, jeśli z treści wynikają także czynność/miejsce/czas.
 Używaj tylko polskiego.
 
 Zwróć DOKŁADNIE czysty JSON:
@@ -1178,24 +1180,40 @@ Zwróć DOKŁADNIE czysty JSON:
 }
 
 TEKST:
-"""${qz_trim(text, 1000)}"""
+"""${qz_trim(text, 900)}"""
 `.trim();
 }
 
-/* — LLM-first: OpenAI via chatPref (z Groq w failoverze przez chatPref/groqChat) — */
+/* — LLM-first z wydłużonym deadline + retry (OpenAI-first, Groq w chatPref) — */
 async function llmQuestions(text, countHint){
   const sentences = qz_splitSentences(text);
   const maxQ = Math.min(5, Math.max(1, countHint || sentences.length || 1));
   const prompt = buildTeacherPrompt(text, maxQ);
 
-  // używamy istniejącego chatPref (OpenAI-first + retry, fallback na Groq)
-  const { text: out, provider } = await chatPref({
-    prompt,
-    temperature: 0.3,
-    top_p: 0.95,
-    max_tokens: 300,
-    deadlineMs: 4000
-  });
+  const MAX_TOKENS = 260;
+  const DEADLINE = COMPREHEND_TIMEOUT_MS;
+
+  // 2 podejścia, żeby złapać ewentualny chwilowy timeout/RPM
+  let lastErr = null, out = '', provider = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await chatPref({
+        prompt,
+        temperature: 0.3,
+        top_p: 0.95,
+        max_tokens: MAX_TOKENS,
+        deadlineMs: DEADLINE
+      });
+      out = r.text || '';
+      provider = r.provider || 'llm';
+      if (out) break;
+    } catch (e) {
+      lastErr = e;
+      // krótka pauza między próbami (bez blokowania event-loop dłużej niż potrzeba)
+      await new Promise(r => setTimeout(r, 180));
+    }
+  }
+  if (!out && lastErr) throw lastErr;
 
   let items = parseQuestionsFromJSON(out);
   items = diversifyQAList(items, text);   // ★ delikatna dywersyfikacja
@@ -1328,6 +1346,7 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================================================================== */
+
 
 
 
