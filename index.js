@@ -1017,13 +1017,21 @@ app.get('/tts-voices', async (_req, res) => {
     return res.status(500).json({ ok: false, error: 'VOICES_FAILED', details: String(err?.message || err) });
   }
 });
+
 /* ===================================================================== */
 /* ==================  QUIZ / COMPREHEND – V2 + MULTI  ================== */
 /* ===================================================================== */
 
-/* ===== Comprehend debug flag (ENV lub per-request) ===== */
+/* ===== Flagi debug (ENV) ===== */
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
+const ALWAYS_INCLUDE_DEBUG = process.env.ALWAYS_INCLUDE_DEBUG === '1';
 
+/* ===== Pomocnicze: parsowanie booli z body/query ===== */
+function flag(v) {
+  return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+}
+
+/* ===== Utilsy tekstowe ===== */
 function qz_trim(s = "", limit = 600) {
   const t = String(s || "").replace(/\s+/g, " ").trim();
   return t.length > limit ? t.slice(0, limit) : t;
@@ -1055,6 +1063,8 @@ function qz_splitSentences(s="") {
     .map(t=>t.trim())
     .filter(Boolean);
 }
+
+/* ===== Detekcje gramatyczne ===== */
 function qz_detectThirdName(text) {
   if (!text) return null;
   let src = String(text).trim();
@@ -1126,6 +1136,7 @@ function qz_cleanObject(obj=""){
   return s.trim();
 }
 
+/* ===== Słowniki czasowników ===== */
 const QZ_VERBS = {
   OBJ_CO_1OS: [
     { re: /\b(czytam)\b/iu, q: "Co czytam?" },
@@ -1170,7 +1181,7 @@ const QZ_VERBS = {
   LEARN_3OS: { re: /\b(uczy się)\b/iu, q: n => `Czego uczy się ${n}?`, q3: "Czego uczy się?" },
 };
 
-/* === Heurystyka Z METADANYMI (diagnostyka źródła pytania) === */
+/* ===== Heurystyka z metadanymi (dla diagnostyki) ===== */
 function qz_heuristic(textRaw, age) {
   const text = String(textRaw || "").trim();
   const name3 = qz_detectThirdName(text);
@@ -1312,7 +1323,7 @@ function qz_heuristic(textRaw, age) {
     }
   }
 
-  // 7) fallback ogólny
+  // fallback ogólny
   const p = qz_place(text);
   if (p) return { question: "Gdzie to się dzieje?", answer: qz_compressPlace(p), fallback: true,
     meta: { ...metaBase, strategy: 'GEN_PLACE' } };
@@ -1323,16 +1334,16 @@ function qz_heuristic(textRaw, age) {
     meta: { ...metaBase, strategy: 'GEN_NONE' } };
 }
 
-/* krótkie odpowiedzi (max ~6 słów) */
+/* ===== Pomocnicze: skracanie odpowiedzi ===== */
 function qz_shortAnswer(a=""){
   const words = (String(a).trim().split(/\s+/)).filter(Boolean);
   if (words.length <= 6) return words.join(' ');
   return words.slice(0,6).join(' ');
 }
 
-/* === Jedno Q/A dla jednego zdania — z opcjami diagnostycznymi === */
+/* ===== Jedno Q/A dla jednego zdania z diagnostyką i wymuszeniem LLM ===== */
 async function qz_makeQAForSentence(sentence, age, { forceLlm = false, wantRaw = false } = {}) {
-  // 1) Heurystyka, jeśli nie wymuszono LLM
+  // 1) Heurystyka, jeśli nie wymuszono
   let h = !forceLlm ? qz_heuristic(sentence, age) : null;
   if (!forceLlm && h && qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
     return {
@@ -1341,7 +1352,7 @@ async function qz_makeQAForSentence(sentence, age, { forceLlm = false, wantRaw =
     };
   }
 
-  // 2) LLM przez chatPref (OpenAI→Groq)
+  // 2) LLM przez chatPref (OpenAI→Groq via Twoja funkcja chatPref)
   try {
     const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
@@ -1371,7 +1382,7 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
         };
       }
     }
-  } catch (e) {
+  } catch {
     // miękko — spróbujemy heurystyki niżej
   }
 
@@ -1386,7 +1397,7 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
   };
 }
 
-/* scoring zdań i wybór najlepszych */
+/* ===== Scoring i wybór zdań ===== */
 function qz_scoreSentence(sent){
   const n = qz_norm(sent);
   let sc = 0;
@@ -1421,7 +1432,7 @@ function qz_selectTopSentences(text, k=3){
   return picked.map(x=>x.s);
 }
 
-/* — generator K pytań z długiego tekstu (z diagnostyką) — */
+/* ===== Generator wielu pytań ===== */
 async function qz_makeQuestions(text, age, count=3, opts = {}) {
   const k = Math.max(1, Math.min(6, Number(count)||3));
   const selected = qz_selectTopSentences(text, k);
@@ -1440,29 +1451,46 @@ async function qz_makeQuestions(text, age, count=3, opts = {}) {
 /* ===================== /agent/comprehend-multi ===================== */
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
-    const { text = "", age, count = 3, debug = false, force_llm = false, raw_llm = false } = req.body || {};
+    const debug     = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG || ALWAYS_INCLUDE_DEBUG;
+    const forceLlm  = flag(req.query?.force_llm) || flag(req.body?.force_llm);
+    const rawLlm    = flag(req.query?.raw_llm)   || flag(req.body?.raw_llm);
+
+    const { text = "", age, count = 3 } = req.body || {};
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    const itemsFull = await qz_makeQuestions(src, age, count, { forceLlm: !!force_llm, wantRaw: !!raw_llm });
+    const full = await qz_makeQuestions(src, age, count, { forceLlm, wantRaw: rawLlm });
 
-    // zbij do prostego payloadu + _debug gdy trzeba
-    const items = itemsFull.map(qa => {
-      const base = { question: qa.question, answer: qa.answer, fallback: !!qa.fallback };
-      if (COMPREHEND_DEBUG || debug) {
+    // nagłówki do logów (na podstawie pierwszego wpisu)
+    const head = full[0] || {};
+    res.setHeader('X-Comprehend-Path', full.some(i => i.source_path === 'llm') ? 'llm' : (head.source_path || 'heuristic/mixed'));
+    res.setHeader('X-Comprehend-Question', head.question || '');
+    res.setHeader('X-Comprehend-Answer', head.answer || '');
+    res.setHeader('X-Comprehend-Sentence', head.sentence || '');
+
+    const items = full.map(qa => {
+      const base = {
+        question: qa.question,
+        answer: qa.answer,
+        fallback: !!qa.fallback,
+        source_path: qa.source_path
+      };
+      if (debug) {
         base._debug = {
-          source_path: qa.source_path,
           llm_provider: qa.llm_provider,
           sentence_used: qa.sentence,
           meta: qa.meta || {},
-          raw_llm: raw_llm ? qa.raw_llm : undefined
+          raw_llm: rawLlm ? qa.raw_llm : undefined
         };
       }
       return base;
     });
 
-    const pathMark = itemsFull.some(i => i.source_path === 'llm') ? 'llm' : 'heuristic/mixed';
-    res.setHeader('X-Comprehend-Path', pathMark);
+    if (debug) {
+      console.log('[COMPREHEND-MULTI]', items.map(i => ({
+        path: i.source_path, q: i.question, a: i.answer
+      })));
+    }
 
     return res.json({ ok: true, count: items.length, items });
   } catch (err) {
@@ -1474,37 +1502,46 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 /* ===================== /agent/comprehend ===================== */
 app.post("/agent/comprehend", async (req, res) => {
   try {
-    const { text = "", age, debug = false, force_llm = false, raw_llm = false } = req.body || {};
+    const debug     = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG || ALWAYS_INCLUDE_DEBUG;
+    const forceLlm  = flag(req.query?.force_llm) || flag(req.body?.force_llm);
+    const rawLlm    = flag(req.query?.raw_llm)   || flag(req.body?.raw_llm);
+
+    const { text = "", age } = req.body || {};
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    // jeśli tekst ma wiele zdań, wybierz najlepsze
+    // jeśli jest kilka zdań – wybierz najlepsze
     const best = qz_selectTopSentences(src, 1)[0] || src;
 
     const qa = await qz_makeQAForSentence(best, age, {
-      forceLlm: !!force_llm,
-      wantRaw: !!raw_llm
+      forceLlm,
+      wantRaw: rawLlm
     });
+
+    // nagłówki do logów / proxy
+    res.setHeader('X-Comprehend-Path', qa.source_path || 'unknown');
+    res.setHeader('X-Comprehend-Question', qa.question || '');
+    res.setHeader('X-Comprehend-Answer', qa.answer || '');
+    res.setHeader('X-Comprehend-Sentence', qa.sentence || '');
 
     const payload = {
       ok: true,
       question: qa.question,
       answer: qa.answer,
-      fallback: !!qa.fallback
+      fallback: !!qa.fallback,
+      source_path: qa.source_path
     };
 
-    const debugOn = COMPREHEND_DEBUG || !!debug;
-    if (debugOn) {
+    if (debug) {
       payload._debug = {
-        source_path: qa.source_path,
         llm_provider: qa.llm_provider,
         sentence_used: qa.sentence,
         meta: qa.meta || {},
-        raw_llm: raw_llm ? qa.raw_llm : undefined
+        raw_llm: rawLlm ? qa.raw_llm : undefined
       };
+      console.log('[COMPREHEND]', { path: qa.source_path, q: qa.question, a: qa.answer, sent: qa.sentence, provider: qa.llm_provider });
     }
 
-    res.setHeader('X-Comprehend-Path', qa.source_path);
     return res.json(payload);
   } catch (err) {
     console.error("comprehend error:", err);
@@ -1513,40 +1550,9 @@ app.post("/agent/comprehend", async (req, res) => {
       ok: true,
       question: "Gdzie to się dzieje?",
       answer: qz_compressPlace(qz_place(src) || "") || qz_time(src) || "",
-      fallback: true
+      fallback: true,
+      source_path: 'error-fallback'
     });
-  }
-});
-
-/* (opcjonalnie) sandbox porównawczy — jeśli chcesz, odkomentuj
-app.post('/agent/comprehend-sandbox', async (req, res) => {
-  try {
-    const { text = "", age, raw_llm = true } = req.body || {};
-    const src = String(text || "").trim();
-    if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
-
-    const best = qz_selectTopSentences(src, 1)[0] || src;
-
-    const h = qz_heuristic(best, age);
-    const heur = {
-      question: h.question, answer: h.answer, fallback: !!h.fallback,
-      meta: h.meta || {}, sentence_used: best
-    };
-
-    const llm = await qz_makeQAForSentence(best, age, { forceLlm: true, wantRaw: !!raw_llm });
-
-    return res.json({
-      ok: true,
-      sentence: best,
-      heuristic: heur,
-      llm: {
-        question: llm.question, answer: llm.answer, fallback: !!llm.fallback,
-        provider: llm.llm_provider, raw_llm: raw_llm ? llm.raw_llm : undefined
-      }
-    });
-  } catch (err) {
-    console.error('comprehend-sandbox error:', err);
-    return res.status(200).json({ ok: true, sentence: "", heuristic: null, llm: null });
   }
 });
 */
