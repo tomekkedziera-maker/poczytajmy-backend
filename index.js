@@ -1062,19 +1062,15 @@ const RE_PLACE = new RegExp(
   String.raw`do(?!\s+(?:\d+|jedn\w*|dwu\w*|dwie\w*|trzech|czterech|pięciu|piec\w*|sześciu|siedmiu|ośmiu|dziewięciu|dziesięciu))\b|` +
   String.raw`przy\b|pod\b|u\b|obok\b` +
   String.raw`)` +
-  // po przyimku: max 3 tokeny; zatrzymaj przed i/oraz/ale/a/potem
+  // po przyimku: max 3 tokeny; zatrzymaj przed spójnikami i typowymi czasownikami (np. „wieje”)
   String.raw`\s+(?!\s)(?:` +
-    String.raw`(?!i\b|oraz\b|ale\b|a\b|potem\b)[^\s0-9.,;!?]+` +
-    String.raw`(?:\s+(?!i\b|oraz\b|ale\b|a\b|potem\b)[^\s0-9.,;!?]+){0,2}` +
+    String.raw`(?!i\b|oraz\b|ale\b|a\b|potem\b|jest\b|stoi\b|leży\b|lezy\b|idzie\b|biegnie\b|wieje\b|patrzy\b|pisze\b|czyta\b)[^\s0-9.,;!?]+` +
+    String.raw`(?:\s+(?!i\b|oraz\b|ale\b|a\b|potem\b|jest\b|stoi\b|leży\b|lezy\b|idzie\b|biegnie\b|wieje\b|patrzy\b|pisze\b|czyta\b)[^\s0-9.,;!?]+){0,2}` +
   String.raw`)`,
   'iu'
 );
-
-// CZAS (rozszerzony o „później”, „po obiedzie”, „w niedzielę” itd.)
-const RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po obiedzie|w niedzielę|później)\b/iu;
-// CEL (markery celu/uzasadnienia)
-const RE_PURPOSE = /\b(żeby|aby|by|bo|ponieważ|dlatego że|w celu|po to)\b/iu;
-// Odpowiedź wyglądająca jak miejsce (na początku frazy)
+const RE_TIME     = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po obiedzie|w niedzielę|później)\b/iu;
+const RE_PURPOSE  = /\b(żeby|aby|by|bo|ponieważ|dlatego że|w celu|po to)\b/iu;
 const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok)\b/iu;
 
 /* ===== utilsy ===== */
@@ -1101,11 +1097,14 @@ function hardTimeout(promise, ms) {
   });
 }
 
-/* pomocnicze: przytnij frazę miejsca do 1–3 słów */
+/* pomocnicze: przytnij frazę miejsca do 1–3 słów + usuń końcowe czasowniki */
+const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije)$/i;
 function trimPlace(p='') {
-  const toks = String(p).trim().split(/\s+/)
+  let toks = String(p).trim().split(/\s+/)
     .filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w))
     .slice(0, 3);
+  // usuń końcowy czasownik jeśli wylezie
+  while (toks.length && PLACE_VERBS.test(toks[toks.length-1])) toks.pop();
   return toks.join(' ');
 }
 
@@ -1141,25 +1140,29 @@ function cleanQuestion(q) {
   if (!q) return q;
   let s = q.trim().replace(/\s+/g,' ').replace(/[„”"']/g, '');
 
-  // 1) „Kiedy Po …” → „Kiedy to było?”
+  // „Kiedy Po …” → „Kiedy to było?”
   s = s.replace(/^Kiedy\s+Po\b.*$/iu, 'Kiedy to było?');
 
-  // 2) „Gdzie <echo zdania> jest/stoi/leży?” → „Gdzie to było?”
+  // „Gdzie … (jest|stoi|leży)?” → „Gdzie to było?”
   s = s.replace(/^Gdzie\s+.+\b(jest|stoi|leży|lezy)\?$/iu, 'Gdzie to było?');
 
-  // 3) „Co robi Czyta/… mape” → „Co robi?”
+  // „Co robi Po …” (z „Po południu…”) → „Co robi?”
+  s = s.replace(/^Co robi\s+Po\b.*$/iu, 'Co robi?');
+
+  // „Co robi Czyta/… mape” → „Co robi?”
   s = s.replace(/^Co robi\s+(Czyta|Pisze|Rysuje|Maluje|Słucha|Slucha|Ogląda|Oglad)\b.*$/iu, 'Co robi?');
 
-  // 4) pytanie zawiera przecinki/kropki → utnij do krótkiej formy
+  // „Gdzie jest Potem …” (z „Potem…”) → „Gdzie to było?”
+  s = s.replace(/^Gdzie\s+jest\s+Potem\b.*$/iu, 'Gdzie to było?');
+
+  // pytanie zawiera przecinki/kropki → skróć
   if (/[.,;:].*\?$/u.test(s)) {
     s = /^(?=.*\bGdzie\b)/iu.test(s) ? 'Gdzie to było?' :
         /^(?=.*\bKiedy\b)/iu.test(s) ? 'Kiedy to było?' : 'Co się dzieje?';
   }
 
-  // 5) skróć do 8 słów
   const words = s.split(' ');
   if (words.length > 8) s = words.slice(0, 8).join(' ') + '?';
-
   if (!/\?\s*$/.test(s)) s = s.replace(/[?]*\s*$/,'') + '?';
   s = s[0].toUpperCase() + s.slice(1);
   return dedupeVerbInQuestion(s);
@@ -1229,22 +1232,20 @@ function postProcessLLMItems(items, text, want=3) {
       else q = 'Co się dzieje?';
     }
 
-    // Jeśli pytanie o miejsce, a odpowiedź:
+    // „Gdzie …?” – dopilnuj odpowiedzi zaczynającej się przyimkiem
     if (/^\s*Gdzie\b/i.test(q)) {
-      // - wygląda jak cel („żeby/aby/…”) → podmień na frazę miejsca z tekstu lub odrzuć
       if (RE_PURPOSE.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
-      // - NIE zaczyna się przyimkiem → spróbuj wziąć frazę z tekstu
       if (!RE_PLACE_ANS_START.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
     }
 
-    // Jeśli odpowiedź zawiera marker celu, a pytanie nie jest „Po co/Dlaczego” → zmień pytanie
+    // Odpowiedź z markerem celu, a pytanie nie „Po co/Dlaczego” → zmień pytanie
     if (RE_PURPOSE.test(a) && !/^\s*(Po co|Dlaczego)\b/i.test(q)) {
       q = 'Po co?';
     }
 
     if (!isValidQA(q, a, text)) continue;
 
-    // Skracanie odpowiedzi miejsca do 1–3 słów
+    // Skracanie odpowiedzi miejsca do 1–3 słów + ucięcie końcowych czasowników
     if (RE_PLACE_ANS_START.test(a)) a = trimPlace(a);
 
     out.push({ question: q, answer: a, fallback: false, source_path: 'llm+post' });
@@ -1253,7 +1254,7 @@ function postProcessLLMItems(items, text, want=3) {
   return out;
 }
 
-/* prosty fallback regułowy (zamiast „Gdzie Rano Ala … jest?”) */
+/* prosty fallback regułowy, by zmniejszyć brzydkie echa */
 function ruleFallback(text, want=1) {
   const out = [];
   if (/Ala .*ćwiczy .*na boisku/i.test(text) && out.length < want) {
@@ -1409,7 +1410,6 @@ app.post('/agent/comprehend', async (req, res) => {
         llm_provider: race.provider
       };
     } else {
-      // Fallback heurystyczny na jednym zdaniu
       const h = heuristicQA(bestSent);
       qa = { question: h.question, answer: h.answer, fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
