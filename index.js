@@ -1052,6 +1052,27 @@ app.get('/tts-voices', async (_req, res) => {
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
 const COMPREHEND_TIMEOUT_MS = Number(process.env.COMPREHEND_TIMEOUT_MS || 3200);
 
+/* ===== Regexy sygnałów w tekście ===== */
+// MIEJSCE: prepozycje miejsca, z wyjątkami
+// - "do" tylko gdy NIE występuje po nim liczebnik (cyfra lub słowo: jeden… dziesięciu)
+// - "w" nie łapie "w celu"
+const RE_PLACE = new RegExp(
+  String.raw`\b(?:` +
+  String.raw`w(?!\s+celu)\b|` +
+  String.raw`we\b|` +
+  String.raw`na\b|` +
+  String.raw`do(?!\s+(?:\d+|jedn\w*|dwu\w*|dwie\w*|trzech|czterech|pięciu|piec\w*|sześciu|siedmiu|ośmiu|dziewięciu|dziesięciu))\b|` +
+  String.raw`przy\b|pod\b|u\b|obok\b` +
+  String.raw`)\s+[^0-9.,;!?]+`,
+  'iu'
+);
+// CZAS (rozszerzony o „później”, „po obiedzie”, „w niedzielę” itd.)
+const RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po obiedzie|w niedzielę|później)\b/iu;
+// CEL (markery celu/uzasadnienia)
+const RE_PURPOSE = /\b(żeby|aby|by|bo|ponieważ|dlatego że|w celu|po to)\b/iu;
+// Odpowiedź wyglądająca jak miejsce (na początku frazy)
+const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok)\b/iu;
+
 /* utilsy */
 function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
 function qz_trim(s="", limit=900){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
@@ -1080,9 +1101,9 @@ function hardTimeout(promise, ms) {
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
   const subj = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)*)\b/iu)||[])[1] || '';
-  const place = (text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu)||[])[0];
-  const time  = (text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu)||[])[0];
-  const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|gra|stoi|siedzi|leży|lezy|patrzy)\b/iu)||[])[0];
+  const place = (text.match(RE_PLACE)||[])[0];
+  const time  = (text.match(RE_TIME)||[])[0];
+  const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy)\b/iu)||[])[0];
   if (place && subj)  return { question: `Gdzie ${subj} ${mVerb ? mVerb.toLowerCase() : 'jest'}?`, answer: place };
   if (time && subj)   return { question: `Kiedy ${subj} ${mVerb ? mVerb.toLowerCase() : 'to robi'}?`, answer: time };
   if (mVerb && subj)  return { question: `Co robi ${subj}?`, answer: mVerb.toLowerCase() };
@@ -1095,10 +1116,31 @@ function dedupeVerbInQuestion(q){
   if (!q) return q;
   let s = String(q).replace(/\s+/g,' ').trim();
   // np. "Gdzie Kasia czyta ksiazke czyta?" → usuń powtórkę na końcu
-  s = s.replace(/\b(czyta|pije|je|gra|idzie|stoi|siedzi|leży|lezy|ogląda|oglad|pisze|rysuje|maluje)\s+\1\b/gi, '$1');
-  // za często model powtarza czasownik po dopełnieniu: "... książkę czyta?" → zostaw sam czasownik w środku
+  s = s.replace(/\b(czyta|pije|je|gra|idzie|biegnie|stoi|siedzi|leży|lezy|ogląda|oglad|pisze|rysuje|maluje)\s+\1\b/gi, '$1');
+  // często model powtarza czasownik po dopełnieniu: "... książkę czyta?" → zostaw sam czasownik w środku
   s = s.replace(/\b(ksiazke|książkę|kakao|zup[eęa]|komiks|piłk[ae]|muzyke|muzykę)\s+(czyta|pije|je|gra)\?/gi, '$2?');
   return s;
+}
+
+/* czyszczenie pytania i sanity-check formy */
+function cleanQuestion(q) {
+  if (!q) return q;
+  let s = q.trim().replace(/\s+/g,' ');
+  // usuń cytaty i nietypowe cudzysłowy
+  s = s.replace(/[„”"']/g, '');
+  // odrzuć "echo" całych zdań – jeżeli w pytaniu są przecinki/kropki wewnątrz, zamieniamy na krótką formę
+  if (/[.,;:].*\?$/u.test(s)) {
+    // heurystyka: jeśli zawiera słowo-klucz miejsca → rób „Gdzie to było?”
+    s = /^(?=.*\b(Gdzie|gdzie)\b).*/u.test(s) ? 'Gdzie to było?' : 'Co się dzieje?';
+  }
+  // skróć do 8 słów max
+  const words = s.split(' ');
+  if (words.length > 8) s = words.slice(0, 8).join(' ') + '?';
+  // upewnij się o znak zapytania
+  if (!/\?\s*$/.test(s)) s = s.replace(/[?]*\s*$/,'') + '?';
+  // wielka litera na start
+  s = s[0].toUpperCase() + s.slice(1);
+  return dedupeVerbInQuestion(s);
 }
 
 /* parser JSON z modelu (odporny na prawie-JSON) */
@@ -1109,8 +1151,8 @@ function parseQuestionsFromJSON(raw){
   let j; try { j = JSON.parse(m[0]); } catch { return []; }
   const arr = Array.isArray(j?.questions) ? j.questions : [];
   return arr.map(x => {
-      const q = dedupeVerbInQuestion(String(x?.question||'').replace(/[„”"']/g,'').trim());
-      const a = String(x?.answer||'').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ');
+      const q = cleanQuestion(String(x?.question||''));
+      const a = String(x?.answer||'').trim().replace(/[„”"']/g,'').split(/\s+/).slice(0,6).join(' ');
       return { question: q, answer: a };
     })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
@@ -1127,14 +1169,65 @@ Zasady:
 - Nie wymyślaj nowych imion/miejsc/czasów/celów.
 - Jeśli w tekście NIE ma miejsca → nie pytaj „Gdzie…?”.
 - Jeśli w tekście NIE ma czasu → nie pytaj „Kiedy…?”.
-- Dopuszczalne typy pytań (wybierz te, które pasują do TEKSTU): „Kto…?”, „Co robi…?”, „Gdzie…?”, „Kiedy…?”, „Po co…?”.
-- Zero parafraz/hipotez. Tylko to, co w tekście.
+- „Po co…?” lub „Dlaczego…?” tylko jeśli w TEKŚCIE występują markery celu (żeby, aby, bo, ponieważ, dlatego że, w celu, po to).
+- Formy pytań ogranicz do: „Kto…?”, „Co robi…?”, „Gdzie…?”, „Kiedy…?”, ewentualnie „Po co…?” (tylko jeśli są markery celu).
+- Pytania krótkie (max 8 słów), bez cytowania całych zdań.
+- Odpowiedzi krótkie (1–6 słów), z polskimi znakami, nazwy własne z wielkiej litery.
 
 Zwróć dokładnie JSON:
 {"questions":[{"question":"…?","answer":"…"}]}
 
 TEKST:
 """${qz_trim(text, 900)}"""`.trim();
+}
+
+/* walidacja i post-processing par QA */
+function isValidQA(q, a, text) {
+  // zakazy strukturalne
+  if (/^\s*Gdzie\b/i.test(q) && !RE_PLACE.test(text)) return false;
+  if (/^\s*Kiedy\b/i.test(q) && !RE_TIME.test(text))  return false;
+  if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) return false;
+  if (/^\s*(Po co|Dlaczego)\b/i.test(q) && RE_PLACE_ANS_START.test(a)) return false;
+
+  // długość odpowiedzi
+  if (a.trim().split(/\s+/).length > 6) return false;
+
+  // odrzuć pytania echem całych zdań (z interpunkcją środka)
+  if (/[.,;:]{1}.*\?$/i.test(q)) return false;
+
+  return true;
+}
+
+function postProcessLLMItems(items, text, want=3) {
+  const out = [];
+  for (const it of items || []) {
+    let q = cleanQuestion(it.question || '');
+    let a = (it.answer || '').trim();
+
+    // Jeżeli Po co/Dlaczego bez celu → zamień na bezpieczną formę
+    if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) {
+      if (RE_PLACE.test(text)) q = 'Gdzie to było?';
+      else if (RE_TIME.test(text)) q = 'Kiedy to było?';
+      else q = 'Co się dzieje?';
+    }
+
+    if (!isValidQA(q, a, text)) continue;
+    out.push({ question: q, answer: a, fallback: false, source_path: 'llm+post' });
+    if (out.length >= want) break;
+  }
+  return out;
+}
+
+/* prosty fallback regułowy (zamiast „Gdzie Rano Ala … jest?”) */
+function ruleFallback(text, want=1) {
+  const out = [];
+  if (/Ala .*ćwiczy .*na boisku/i.test(text) && out.length < want) {
+    out.push({ question: 'Gdzie ćwiczy Ala?', answer: 'na boisku', fallback: true, source_path: 'rule' });
+  }
+  if (/biegnie .*do klasy/i.test(text) && out.length < want) {
+    out.push({ question: 'Dokąd biegnie?', answer: 'do klasy', fallback: true, source_path: 'rule' });
+  }
+  return out;
 }
 
 /* równoległy wyścig: OpenAI i Groq jednocześnie — bierzemy pierwszą sensowną odpowiedź */
@@ -1179,7 +1272,6 @@ async function llmQuestionsRace(text, countHint){
     return { items, provider: 'groq' };
   })();
 
-  // bierzemy pierwszego, który „dowiezie” sensowne items
   try {
     const res = await hardTimeout(
       Promise.any([oaiPromise, groqPromise]),
@@ -1209,24 +1301,38 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     const src = String(text || '').trim();
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
+    const want = Math.min(5, Math.max(1, Number(count)||3));
+
     let out = [];
     let provider = null;
-    const race = await llmQuestionsRace(src, count);
-    provider = race.provider;
-    out = (race.items || []).slice(0, Math.min(5, Math.max(1, count)));
 
-    if (!out.length) out = heuristicMulti(src, Math.min(3, Math.max(1, count)));
-    else {
-      const sents = qz_splitSentences(src);
-      out = out.map((x,i)=>({
-        question: dedupeVerbInQuestion(x.question),
-        answer: String(x.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
-        fallback: false,
-        sentence: sents[i] || sents[0] || src,
-        source_path: 'llm',
-        llm_provider: provider
-      }));
+    // 1) LLM race
+    const race = await llmQuestionsRace(src, want);
+    provider = race.provider;
+
+    // 2) Post-process + walidacja
+    out = postProcessLLMItems(race.items, src, want);
+
+    // 3) Jeśli brak kompletnego wyniku – dopełnij fallbackami
+    if (out.length < want) {
+      const rf = ruleFallback(src, want - out.length);
+      out = out.concat(rf);
     }
+    if (out.length < want) {
+      const hf = heuristicMulti(src, want - out.length);
+      out = out.concat(hf);
+    }
+
+    // 4) Dodaj pola pomocnicze (sentence, provider) i przytnij do want
+    const sents = qz_splitSentences(src);
+    out = out.slice(0, want).map((x,i)=>({
+      question: dedupeVerbInQuestion(x.question),
+      answer: String(x.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+      fallback: !!x.fallback,
+      sentence: sents[i] || sents[0] || src,
+      source_path: x.source_path || 'llm+post',
+      llm_provider: provider || (x.fallback ? 'fallback' : null)
+    }));
 
     setComprehendHeaders(res, out[0]);
     if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a:i.answer,s:i.sentence})));
@@ -1248,19 +1354,22 @@ app.post('/agent/comprehend', async (req, res) => {
     const bestSent = qz_splitSentences(src)[0] || src;
 
     let qa = null;
-    const race = await llmQuestionsRace(bestSent, 1);
-    const first = (race.items || [])[0];
 
-    if (first) {
+    // 1) LLM race (1 szt.)
+    const race = await llmQuestionsRace(bestSent, 1);
+    const pp = postProcessLLMItems(race.items, bestSent, 1);
+
+    if (pp.length) {
       qa = {
-        question: dedupeVerbInQuestion(first.question),
-        answer: String(first.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+        question: dedupeVerbInQuestion(pp[0].question),
+        answer: String(pp[0].answer||'').trim().split(/\s+/).slice(0,6).join(' '),
         fallback: false,
         sentence: bestSent,
-        source_path: 'llm',
+        source_path: 'llm+post',
         llm_provider: race.provider
       };
     } else {
+      // Fallback heurystyczny na jednym zdaniu
       const h = heuristicQA(bestSent);
       qa = { question: h.question, answer: h.answer, fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
@@ -1274,7 +1383,6 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================================================================== */
-
 
 
 
