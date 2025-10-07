@@ -34,10 +34,10 @@ const BASE_URL = process.env.BASE_URL || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'whisper-large-v3';
 const LLM_PREF = 'openai-only'; // TYLKO OPENAI dla pytań/odpowiedzi
 
-// ★ Dłuższe deadline’y tylko tam gdzie trzeba:
-const GREETING_TIMEOUT_MS = Number(process.env.GREETING_TIMEOUT_MS || 5000);
-const MOTIVATE_TIMEOUT_MS = Number(process.env.MOTIVATE_TIMEOUT_MS || 6000);
-const GENERATE_TEXT_TIMEOUT_MS = Number(process.env.GENERATE_TEXT_TIMEOUT_MS || 7000);
+// ★ Dłuższe deadline’y tylko tam gdzie trzeba (możesz nadpisać ENV):
+const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 9000);
+const MOTIVATE_TIMEOUT_MS      = Number(process.env.MOTIVATE_TIMEOUT_MS || 10000);
+const GENERATE_TEXT_TIMEOUT_MS = Number(process.env.GENERATE_TEXT_TIMEOUT_MS || 10000);
 
 const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
 const now = () => (global.performance?.now?.() ?? Date.now());
@@ -50,6 +50,26 @@ function withDeadline(promise, ms = DEADLINE_MS) {
   });
 }
 
+// ★ Retry z backoffem i wydłużaniem deadline’u
+async function withDeadlineRetry(makePromiseFn, { deadlineMs, retries = 1, backoffMs = 250 }) {
+  let ms = deadlineMs, lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await withDeadline(makePromiseFn(), ms);
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e?.message || e);
+      if (msg === 'DEADLINE_EXCEEDED' && i < retries) {
+        await sleep(backoffMs * (i + 1));
+        ms = Math.round(ms * 1.6); // delikatnie wydłuż limit na kolejną próbę
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 /* ===== Uploads ===== */
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -57,8 +77,12 @@ const upload = multer({
 });
 
 /* ===== Clients ===== */
-const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
-const groq   = process.env.GROQ_API_KEY   ? new Groq({ apiKey: process.env.GROQ_API_KEY })     : null;
+// ★ timeout + maxRetries w SDK
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 15000, maxRetries: 2 })
+  : null;
+
+const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 
 /* ===== Mock flags ===== */
 const MOCK_ASR  = process.env.MOCK_ASR  === '1';
@@ -123,7 +147,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.17-natural' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.18-retry' });
 });
 
 // Prosty root
@@ -146,10 +170,10 @@ app.get('/', (_req, res) => {
 
 /* ===================== LLM helpers (OpenAI-only dla czatu) ===================== */
 // Anty-sztywny setup
-const NAT_TEMPERATURE = 0.95;
-const NAT_TOP_P = 0.9;
-const NAT_FREQ_PENALTY = 0.3;
-const NAT_PRES_PENALTY = 0.2;
+const NAT_TEMPERATURE   = 0.95;
+const NAT_TOP_P         = 0.9;
+const NAT_FREQ_PENALTY  = 0.3;
+const NAT_PRES_PENALTY  = 0.2;
 
 async function groqChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 0.3, top_p = 0.95 }) {
   const t0 = now();
@@ -177,7 +201,7 @@ async function openaiChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature 
     temperature,
     top_p,
     max_tokens,
-    frequency_penalty: NAT_FREQ_PENALTY,  // ↓ mniej powtórek
+    frequency_penalty: NAT_FREQ_PENALTY,
     presence_penalty: NAT_PRES_PENALTY,
   });
   const txt = r?.choices?.[0]?.message?.content?.trim?.() || '';
@@ -191,11 +215,12 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// ENTRYPOINT — tylko OpenAI + wsparcie deadlineMs
+// ENTRYPOINT — tylko OpenAI + retry z backoffem
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
   if (!openai) throw new Error('NO_OPENAI');
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
-  return await withDeadline(openaiChat({ messages, max_tokens, temperature, top_p }), deadlineMs);
+  const make = () => openaiChat({ messages, max_tokens, temperature, top_p });
+  return await withDeadlineRetry(make, { deadlineMs, retries: 1, backoffMs: 250 });
 }
 /** Wrapper kompatybilny */
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
@@ -446,7 +471,7 @@ function sanitizeNoName(name, raw) {
 
 const recentGreetings = new Map();
 
-// ★ Anty-szablon + soften + pamięć podobieństw (dla zdań/komentarzy)
+// Anty-szablon + soften + pamięć podobieństw (dla zdań/komentarzy)
 const TEMPLATEY_STARTS = [
   "Dziś", "Dzisiaj", "Po południu", "W ogrodzie", "Choć", "Chociaż", "Na koniec",
   "Potem", "Następnie", "Po kolacji", "Po obiedzie", "W bibliotece", "W domu"
@@ -723,7 +748,7 @@ function validateKidsSentencePL(s, { minWords=8, maxWords=16 } = {}) {
   return { ok: issues.length === 0, issues, text: txt };
 }
 
-// handler generatora tekstu — NAT parameters, filtr szablonów, reroll
+// handler generatora tekstu — NAT parameters, filtr szablonów, reroll, retry/timeout
 async function handleGenerateText(req, res) {
   try {
     const { language = "pl", level = "A1" } = req.body || {};
@@ -920,7 +945,6 @@ app.get('/tts-voices', async (_req, res) => {
 /* ==================  QUIZ / COMPREHEND – V2 + MULTI  ================== */
 /* ===================================================================== */
 
-/* — drobne utils (lokalne, z prefiksem qz_) — */
 function qz_trim(s = "", limit = 600) {
   const t = String(s || "").replace(/\s+/g, " ").trim();
   return t.length > limit ? t.slice(0, limit) : t;
@@ -929,8 +953,6 @@ function qz_qmark(q = "") { return /\?\s*$/.test(String(q)); }
 function qz_wc(a = "") {
   return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
 }
-
-/* — normalizacja — */
 function qz_normDiacritics(s=""){
   return String(s||"")
     .normalize("NFD")
@@ -954,8 +976,6 @@ function qz_splitSentences(s="") {
     .map(t=>t.trim())
     .filter(Boolean);
 }
-
-/* — wykryj imię w 3. os. — */
 function qz_detectThirdName(text) {
   if (!text) return null;
   let src = String(text).trim();
@@ -1282,7 +1302,6 @@ async function qz_makeQuestions(text, age, count=3){
   }
   return items;
 }
-/* ===================== /agent/comprehend-multi ===================== */
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
     const { text = "", age, count = 3 } = req.body || {};
@@ -1296,8 +1315,6 @@ app.post("/agent/comprehend-multi", async (req, res) => {
     return res.status(200).json({ ok: true, count: 0, items: [] });
   }
 });
-
-/* ===================== /agent/comprehend ===================== */
 app.post("/agent/comprehend", async (req, res) => {
   try {
     const { text = "", age } = req.body || {};
@@ -1359,6 +1376,10 @@ async function prewarmOnce() {
   try {
     if (process.env.GROQ_API_KEY) {
       await groqChat({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, temperature: 0.0 }).catch(()=>{});
+    }
+    // ★ prewarm OpenAI (ultrakrótki)
+    if (openai) {
+      await openaiChat({ messages: [{ role: 'user', content: 'ok' }], max_tokens: 1, temperature: 0.0, top_p: 1.0 }).catch(()=>{});
     }
     if (BASE_URL) {
       await fetch(`${BASE_URL}/health`, { headers: { Connection: 'keep-alive' } }).catch(()=>{});
