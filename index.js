@@ -697,33 +697,60 @@ function tightenMotivation(s, maxChars = 160) {
   return s;
 }
 
+/* ▶️ Bardzo szybki lokalny fallback bez LLM (na timeout/429) */
+function localMotivationFallback(age, accuracy) {
+  const s = Math.max(0, Math.min(100, Math.round(accuracy || 0)));
+  if (s >= 95) return 'Czytasz świetnie! Spróbuj teraz nieco trudniejszego słowa. ✨';
+  if (s >= 80) return 'Super płynność — jeszcze dokładniej końcówki i będzie idealnie.';
+  if (s >= 60) return 'Dobra robota! Czytaj spokojniej i sylabizuj trudniejsze słowa.';
+  return 'Fajnie próbujesz — przeczytaj zdanie jeszcze raz powoli, dasz radę. 💪';
+}
+
 async function generateMotivation({ age, accuracy, text, characterName, lang = 'pl' }) {
   const prompt = buildMotivationPrompt({ age, accuracy, text, characterName, lang });
-  const { text: raw, provider } = await chatPref({
+
+  // 🔁 Stabilizacja: retry z rosnącym deadline’em (korzysta z withDeadlineRetry, które już masz na górze pliku)
+  const makeCall = () => chatPref({
     prompt,
     temperature: NAT_TEMPERATURE,
-    max_tokens: 120,
+    max_tokens: 100,          // odrobinę mniej tokenów → szybciej
     top_p: NAT_TOP_P,
-    deadlineMs: MOTIVATE_TIMEOUT_MS,
+    deadlineMs: Math.min(MOTIVATE_TIMEOUT_MS || 9000, 9000)
   });
-  let out = String(raw || '').trim();
-  out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
+
+  let raw = '';
+  let provider = 'unknown';
+  try {
+    const r = await withDeadlineRetry(makeCall, { deadlineMs: Math.min(MOTIVATE_TIMEOUT_MS || 9000, 9000), retries: 1, backoffMs: 350 });
+    raw = String(r.text || '').trim();
+    provider = r.provider || 'llm';
+  } catch (e) {
+    // ⛑️ W razie DEADLINE/429 wracamy natychmiast z lokalnym, sensownym tekstem
+    const fb = localMotivationFallback(age, accuracy);
+    return { text: fb, source: 'local-fallback' };
+  }
+
+  let out = raw.replace(/^["'„”]+|["'„”]+$/g, '').trim();
   out = tightenMotivation(out, 160);
   out = softenPolish(out);
+
+  // Delikatna anty-powtarzalność — jeśli model wypluł „szablon”, spróbuj raz jeszcze,
+  // ale bez kolejnych retry (to już mamy powyżej).
   if (looksTemplatey(out) || tooSimilarToRecent(out)) {
-    const rr = await chatPref({
-      prompt,
-      temperature: NAT_TEMPERATURE,
-      max_tokens: 120,
-      top_p: NAT_TOP_P,
-      deadlineMs: MOTIVATE_TIMEOUT_MS,
-    });
-    const alt = softenPolish(tightenMotivation((rr.text||"").trim(), 160));
-    if (!looksTemplatey(alt)) out = alt;
+    try {
+      const r2 = await withDeadlineRetry(makeCall, { deadlineMs: Math.min(MOTIVATE_TIMEOUT_MS || 9000, 9000), retries: 0 });
+      const alt = softenPolish(tightenMotivation(String(r2.text || '').trim(), 160));
+      if (!looksTemplatey(alt)) out = alt;
+    } catch { /* zostawiamy pierwszą wersję */ }
   }
-  if (!out) throw new Error('EMPTY_MOTIVATION');
-  rememberText(out);
-  return { text: out, source: provider || 'unknown' };
+
+  if (!out) {
+    const fb = localMotivationFallback(age, accuracy);
+    return { text: fb, source: 'local-fallback-empty' };
+  }
+
+  rememberText(out); // masz to wcześniej zdefiniowane
+  return { text: out, source: provider };
 }
 
 app.post('/agent/motivate', async (req, res) => {
@@ -743,12 +770,12 @@ app.post('/agent/motivate', async (req, res) => {
     const msg = tightenMotivation(rawMsg, 160);
     res.json({ ok: true, text: msg, source });
   } catch (err) {
-    const fallback = 'Super próba! Z każdą stroną idzie Ci lepiej — spróbujmy jeszcze raz. 💪';
+    const fallback = localMotivationFallback(req.body?.age, req.body?.accuracy);
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
     console.error('agent/motivate error:', err);
     return res.status(200).json({
       ok: true,
-      text: fallback,
+      text: tightenMotivation(fallback, 160),
       source: timedOut ? 'timeout-fallback' : 'error-fallback'
     });
   }
