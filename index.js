@@ -1094,60 +1094,11 @@ function buildTeacherPrompt(text, maxQ=3){
 Jesteś nauczycielem języka polskiego w klasach 1–3 szkoły podstawowej.
 Twoim zadaniem jest sprawdzenie, czy dziecko zrozumiało przeczytany tekst.
 
-Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci klas 1–3) oraz krótkie poprawne odpowiedzi (maksymalnie 6 słów), oparte WYŁĄCZNIE na informacjach zawartych w TEKŚCIE.
-
-🔹 Zasady ogólne:
-- Nie dopowiadaj ani nie zgaduj niczego spoza tekstu.  
-- Nie dodawaj miejsc, imion, czasu ani czynności, których w tekście NIE MA.  
-- Używaj dokładnie tych słów i form, które występują w tekście (np. „piesek Lucek”, nie „Lucek”).  
-- Jeśli w tekście nie ma imienia, użyj neutralnego określenia: „dziecko”, „zwierzę”, „osoba”, „bohater”.  
-- Odpowiedzi mają być krótkie i jednoznaczne — najlepiej 1–5 słów.
-
-🔹 Różnorodność pytań:
-- Każde pytanie musi dotyczyć rzeczywistej informacji z tekstu (np. czynność, miejsce, czas, obiekt, cel).  
-- Nie zadawaj pytań o elementy, których nie można jednoznacznie wskazać w zdaniu.  
-- Jeśli w tekście nie ma miejsca → nie zadawaj „Gdzie…?”  
-  jeśli nie ma czasu → nie zadawaj „Kiedy…?”  
-  jeśli nie ma ruchu → nie zadawaj „Dokąd…?”  
-- Wybieraj formę pytania, która najlepiej pasuje do treści, np.:
-  • „Co robi …?” — gdy jest czynność (czyta, śpi, je, pije, pisze itp.)  
-  • „Kto …?” — gdy ważny jest wykonawca czynności  
-  • „Gdzie …?” — tylko jeśli w tekście jest konkretne miejsce („w pokoju”, „na łące”)  
-  • „Kiedy …?” — tylko jeśli w tekście występuje określenie czasu („rano”, „wieczorem”, „jutro”)  
-  • „Czego …?” — tylko przy słuchaniu, uczeniu się, czytaniu itp.  
-  • „Dokąd …?” — tylko jeśli w tekście ktoś dokądś idzie („do szkoły”, „na spacer”)  
-- Nie powtarzaj dwóch identycznych typów pytań (np. dwóch „Co robi…?” pod rząd), jeśli masz miejsce na kilka pytań.  
-
-🔹 Liczba pytań:
-- Jeśli tekst to jedno krótkie zdanie → wygeneruj tylko jedno pytanie.  
-- Jeśli tekst ma kilka zdań → wygeneruj 2–${clamped} pytań, po jednym do najważniejszych zdań.  
-
-🔹 Styl:
-- Język prosty, naturalny, zrozumiały dla dzieci klas 1–3.  
-- Pytania zawsze zakończone znakiem zapytania.  
-- Odpowiedzi krótkie, konkretne, bez cudzysłowów i bez cytowania całych zdań.  
-
-Zwróć DOKŁADNIE czysty JSON:
-{
-  "questions": [
-    { "question": "…?", "answer": "…" }
-  ]
-}
-TEKST:
-"""${qz_trim(text, 1000)}"""
-
-Styl i język:
-- Używaj wyłącznie języka polskiego, prosto i naturalnie (poziom 1–3).
-- Pytania mają kończyć się znakiem zapytania.
-- Odpowiedzi krótkie, rzeczowe, bez dopowiedzeń nieobecnych w tekście, bez cudzysłowów.
-
-Zwróć DOKŁADNIE czysty JSON:
-{
-  "questions": [
-    { "question": "…?", "answer": "…" }
-  ]
-}
-
+Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci 1–3), oraz krótkie poprawne odpowiedzi (max 6 słów), oparte WYŁĄCZNIE na treści tekstu. 
+Nie wymyślaj nowych imion ani faktów. 
+Pytaj konkretnie o bohatera, czynność, miejsce, czas, cel — tylko jeśli te informacje są w tekście. 
+Jeśli tekst to 1 zdanie, daj 1 pytanie. Jeśli dłuższy — 2–${clamped} pytań. 
+Używaj tylko języka polskiego.
 
 Zwróć DOKŁADNIE czysty JSON:
 {
