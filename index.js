@@ -1216,19 +1216,37 @@ function isValidQA(q, a, text) {
 
 function postProcessLLMItems(items, text, want=3) {
   const out = [];
+  const placeMatch = (text.match(RE_PLACE)||[])[0];
+
   for (const it of items || []) {
     let q = cleanQuestion(it.question || '');
     let a = (it.answer || '').trim();
 
-    // Jeżeli Po co/Dlaczego bez celu → zamień na bezpieczną formę
+    // Po co/Dlaczego bez celu → zmiana pytania
     if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) {
       if (RE_PLACE.test(text)) q = 'Gdzie to było?';
       else if (RE_TIME.test(text)) q = 'Kiedy to było?';
       else q = 'Co się dzieje?';
     }
 
+    // Jeśli pytanie o miejsce, a odpowiedź:
+    if (/^\s*Gdzie\b/i.test(q)) {
+      // - wygląda jak cel („żeby/aby/…”) → podmień na frazę miejsca z tekstu lub odrzuć
+      if (RE_PURPOSE.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
+      // - NIE zaczyna się przyimkiem → spróbuj wziąć frazę z tekstu
+      if (!RE_PLACE_ANS_START.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
+    }
+
+    // Jeśli odpowiedź zawiera marker celu, a pytanie nie jest „Po co/Dlaczego” → zmień pytanie
+    if (RE_PURPOSE.test(a) && !/^\s*(Po co|Dlaczego)\b/i.test(q)) {
+      q = 'Po co?';
+    }
+
     if (!isValidQA(q, a, text)) continue;
-    if (RE_PLACE_ANS_START.test(a)) a = trimPlace(a); // skróć odpowiedzi miejsca
+
+    // Skracanie odpowiedzi miejsca do 1–3 słów
+    if (RE_PLACE_ANS_START.test(a)) a = trimPlace(a);
+
     out.push({ question: q, answer: a, fallback: false, source_path: 'llm+post' });
     if (out.length >= want) break;
   }
