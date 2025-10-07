@@ -1046,7 +1046,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* ==============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3  =============== */
+/* ============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3 (LLM)  =========== */
 /* ===================================================================== */
 
 /** Możesz włączyć stały tryb debug: COMPREHEND_DEBUG=1 w ENV */
@@ -1081,51 +1081,85 @@ function setComprehendHeaders(res, payload){
   if (s) res.setHeader('X-Comprehend-Sentence', s);
 }
 
-/* — fallback heurystyczny na 100% bezpieczeństwa — */
+/* — fallback heurystyczny na 100% bezpieczeństwa (awaryjnie) — */
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
-  // prosty: wyłap kto/verb/miejsce/czas
   const mSubject = text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)*)\b/iu);
   const subj = mSubject ? mSubject[1] : '';
-  const hasPlace = /\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu.test(text);
-  const hasTime  = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu.test(text);
-  const mVerb = text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|slucha|słucha|idzie)\b/iu);
-  if (hasPlace && subj)  return { question: `Gdzie ${/je|pije|czyta|ogląda|pisze|rysuje|maluje|śpi|spi|idzie|słucha|slucha/i.test(text) ? subj : 'to się dzieje'}?`, answer: text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu)?.[0] || '' };
-  if (hasTime && subj)   return { question: `Kiedy ${subj.replace(/\s+$/,'')} ${mVerb ? mVerb[0] : 'to robi'}?`, answer: (text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu)||[])[0] || '' };
-  if (mVerb && subj)     return { question: `Co robi ${subj}?`, answer: mVerb[0].toLowerCase() };
-  if (mVerb)             return { question: 'Co się dzieje w zdaniu?', answer: mVerb[0].toLowerCase() };
+  const placeMatch = text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu);
+  const timeMatch  = text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu);
+  const mVerb = text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|slucha|słucha|idzie|gra|stoi|siedzi|leży|lezy)\b/iu);
+
+  if (placeMatch && subj)  return { question: `Gdzie ${subj} ${mVerb ? mVerb[0].toLowerCase() : 'jest'}?`, answer: placeMatch[0] };
+  if (timeMatch && subj)   return { question: `Kiedy ${subj} ${mVerb ? mVerb[0].toLowerCase() : 'to robi'}?`, answer: timeMatch[0] };
+  if (mVerb && subj)       return { question: `Co robi ${subj}?`, answer: mVerb[0].toLowerCase() };
+  if (mVerb)               return { question: 'Co się dzieje w zdaniu?', answer: mVerb[0].toLowerCase() };
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
 
-/* — parser JSON z modelu — */
+/* — parser JSON z modelu: odporniejszy na „prawie-JSON” — */
 function parseQuestionsFromJSON(raw){
   if (!raw) return [];
-  const m = String(raw).match(/\{[\s\S]*\}/);
-  if (!m) return [];
+  let src = String(raw).trim();
+
+  // spróbuj znaleźć pierwszy blok { ... }
+  let m = src.match(/\{[\s\S]*\}/);
+  if (!m) {
+    // usuń typowe wypunktowania/markdown i spróbuj ponownie
+    const lines = src.split(/\r?\n/).filter(l => !/^\s*[-*\d.)]+\s/.test(l));
+    m = lines.join(' ').match(/\{[\s\S]*\}/);
+    if (!m) return [];
+  }
+
+  // lekkie „uzdrowienie” JSON
+  let jsonStr = m[0]
+    .replace(/(\r?\n)+/g, ' ')
+    .replace(/[\u201C\u201D„”]/g, '"')    // “ ” „ ” → "
+    .replace(/'([^']*)'/g, '"$1"')        // 'x' → "x"
+    .replace(/(\w+)\s*:/g, '"$1":');      // gołe klucze → "klucz":
+
   let j;
-  try { j = JSON.parse(m[0]); } catch { return []; }
+  try { j = JSON.parse(jsonStr); }
+  catch { return []; }
+
   const arr = Array.isArray(j?.questions) ? j.questions : [];
-  // sanity: trim i krótkie odpowiedzi
   return arr
-    .map(x => ({
-      question: String(x?.question || '').replace(/[„”"']/g,'').trim(),
-      answer: String(x?.answer || '').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ')
-    }))
+    .map(x => {
+      const q = String(x?.question || '').replace(/[„”"']/g,'').trim();
+      const a = String(x?.answer   || '').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ');
+      return { question: q, answer: a };
+    })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
 }
 
-/* — główny PROMPT NAUCZYCIELA PL 1–3 — */
+/* — mini „anti-generic”: jeśli model poda generyk, poprawiamy heurystyką — */
+function upgradeGenericIfNeeded(qa, sentence){
+  const q = String(qa?.question || '').trim();
+  if (!q || /O co chodzi w zdaniu\?/i.test(q)) {
+    const h = heuristicQA(sentence);
+    return { question: h.question, answer: h.answer || qa.answer || '', fallback: true };
+  }
+  return qa;
+}
+
+/* — główny PROMPT NAUCZYCIELA PL 1–3 (z zakazem generyków) — */
 function buildTeacherPrompt(text, maxQ=3){
   const clamped = Math.max(1, Math.min(5, Number(maxQ)||3));
   return `
-Jesteś nauczycielem języka polskiego w klasach 1–3 szkoły podstawowej.
-Twoim zadaniem jest sprawdzenie, czy dziecko zrozumiało przeczytany tekst.
+Jesteś nauczycielem języka polskiego w klasach 1–3.
+Na podstawie TEKSTU przygotuj od 1 do ${clamped} bardzo prostych pytań oraz krótkie poprawne odpowiedzi (max 6 słów), WYŁĄCZNIE z treści tekstu.
 
-Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci 1–3), oraz krótkie poprawne odpowiedzi (max 6 słów), oparte WYŁĄCZNIE na treści tekstu. 
-Nie wymyślaj nowych imion ani faktów. 
-Pytaj konkretnie o bohatera, czynność, miejsce, czas, cel — tylko jeśli te informacje są w tekście. 
-Jeśli tekst to 1 zdanie, daj 1 pytanie. Jeśli dłuższy — 2–${clamped} pytań. 
-Używaj tylko języka polskiego.
+Wymagania:
+- NIE wymyślaj nowych imion, miejsc ani faktów.
+- Jeśli w tekście nie ma bohatera/miejsca/czasu/celu — NIE pytaj o to.
+- Zakaz pytań ogólnych typu „O co chodzi w zdaniu?”.
+- Różnicuj typy pytań (używaj tylko, gdy są dane w tekście):
+  1) „Kto…?” lub „Co robi [kto]…?”
+  2) „Gdzie…?”
+  3) „Kiedy…?”
+  4) „Po co…?” / „Dlaczego…?” (tylko jeśli powód/cel jest wprost podany)
+- Jeśli tekst to 1 zdanie → 1 pytanie. Jeśli dłuższy → 2–${clamped} pytań.
+- Tylko język polski.
 
 Zwróć DOKŁADNIE czysty JSON:
 {
@@ -1140,20 +1174,22 @@ TEKST:
 }
 
 /* — LLM-first: OpenAI via chatPref (z Groq w failoverze przez chatPref/groqChat) — */
+/* wymaga: chatPref + withDeadlineRetry zdefiniowanych wyżej w pliku */
 async function llmQuestions(text, countHint){
   const sentences = qz_splitSentences(text);
   const maxQ = Math.min(5, Math.max(1, countHint || sentences.length || 1));
   const prompt = buildTeacherPrompt(text, maxQ);
 
-  // używamy istniejącego chatPref (OpenAI-first + retry, fallback na Groq)
-  const { text: out, provider } = await chatPref({
+  const makeCall = () => chatPref({
     prompt,
-    temperature: 0.3,
+    temperature: 0.25,
     top_p: 0.95,
     max_tokens: 280,
-    deadlineMs: 3500
+    deadlineMs: 4500   // delikatnie większy margines
   });
 
+  // 1 próba + 1 retry, gdyby było ciasno z czasem/limitami
+  const { text: out, provider } = await withDeadlineRetry(makeCall, { deadlineMs: 4500, retries: 1, backoffMs: 300 });
   const items = parseQuestionsFromJSON(out);
   return { items, provider };
 }
@@ -1178,7 +1214,6 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
     let out = [];
-    let path = 'llm';
     let provider = null;
 
     try {
@@ -1186,27 +1221,29 @@ app.post('/agent/comprehend-multi', async (req, res) => {
       provider = r.provider || 'llm';
       out = (r.items || []).slice(0, Math.min(5, Math.max(1, count)));
     } catch (e) {
-      path = 'llm-error';
       if (dbg) console.log('[COMPREHEND-MULTI][LLM_ERROR]', String(e?.message || e));
       out = []; // przejdziemy do heurystyki poniżej
     }
 
     if (!out.length) {
-      path = 'heuristic-fallback';
       out = heuristicMulti(src, Math.min(3, Math.max(1, count)));
     } else {
-      // dorzuć pola dla spójności z heurystyką
-      out = out.map((x, i) => ({
-        question: x.question,
-        answer: x.answer,
-        fallback: false,
-        sentence: qz_splitSentences(src)[i] || src,
-        source_path: 'llm',
-        llm_provider: provider
-      }));
+      // anti-generic + spójne pola
+      out = out.map((x, i) => {
+        const sent = qz_splitSentences(src)[i] || src;
+        const fixed = upgradeGenericIfNeeded(x, sent);
+        return {
+          question: fixed.question,
+          answer: fixed.answer,
+          fallback: !!fixed.fallback,
+          sentence: sent,
+          source_path: fixed.fallback ? 'llm+anti-generic' : 'llm',
+          llm_provider: provider
+        };
+      });
     }
 
-    // nagłówki (ASCII safe)
+    // nagłówki (ASCII safe) — bierzemy 1. element
     setComprehendHeaders(res, out[0]);
 
     if (dbg) {
@@ -1231,7 +1268,6 @@ app.post('/agent/comprehend', async (req, res) => {
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
     let qa = null;
-    let path = 'llm';
     let provider = null;
 
     try {
@@ -1239,23 +1275,25 @@ app.post('/agent/comprehend', async (req, res) => {
       provider = r.provider || 'llm';
       const first = (r.items || [])[0];
       if (first) {
+        const sent = qz_splitSentences(src)[0] || src;
+        const fixed = upgradeGenericIfNeeded(first, sent);
         qa = {
-          question: first.question,
-          answer: first.answer,
-          fallback: false,
-          sentence: qz_splitSentences(src)[0] || src,
-          source_path: 'llm',
+          question: fixed.question,
+          answer: fixed.answer,
+          fallback: !!fixed.fallback,
+          sentence: sent,
+          source_path: fixed.fallback ? 'llm+anti-generic' : 'llm',
           llm_provider: provider
         };
       }
     } catch (e) {
-      path = 'llm-error';
       if (dbg) console.log('[COMPREHEND-ONE][LLM_ERROR]', String(e?.message || e));
     }
 
     if (!qa) {
-      const h = heuristicQA(qz_splitSentences(src)[0] || src);
-      qa = { question: h.question, answer: h.answer, fallback: true, sentence: qz_splitSentences(src)[0] || src, source_path: 'heuristic-fallback' };
+      const sent = qz_splitSentences(src)[0] || src;
+      const h = heuristicQA(sent);
+      qa = { question: h.question, answer: h.answer, fallback: true, sentence: sent, source_path: 'heuristic-fallback' };
     }
 
     setComprehendHeaders(res, qa);
@@ -1283,7 +1321,6 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================================================================== */
-
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
