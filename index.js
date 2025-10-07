@@ -1046,212 +1046,190 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ===================================================================== */
-/* ============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3 (LLM)  =========== */
+/* ==============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3  =============== */
 /* ===================================================================== */
 
-/** Możesz włączyć stały tryb debug: COMPREHEND_DEBUG=1 w ENV */
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
+const COMPREHEND_TIMEOUT_MS = Number(process.env.COMPREHEND_TIMEOUT_MS || 3200);
 
-/* — drobne utils — */
+/* utilsy */
 function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
-function qz_trim(s="", limit=1000){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
-function qz_splitSentences(s=""){
-  return String(s||"")
-    .replace(/\s*[\r\n]+\s*/g," ")
-    .split(/(?<=[.!?…])\s+/u)
-    .map(t=>t.trim())
-    .filter(Boolean);
-}
-function safeHeaderASCII(v){
-  return String(v ?? '')
-    .replace(/[\r\n]+/g, ' ')
-    .replace(/[^\x20-\x7E]/g, '')   // tylko ASCII, by uniknąć ERR_INVALID_CHAR
-    .trim()
-    .slice(0, 160);
-}
+function qz_trim(s="", limit=900){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
+function qz_splitSentences(s=""){ return String(s||"").replace(/\s*[\r\n]+\s*/g," ").split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean); }
+function safeHeaderASCII(v){ return String(v ?? '').replace(/[\r\n]+/g,' ').replace(/[^\x20-\x7E]/g,'').trim().slice(0,160); }
 function setComprehendHeaders(res, payload){
   if (!payload) return;
-  const q = safeHeaderASCII(payload.question || '');
-  const a = safeHeaderASCII(payload.answer   || '');
-  const s = safeHeaderASCII(payload.sentence || '');
-  const p = safeHeaderASCII(payload.source_path || payload.path || 'unknown');
-  res.setHeader('X-Comprehend-Path', p || '-');
+  res.setHeader('X-Comprehend-Path', safeHeaderASCII(payload.source_path || payload.path || 'unknown') || '-');
+  const q = safeHeaderASCII(payload.question || ''), a = safeHeaderASCII(payload.answer || ''), s = safeHeaderASCII(payload.sentence || '');
   if (q) res.setHeader('X-Comprehend-Question', q);
   if (a) res.setHeader('X-Comprehend-Answer', a);
   if (s) res.setHeader('X-Comprehend-Sentence', s);
 }
 
-/* — fallback heurystyczny na 100% bezpieczeństwa (awaryjnie) — */
+/* twardy timeout: zawsze coś zwrócimy */
+function hardTimeout(promise, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const t = setTimeout(() => { if(!done){ done=true; resolve({ __timeout: true }); } }, ms);
+    promise.then(v => { if(!done){ done=true; clearTimeout(t); resolve(v); } })
+           .catch(e => { if(!done){ done=true; clearTimeout(t); resolve({ __error: e }); } });
+  });
+}
+
+/* mini-heurystyka jako ostatnia deska ratunku */
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
-  const mSubject = text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)*)\b/iu);
-  const subj = mSubject ? mSubject[1] : '';
-  const placeMatch = text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu);
-  const timeMatch  = text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu);
-  const mVerb = text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|slucha|słucha|idzie|gra|stoi|siedzi|leży|lezy)\b/iu);
-
-  if (placeMatch && subj)  return { question: `Gdzie ${subj} ${mVerb ? mVerb[0].toLowerCase() : 'jest'}?`, answer: placeMatch[0] };
-  if (timeMatch && subj)   return { question: `Kiedy ${subj} ${mVerb ? mVerb[0].toLowerCase() : 'to robi'}?`, answer: timeMatch[0] };
-  if (mVerb && subj)       return { question: `Co robi ${subj}?`, answer: mVerb[0].toLowerCase() };
-  if (mVerb)               return { question: 'Co się dzieje w zdaniu?', answer: mVerb[0].toLowerCase() };
+  const subj = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)*)\b/iu)||[])[1] || '';
+  const place = (text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu)||[])[0];
+  const time  = (text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu)||[])[0];
+  const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|gra|stoi|siedzi|leży|lezy|patrzy)\b/iu)||[])[0];
+  if (place && subj)  return { question: `Gdzie ${subj} ${mVerb ? mVerb.toLowerCase() : 'jest'}?`, answer: place };
+  if (time && subj)   return { question: `Kiedy ${subj} ${mVerb ? mVerb.toLowerCase() : 'to robi'}?`, answer: time };
+  if (mVerb && subj)  return { question: `Co robi ${subj}?`, answer: mVerb.toLowerCase() };
+  if (mVerb)          return { question: 'Co się dzieje w zdaniu?', answer: mVerb.toLowerCase() };
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
 
-/* — parser JSON z modelu: odporniejszy na „prawie-JSON” — */
+/* porządkowanie bzdurek typu „czyta czyta”, „pije pije”, itp. */
+function dedupeVerbInQuestion(q){
+  if (!q) return q;
+  let s = String(q).replace(/\s+/g,' ').trim();
+  // np. "Gdzie Kasia czyta ksiazke czyta?" → usuń powtórkę na końcu
+  s = s.replace(/\b(czyta|pije|je|gra|idzie|stoi|siedzi|leży|lezy|ogląda|oglad|pisze|rysuje|maluje)\s+\1\b/gi, '$1');
+  // za często model powtarza czasownik po dopełnieniu: "... książkę czyta?" → zostaw sam czasownik w środku
+  s = s.replace(/\b(ksiazke|książkę|kakao|zup[eęa]|komiks|piłk[ae]|muzyke|muzykę)\s+(czyta|pije|je|gra)\?/gi, '$2?');
+  return s;
+}
+
+/* parser JSON z modelu (odporny na prawie-JSON) */
 function parseQuestionsFromJSON(raw){
   if (!raw) return [];
-  let src = String(raw).trim();
-
-  // spróbuj znaleźć pierwszy blok { ... }
-  let m = src.match(/\{[\s\S]*\}/);
-  if (!m) {
-    // usuń typowe wypunktowania/markdown i spróbuj ponownie
-    const lines = src.split(/\r?\n/).filter(l => !/^\s*[-*\d.)]+\s/.test(l));
-    m = lines.join(' ').match(/\{[\s\S]*\}/);
-    if (!m) return [];
-  }
-
-  // lekkie „uzdrowienie” JSON
-  let jsonStr = m[0]
-    .replace(/(\r?\n)+/g, ' ')
-    .replace(/[\u201C\u201D„”]/g, '"')    // “ ” „ ” → "
-    .replace(/'([^']*)'/g, '"$1"')        // 'x' → "x"
-    .replace(/(\w+)\s*:/g, '"$1":');      // gołe klucze → "klucz":
-
-  let j;
-  try { j = JSON.parse(jsonStr); }
-  catch { return []; }
-
+  let m = String(raw).match(/\{[\s\S]*\}/);
+  if (!m) return [];
+  let j; try { j = JSON.parse(m[0]); } catch { return []; }
   const arr = Array.isArray(j?.questions) ? j.questions : [];
-  return arr
-    .map(x => {
-      const q = String(x?.question || '').replace(/[„”"']/g,'').trim();
-      const a = String(x?.answer   || '').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ');
+  return arr.map(x => {
+      const q = dedupeVerbInQuestion(String(x?.question||'').replace(/[„”"']/g,'').trim());
+      const a = String(x?.answer||'').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ');
       return { question: q, answer: a };
     })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
 }
 
-/* — mini „anti-generic”: jeśli model poda generyk, poprawiamy heurystyką — */
-function upgradeGenericIfNeeded(qa, sentence){
-  const q = String(qa?.question || '').trim();
-  if (!q || /O co chodzi w zdaniu\?/i.test(q)) {
-    const h = heuristicQA(sentence);
-    return { question: h.question, answer: h.answer || qa.answer || '', fallback: true };
-  }
-  return qa;
-}
-
-/* — główny PROMPT NAUCZYCIELA PL 1–3 (z zakazem generyków) — */
+/* PROMPT — krótki i twardy: zero wymysłów, zero miejsca/czasu jeśli nie ma w tekście */
 function buildTeacherPrompt(text, maxQ=3){
   const clamped = Math.max(1, Math.min(5, Number(maxQ)||3));
   return `
-Jesteś nauczycielem języka polskiego w klasach 1–3.
-Na podstawie TEKSTU przygotuj od 1 do ${clamped} bardzo prostych pytań oraz krótkie poprawne odpowiedzi (max 6 słów), WYŁĄCZNIE z treści tekstu.
+Jesteś nauczycielem języka polskiego (klasy 1–3).
+Na podstawie TEKSTU przygotuj od 1 do ${clamped} PROSTYCH pytań i krótkich poprawnych odpowiedzi (max 6 słów) — WYŁĄCZNIE z treści.
 
-Wymagania:
-- NIE wymyślaj nowych imion, miejsc ani faktów.
-- Jeśli w tekście nie ma bohatera/miejsca/czasu/celu — NIE pytaj o to.
-- Zakaz pytań ogólnych typu „O co chodzi w zdaniu?”.
-- Różnicuj typy pytań (używaj tylko, gdy są dane w tekście):
-  1) „Kto…?” lub „Co robi [kto]…?”
-  2) „Gdzie…?”
-  3) „Kiedy…?”
-  4) „Po co…?” / „Dlaczego…?” (tylko jeśli powód/cel jest wprost podany)
-- Jeśli tekst to 1 zdanie → 1 pytanie. Jeśli dłuższy → 2–${clamped} pytań.
-- Tylko język polski.
+Zasady:
+- Nie wymyślaj nowych imion/miejsc/czasów/celów.
+- Jeśli w tekście NIE ma miejsca → nie pytaj „Gdzie…?”.
+- Jeśli w tekście NIE ma czasu → nie pytaj „Kiedy…?”.
+- Dopuszczalne typy pytań (wybierz te, które pasują do TEKSTU): „Kto…?”, „Co robi…?”, „Gdzie…?”, „Kiedy…?”, „Po co…?”.
+- Zero parafraz/hipotez. Tylko to, co w tekście.
 
-Zwróć DOKŁADNIE czysty JSON:
-{
-  "questions": [
-    { "question": "…?", "answer": "…" }
-  ]
-}
+Zwróć dokładnie JSON:
+{"questions":[{"question":"…?","answer":"…"}]}
 
 TEKST:
-"""${qz_trim(text, 1000)}"""
-`.trim();
+"""${qz_trim(text, 900)}"""`.trim();
 }
 
-/* — LLM-first: OpenAI via chatPref (z Groq w failoverze przez chatPref/groqChat) — */
-/* wymaga: chatPref + withDeadlineRetry zdefiniowanych wyżej w pliku */
-async function llmQuestions(text, countHint){
+/* równoległy wyścig: OpenAI i Groq jednocześnie — bierzemy pierwszą sensowną odpowiedź */
+async function llmQuestionsRace(text, countHint){
   const sentences = qz_splitSentences(text);
   const maxQ = Math.min(5, Math.max(1, countHint || sentences.length || 1));
   const prompt = buildTeacherPrompt(text, maxQ);
 
-  const makeCall = () => chatPref({
-    prompt,
-    temperature: 0.25,
-    top_p: 0.95,
-    max_tokens: 280,
-    deadlineMs: 4500   // delikatnie większy margines
-  });
+  const oaiPromise = (async () => {
+    if (!openai) throw new Error('OPENAI_OFF');
+    const r = await withDeadlineRetry(
+      () => openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        max_tokens: 180,
+        top_p: 0.95,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      { deadlineMs: Math.min(COMPREHEND_TIMEOUT_MS-300, 2500), retries: 0 }
+    );
+    const out = r?.choices?.[0]?.message?.content || '';
+    const items = parseQuestionsFromJSON(out);
+    if (!items.length) throw new Error('OAI_EMPTY');
+    return { items, provider: 'openai' };
+  })();
 
-  // 1 próba + 1 retry, gdyby było ciasno z czasem/limitami
-  const { text: out, provider } = await withDeadlineRetry(makeCall, { deadlineMs: 4500, retries: 1, backoffMs: 300 });
-  const items = parseQuestionsFromJSON(out);
-  return { items, provider };
+  const groqPromise = (async () => {
+    if (!groq) throw new Error('GROQ_OFF');
+    const r = await hardTimeout(
+      groqChat({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 180,
+        temperature: 0.2,
+        top_p: 0.95
+      }),
+      Math.min(COMPREHEND_TIMEOUT_MS-300, 2500)
+    );
+    if (r?.__timeout || r?.__error) throw new Error('GROQ_FAIL');
+    const out = r?.text || '';
+    const items = parseQuestionsFromJSON(out);
+    if (!items.length) throw new Error('GROQ_EMPTY');
+    return { items, provider: 'groq' };
+  })();
+
+  // bierzemy pierwszego, który „dowiezie” sensowne items
+  try {
+    const res = await hardTimeout(
+      Promise.any([oaiPromise, groqPromise]),
+      COMPREHEND_TIMEOUT_MS
+    );
+    if (res?.__timeout) throw new Error('RACE_TIMEOUT');
+    return res;
+  } catch {
+    return { items: [], provider: null };
+  }
 }
 
-/* — fallback multi: generuj Q/A z pierwszych Z zdań heurystycznie — */
-function heuristicMulti(text, want = 1){
+/* multi-heurystyka (ostatni fallback) */
+function heuristicMulti(text, want=1){
   const sents = qz_splitSentences(text).slice(0, Math.max(1, want));
-  const arr = [];
-  for (const s of sents){
-    const qa = heuristicQA(s);
-    arr.push({ question: qa.question, answer: qa.answer, fallback: true, sentence: s, source_path: 'heuristic-fallback' });
-  }
-  return arr;
+  return sents.map(s => {
+    const h = heuristicQA(s);
+    return { question: h.question, answer: h.answer, fallback: true, sentence: s, source_path: 'heuristic-fallback' };
+  });
 }
 
 /* ===================== /agent/comprehend-multi ===================== */
 app.post('/agent/comprehend-multi', async (req, res) => {
+  const dbg = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG;
   try {
-    const dbg = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG;
-    const { text = '', age, count = 3 } = req.body || {};
+    const { text = '', count = 3 } = req.body || {};
     const src = String(text || '').trim();
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
     let out = [];
     let provider = null;
+    const race = await llmQuestionsRace(src, count);
+    provider = race.provider;
+    out = (race.items || []).slice(0, Math.min(5, Math.max(1, count)));
 
-    try {
-      const r = await llmQuestions(src, count);
-      provider = r.provider || 'llm';
-      out = (r.items || []).slice(0, Math.min(5, Math.max(1, count)));
-    } catch (e) {
-      if (dbg) console.log('[COMPREHEND-MULTI][LLM_ERROR]', String(e?.message || e));
-      out = []; // przejdziemy do heurystyki poniżej
+    if (!out.length) out = heuristicMulti(src, Math.min(3, Math.max(1, count)));
+    else {
+      const sents = qz_splitSentences(src);
+      out = out.map((x,i)=>({
+        question: dedupeVerbInQuestion(x.question),
+        answer: String(x.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+        fallback: false,
+        sentence: sents[i] || sents[0] || src,
+        source_path: 'llm',
+        llm_provider: provider
+      }));
     }
 
-    if (!out.length) {
-      out = heuristicMulti(src, Math.min(3, Math.max(1, count)));
-    } else {
-      // anti-generic + spójne pola
-      out = out.map((x, i) => {
-        const sent = qz_splitSentences(src)[i] || src;
-        const fixed = upgradeGenericIfNeeded(x, sent);
-        return {
-          question: fixed.question,
-          answer: fixed.answer,
-          fallback: !!fixed.fallback,
-          sentence: sent,
-          source_path: fixed.fallback ? 'llm+anti-generic' : 'llm',
-          llm_provider: provider
-        };
-      });
-    }
-
-    // nagłówki (ASCII safe) — bierzemy 1. element
     setComprehendHeaders(res, out[0]);
-
-    if (dbg) {
-      console.log('[COMPREHEND-MULTI]', out.map(i => ({
-        path: i.source_path, provider: i.llm_provider, q: i.question, a: i.answer, sent: i.sentence
-      })));
-    }
-
+    if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a:i.answer,s:i.sentence})));
     return res.json({ ok: true, count: out.length, items: out });
   } catch (err) {
     console.error('comprehend-multi error:', err);
@@ -1261,66 +1239,42 @@ app.post('/agent/comprehend-multi', async (req, res) => {
 
 /* ===================== /agent/comprehend ===================== */
 app.post('/agent/comprehend', async (req, res) => {
+  const dbg = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG;
   try {
-    const dbg = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG;
-    const { text = '', age } = req.body || {};
+    const { text = '' } = req.body || {};
     const src = String(text || '').trim();
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
+    const bestSent = qz_splitSentences(src)[0] || src;
+
     let qa = null;
-    let provider = null;
+    const race = await llmQuestionsRace(bestSent, 1);
+    const first = (race.items || [])[0];
 
-    try {
-      const r = await llmQuestions(src, 1);
-      provider = r.provider || 'llm';
-      const first = (r.items || [])[0];
-      if (first) {
-        const sent = qz_splitSentences(src)[0] || src;
-        const fixed = upgradeGenericIfNeeded(first, sent);
-        qa = {
-          question: fixed.question,
-          answer: fixed.answer,
-          fallback: !!fixed.fallback,
-          sentence: sent,
-          source_path: fixed.fallback ? 'llm+anti-generic' : 'llm',
-          llm_provider: provider
-        };
-      }
-    } catch (e) {
-      if (dbg) console.log('[COMPREHEND-ONE][LLM_ERROR]', String(e?.message || e));
-    }
-
-    if (!qa) {
-      const sent = qz_splitSentences(src)[0] || src;
-      const h = heuristicQA(sent);
-      qa = { question: h.question, answer: h.answer, fallback: true, sentence: sent, source_path: 'heuristic-fallback' };
+    if (first) {
+      qa = {
+        question: dedupeVerbInQuestion(first.question),
+        answer: String(first.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+        fallback: false,
+        sentence: bestSent,
+        source_path: 'llm',
+        llm_provider: race.provider
+      };
+    } else {
+      const h = heuristicQA(bestSent);
+      qa = { question: h.question, answer: h.answer, fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
 
     setComprehendHeaders(res, qa);
-
-    if (dbg) {
-      console.log('[COMPREHEND-ONE]', { path: qa.source_path, provider: qa.llm_provider, q: qa.question, a: qa.answer, sent: qa.sentence });
-    }
-
-    return res.json({
-      ok: true,
-      question: qa.question,
-      answer: qa.answer,
-      fallback: !!qa.fallback,
-      source_path: qa.source_path
-    });
+    if (dbg) console.log('[COMPREHEND-ONE]', { path: qa.source_path, provider: qa.llm_provider, q: qa.question, a: qa.answer, sent: qa.sentence });
+    return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: !!qa.fallback, source_path: qa.source_path });
   } catch (err) {
     console.error('comprehend error:', err);
-    return res.status(200).json({
-      ok: true,
-      question: 'Co się dzieje w zdaniu?',
-      answer: '',
-      fallback: true,
-      source_path: 'error-fallback'
-    });
+    return res.status(200).json({ ok: true, question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'error-fallback' });
   }
 });
 /* ===================================================================== */
+
 
 /* ===================== START ===================== */
 async function prewarmOnce() {
