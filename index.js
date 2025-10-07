@@ -31,8 +31,12 @@ const DEADLINE_MS = Number(process.env.FAST_TIMEOUT_MS || 1500);
 const MAX_TOKENS_FAST = Number(process.env.MAX_TOKENS_FAST || 64);
 const PREWARM_EVERY_MIN = Number(process.env.PREWARM_EVERY_MIN || 5); // 0 = tylko na starcie
 const BASE_URL = process.env.BASE_URL || '';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'whisper-large-v3';
-const LLM_PREF = 'openai-only'; // TYLKO OPENAI dla pytań/odpowiedzi
+
+// Rozdzielone modele Groq: czat (LLM) i ASR (Whisper)
+const GROQ_CHAT_MODEL = process.env.GROQ_CHAT_MODEL || 'llama-3.1-8b-instant';
+const GROQ_ASR_MODEL  = process.env.GROQ_ASR_MODEL  || 'whisper-large-v3';
+
+const LLM_PREF = 'openai-only'; // preferencja, ale mamy failover na Groq
 
 // ★ Dłuższe deadline’y tylko tam gdzie trzeba (możesz nadpisać ENV):
 const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 9000);
@@ -61,13 +65,30 @@ async function withDeadlineRetry(makePromiseFn, { deadlineMs, retries = 1, backo
       const msg = String(e?.message || e);
       if (msg === 'DEADLINE_EXCEEDED' && i < retries) {
         await sleep(backoffMs * (i + 1));
-        ms = Math.round(ms * 1.6); // delikatnie wydłuż limit na kolejną próbę
+        ms = Math.round(ms * 1.6); // delikatne wydłużenie
         continue;
       }
       throw e;
     }
   }
   throw lastErr;
+}
+
+/* ===== OpenAI local RPM guard (soft) ===== */
+const OAI_RPM_LIMIT = Number(process.env.OPENAI_RPM_LIMIT || 3); // widzisz 3 w logach
+const OAI_WINDOW_MS = 60_000;
+let oaiCallsTimestamps = [];
+function _pruneOai() {
+  const nowTs = Date.now();
+  oaiCallsTimestamps = oaiCallsTimestamps.filter(t => nowTs - t < OAI_WINDOW_MS);
+}
+function canUseOpenAI() {
+  _pruneOai();
+  return oaiCallsTimestamps.length < OAI_RPM_LIMIT;
+}
+function markOpenAICall() {
+  _pruneOai();
+  oaiCallsTimestamps.push(Date.now());
 }
 
 /* ===== Uploads ===== */
@@ -147,7 +168,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.18-retry' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.19-groq-failover' });
 });
 
 // Prosty root
@@ -168,7 +189,7 @@ app.get('/', (_req, res) => {
   `);
 });
 
-/* ===================== LLM helpers (OpenAI-only dla czatu) ===================== */
+/* ===================== LLM helpers (OpenAI-only z failoverem) ===================== */
 // Anty-sztywny setup
 const NAT_TEMPERATURE   = 0.95;
 const NAT_TOP_P         = 0.9;
@@ -185,28 +206,54 @@ async function groqChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 
       Accept: 'application/json',
       Connection: 'keep-alive'
     },
-    body: JSON.stringify({ model: GROQ_MODEL, temperature, top_p, max_tokens, messages })
+    body: JSON.stringify({
+      model: GROQ_CHAT_MODEL,   // czatowy model Groq
+      temperature,
+      top_p,
+      max_tokens,
+      messages
+    })
   });
   if (!res.ok) throw new Error(`GROQ_HTTP_${res.status}`);
   const data = await res.json();
-  return { provider: 'groq', text: data?.choices?.[0]?.message?.content?.trim?.() || '', latency_ms: Math.round(now() - t0) };
+  return {
+    provider: 'groq',
+    text: data?.choices?.[0]?.message?.content?.trim?.() || '',
+    latency_ms: Math.round(now() - t0)
+  };
 }
 
 async function openaiChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 0.3, top_p = 0.95 }) {
   if (!openai) throw new Error('OPENAI_OFF');
+  if (!canUseOpenAI()) {
+    const e = new Error('OPENAI_THROTTLED');
+    e.code = 'OPENAI_THROTTLED';
+    throw e;
+  }
   const t0 = now();
-  const r = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages,
-    temperature,
-    top_p,
-    max_tokens,
-    frequency_penalty: NAT_FREQ_PENALTY,
-    presence_penalty: NAT_PRES_PENALTY,
-  });
-  const txt = r?.choices?.[0]?.message?.content?.trim?.() || '';
-  if (!txt) throw new Error('OPENAI_EMPTY');
-  return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
+  try {
+    const r = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature,
+      top_p,
+      max_tokens,
+      frequency_penalty: NAT_FREQ_PENALTY,
+      presence_penalty: NAT_PRES_PENALTY,
+    });
+    markOpenAICall();
+    const txt = r?.choices?.[0]?.message?.content?.trim?.() || '';
+    if (!txt) throw new Error('OPENAI_EMPTY');
+    return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
+  } catch (err) {
+    const status = err?.status || err?.code;
+    if (status === 429 || err?.code === 'rate_limit_exceeded') {
+      const e = new Error('OPENAI_THROTTLED');
+      e.code = 'OPENAI_THROTTLED';
+      throw e;
+    }
+    throw err;
+  }
 }
 
 /* ===== Tekst helper: skróć/wyczyść prompt od użytkownika ===== */
@@ -215,13 +262,43 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// ENTRYPOINT — tylko OpenAI + retry z backoffem
+// ENTRYPOINT — prefer OpenAI + retry; w razie throttlingu → Groq → fallback
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
-  if (!openai) throw new Error('NO_OPENAI');
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
-  const make = () => openaiChat({ messages, max_tokens, temperature, top_p });
-  return await withDeadlineRetry(make, { deadlineMs, retries: 1, backoffMs: 250 });
+
+  // 1) Spróbuj OpenAI (z retry)
+  const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
+  try {
+    if (openai) {
+      return await withDeadlineRetry(makeOai, { deadlineMs, retries: 1, backoffMs: 250 });
+    }
+  } catch (err) {
+    if (err?.code !== 'OPENAI_THROTTLED') throw err; // inny błąd — nie maskujemy
+    // wpadliśmy w throttling — lecimy na Groq bez marnowania czasu
+  }
+
+  // 2) Failover → Groq
+  if (groq) {
+    try {
+      const { text, provider } = await withDeadline(
+        groqChat({
+          messages,
+          max_tokens,
+          temperature: Math.min(0.7, Math.max(0.2, temperature)),
+          top_p
+        }),
+        Math.max(1500, Math.round(deadlineMs * 0.9))
+      );
+      return { text, provider };
+    } catch { /* miękko */ }
+  }
+
+  // 3) Ostateczny fallback — wyżej endpointy mają bezpieczne 200
+  const e = new Error('GEN_FALLBACK');
+  e.code = 'GEN_FALLBACK';
+  throw e;
 }
+
 /** Wrapper kompatybilny */
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const { text } = await chatPref({ prompt, max_tokens, temperature, top_p: 0.95 });
@@ -264,7 +341,7 @@ app.post('/asr', upload.single('audio'), async (req, res) => {
       if (groq) {
         const transcript = await groq.audio.transcriptions.create({
           file: stream,
-          model: 'whisper-large-v3',
+          model: GROQ_ASR_MODEL, // <— ASR model z ENV
           language: 'pl',
           response_format: 'verbose_json',
           temperature: 0,
@@ -523,7 +600,7 @@ async function generateGreetingV2({ name, age, character, theme }) {
   const finalText = softenPolish(cleaned || picked);
 
   recentGreetings.set(profileKey, [finalText, ...history].slice(0, 20));
-  return { text: finalText, source: 'openai' };
+  return { text: finalText, source: 'openai_or_groq' };
 }
 
 app.post('/agent/generate-greeting', async (req, res) => {
@@ -1389,7 +1466,7 @@ async function prewarmOnce() {
 
 app.listen(PORT, () => {
   console.log(`🚀 Backend działa na http://localhost:${PORT}`);
-  console.log(`🎧 Groq ${groq ? 'podłączony' : 'OFF'} (model=${GROQ_MODEL})`);
+  console.log(`🎧 Groq ${groq ? 'podłączony' : 'OFF'} (chat=${GROQ_CHAT_MODEL}, asr=${GROQ_ASR_MODEL})`);
   console.log(`🤖 OpenAI ${openai ? 'podłączony' : 'OFF'}`);
   console.log(`🧠 LLM_PREF=${LLM_PREF}`);
   prewarmOnce();
