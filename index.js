@@ -1049,17 +1049,25 @@ app.get('/tts-voices', async (_req, res) => {
 /* ==============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3  =============== */
 /* ===================================================================== */
 
+/** Możesz włączyć stały tryb debug: COMPREHEND_DEBUG=1 w ENV */
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
-const COMPREHEND_TIMEOUT_MS = Number(process.env.COMPREHEND_TIMEOUT_MS || 6500); // ↑ podbij w ENV do 6500–9000, gdy timeouty
 
+/* — drobne utils — */
 function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
 function qz_trim(s="", limit=1000){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
 function qz_splitSentences(s=""){
-  return String(s||"").replace(/\s*[\r\n]+\s*/g," ")
-    .split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean);
+  return String(s||"")
+    .replace(/\s*[\r\n]+\s*/g," ")
+    .split(/(?<=[.!?…])\s+/u)
+    .map(t=>t.trim())
+    .filter(Boolean);
 }
 function safeHeaderASCII(v){
-  return String(v ?? '').replace(/[\r\n]+/g,' ').replace(/[^\x20-\x7E]/g,'').trim().slice(0,160);
+  return String(v ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[^\x20-\x7E]/g, '')   // tylko ASCII, by uniknąć ERR_INVALID_CHAR
+    .trim()
+    .slice(0, 160);
 }
 function setComprehendHeaders(res, payload){
   if (!payload) return;
@@ -1067,15 +1075,18 @@ function setComprehendHeaders(res, payload){
   const a = safeHeaderASCII(payload.answer   || '');
   const s = safeHeaderASCII(payload.sentence || '');
   const p = safeHeaderASCII(payload.source_path || payload.path || 'unknown');
+  const prov = safeHeaderASCII(payload.llm_provider || '');
   res.setHeader('X-Comprehend-Path', p || '-');
+  if (prov) res.setHeader('X-Comprehend-Provider', prov); // <— NOWE
   if (q) res.setHeader('X-Comprehend-Question', q);
   if (a) res.setHeader('X-Comprehend-Answer', a);
   if (s) res.setHeader('X-Comprehend-Sentence', s);
 }
 
-/* --- heurystyczny plan B (nie ruszany) --- */
+/* — fallback heurystyczny na 100% bezpieczeństwa — */
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
+  // prosty: wyłap kto/verb/miejsce/czas
   const mSubject = text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)*)\b/iu);
   const subj = mSubject ? mSubject[1] : '';
   const hasPlace = /\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu.test(text);
@@ -1088,38 +1099,36 @@ function heuristicQA(sentence){
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
 
-/* --- parser JSON --- */
+/* — parser JSON z modelu — */
 function parseQuestionsFromJSON(raw){
   if (!raw) return [];
   const m = String(raw).match(/\{[\s\S]*\}/);
   if (!m) return [];
-  let j; try { j = JSON.parse(m[0]); } catch { return []; }
+  let j;
+  try { j = JSON.parse(m[0]); } catch { return []; }
   const arr = Array.isArray(j?.questions) ? j.questions : [];
+  // sanity: trim i krótkie odpowiedzi
   return arr
     .map(x => ({
       question: String(x?.question || '').replace(/[„”"']/g,'').trim(),
-      answer:   String(x?.answer   || '').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ')
+      answer: String(x?.answer || '').replace(/[„”"']/g,'').trim().split(/\s+/).slice(0,6).join(' ')
     }))
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
 }
 
-/* --- główny PROMPT --- */
+/* — PROMPT NAUCZYCIELA PL 1–3 — */
 function buildTeacherPrompt(text, maxQ=3){
   const clamped = Math.max(1, Math.min(5, Number(maxQ)||3));
   return `
 Jesteś nauczycielem języka polskiego w klasach 1–3 szkoły podstawowej.
-Twoim zadaniem jest sprawdzić zrozumienie przeczytanego tekstu.
+Twoim zadaniem jest sprawdzenie, czy dziecko zrozumiało przeczytany tekst.
 
-Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań oraz krótkie poprawne odpowiedzi (max 6 słów). 
-Pytaj WYŁĄCZNIE o fakty z tekstu. Nie wymyślaj imion ani informacji.
-Dozwolone typy pytań (wybierz te, które pasują do treści):
-- „Kto…?” (jeśli w tekście jest bohater),
-- „Co robi…?” (główna czynność),
-- „Gdzie…?” (jeśli występuje miejsce),
-- „Kiedy…?” (jeśli występuje czas),
-- „Po co/Dlaczego…?” (jeśli cel lub powód jest wprost w tekście).
+Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci 1–3), oraz krótkie poprawne odpowiedzi (max 6 słów), oparte WYŁĄCZNIE na treści tekstu.
+Nie wymyślaj nowych imion ani faktów.
+Pytaj konkretnie o bohatera, czynność, miejsce, czas, cel — tylko jeśli te informacje są w tekście.
+Jeśli tekst to 1 zdanie, daj 1 pytanie. Jeśli dłuższy — 2–${clamped} pytań.
+Używaj tylko języka polskiego.
 
-Jeśli tekst to 1 zdanie — daj 1 pytanie. Jeśli dłuższy — 2–${clamped} pytania.
 Zwróć DOKŁADNIE czysty JSON:
 {
   "questions": [
@@ -1128,46 +1137,58 @@ Zwróć DOKŁADNIE czysty JSON:
 }
 
 TEKST:
-"""${qz_trim(text, 1000)}"`
-  .trim();
+"""${qz_trim(text, 1000)}"""
+`.trim();
 }
 
-/* --- LLM-first z kontrolą timeoutu i wymuszeniem Groq --- */
-async function llmQuestions(text, countHint, { forceProvider = null } = {}){
+/* — LLM-first: OpenAI via chatPref (fallback Groq), z możliwością ?force=openai|groq — */
+async function llmQuestions(text, countHint, { force=null } = {}){
   const sentences = qz_splitSentences(text);
   const maxQ = Math.min(5, Math.max(1, countHint || sentences.length || 1));
   const prompt = buildTeacherPrompt(text, maxQ);
 
-  // Możliwość wymuszenia Groq na test: ?force=groq
-  const useGroqFirst = (forceProvider === 'groq');
-
-  try {
-    const { text: out, provider } = await chatPref({
-      prompt,
-      temperature: 0.3,
-      top_p: 0.95,
+  // 1) Wymuszenie providera (jeśli podano)
+  if (force === 'openai') {
+    const { text: out } = await openaiChat({
+      messages: [{ role:'user', content: prompt }],
       max_tokens: 280,
-      deadlineMs: COMPREHEND_TIMEOUT_MS,
-      // mała sztuczka: jeśli wymuszasz Groq, zawołamy go szybciej (chatPref i tak robi failover)
-      ...(useGroqFirst ? { } : {})
+      temperature: 0.3,
+      top_p: 0.95
     });
     const items = parseQuestionsFromJSON(out);
-    return { items, provider: provider || 'llm' };
-  } catch (err) {
-    if (COMPREHEND_DEBUG) {
-      console.log('[COMPREHEND][LLM_ERROR]', String(err?.code || err?.status || err?.message || err));
-    }
-    return { items: [], provider: null, error: String(err?.message || err) };
+    return { items, provider: 'openai' };
   }
+  if (force === 'groq') {
+    const { text: out } = await groqChat({
+      messages: [{ role:'user', content: prompt }],
+      max_tokens: 280,
+      temperature: 0.3,
+      top_p: 0.95
+    });
+    const items = parseQuestionsFromJSON(out);
+    return { items, provider: 'groq' };
+  }
+
+  // 2) Domyślnie: prefer OpenAI (chatPref już ma retry + failover)
+  const { text: out, provider } = await chatPref({
+    prompt,
+    temperature: 0.3,
+    top_p: 0.95,
+    max_tokens: 280,
+    deadlineMs: 3500
+  });
+
+  const items = parseQuestionsFromJSON(out);
+  return { items, provider };
 }
 
-/* --- fallback multi --- */
+/* — fallback multi: generuj Q/A z pierwszych Z zdań heurystycznie — */
 function heuristicMulti(text, want = 1){
   const sents = qz_splitSentences(text).slice(0, Math.max(1, want));
   const arr = [];
   for (const s of sents){
     const qa = heuristicQA(s);
-    arr.push({ question: qa.question, answer: qa.answer, fallback: true, sentence: s, source_path: 'heuristic-fallback' });
+    arr.push({ question: qa.question, answer: qa.answer, fallback: true, sentence: s, source_path: 'heuristic-fallback', llm_provider: null });
   }
   return arr;
 }
@@ -1176,7 +1197,7 @@ function heuristicMulti(text, want = 1){
 app.post('/agent/comprehend-multi', async (req, res) => {
   try {
     const dbg   = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG;
-    const force = String(req.query?.force || req.body?.force || '').toLowerCase(); // np. ?force=groq
+    const force = String(req.query?.force || req.body?.force || '').toLowerCase() || null;
     const { text = '', age, count = 3 } = req.body || {};
     const src = String(text || '').trim();
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
@@ -1184,23 +1205,31 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     let out = [];
     let provider = null;
 
-    const r = await llmQuestions(src, count, { forceProvider: ['groq','openai'].includes(force) ? force : null });
-    provider = r.provider || null;
-    out = (r.items || []).slice(0, Math.min(5, Math.max(1, count)));
+    try {
+      const r = await llmQuestions(src, count, { force });
+      provider = r.provider || 'llm';
+      out = (r.items || []).slice(0, Math.min(5, Math.max(1, count)));
+    } catch (e) {
+      if (dbg) console.log('[COMPREHEND-MULTI][LLM_ERROR]', String(e?.message || e));
+      out = []; // przejdziemy do heurystyki poniżej
+    }
 
     if (!out.length) {
       out = heuristicMulti(src, Math.min(3, Math.max(1, count)));
     } else {
+      // dorzuć pola dla spójności z heurystyką
+      const sents = qz_splitSentences(src);
       out = out.map((x, i) => ({
         question: x.question,
         answer: x.answer,
         fallback: false,
-        sentence: qz_splitSentences(src)[i] || src,
+        sentence: sents[i] || src,
         source_path: 'llm',
         llm_provider: provider
       }));
     }
 
+    // nagłówki (ASCII safe) — z providerem
     setComprehendHeaders(res, out[0]);
 
     if (dbg) {
@@ -1220,27 +1249,42 @@ app.post('/agent/comprehend-multi', async (req, res) => {
 app.post('/agent/comprehend', async (req, res) => {
   try {
     const dbg   = flag(req.query?.debug) || flag(req.body?.debug) || COMPREHEND_DEBUG;
-    const force = String(req.query?.force || req.body?.force || '').toLowerCase(); // np. ?force=groq
+    const force = String(req.query?.force || req.body?.force || '').toLowerCase() || null;
     const { text = '', age } = req.body || {};
     const src = String(text || '').trim();
     if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
 
     let qa = null;
-    const r = await llmQuestions(src, 1, { forceProvider: ['groq','openai'].includes(force) ? force : null });
-    const first = (r.items || [])[0];
+    let provider = null;
 
-    if (first) {
-      qa = {
-        question: first.question,
-        answer: first.answer,
-        fallback: false,
-        sentence: qz_splitSentences(src)[0] || src,
-        source_path: 'llm',
-        llm_provider: r.provider || 'llm'
-      };
-    } else {
+    try {
+      const r = await llmQuestions(src, 1, { force });
+      provider = r.provider || 'llm';
+      const first = (r.items || [])[0];
+      if (first) {
+        qa = {
+          question: first.question,
+          answer: first.answer,
+          fallback: false,
+          sentence: qz_splitSentences(src)[0] || src,
+          source_path: 'llm',
+          llm_provider: provider
+        };
+      }
+    } catch (e) {
+      if (dbg) console.log('[COMPREHEND-ONE][LLM_ERROR]', String(e?.message || e));
+    }
+
+    if (!qa) {
       const h = heuristicQA(qz_splitSentences(src)[0] || src);
-      qa = { question: h.question, answer: h.answer, fallback: true, sentence: qz_splitSentences(src)[0] || src, source_path: 'heuristic-fallback' };
+      qa = {
+        question: h.question,
+        answer: h.answer,
+        fallback: true,
+        sentence: qz_splitSentences(src)[0] || src,
+        source_path: 'heuristic-fallback',
+        llm_provider: null
+      };
     }
 
     setComprehendHeaders(res, qa);
@@ -1254,7 +1298,8 @@ app.post('/agent/comprehend', async (req, res) => {
       question: qa.question,
       answer: qa.answer,
       fallback: !!qa.fallback,
-      source_path: qa.source_path
+      source_path: qa.source_path,
+      provider: qa.llm_provider || null // <— NOWE: także w body
     });
   } catch (err) {
     console.error('comprehend error:', err);
@@ -1263,7 +1308,8 @@ app.post('/agent/comprehend', async (req, res) => {
       question: 'Co się dzieje w zdaniu?',
       answer: '',
       fallback: true,
-      source_path: 'error-fallback'
+      source_path: 'error-fallback',
+      provider: null
     });
   }
 });
