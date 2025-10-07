@@ -1049,6 +1049,14 @@ function qz_wc(a=""){ return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu)
 function qz_splitSentences(s=""){ return String(s||"").replace(/\s*[\r\n]+\s*/g," ").split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean); }
 function qz_shortAnswer(a=""){ const w=(String(a).trim().split(/\s+/)).filter(Boolean); return w.length<=6?w.join(' '):w.slice(0,6).join(' '); }
 
+/* ===== Diakrytyki / normalizacja do sanityzacji ===== */
+function stripDiacritics(s="") {
+  return String(s)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ł/g,"l").replace(/Ł/g,"L");
+}
+
 /* Ekstrakcja metadanych: podmiot, czas, miejsce, lista dozwolonych imion/fraz */
 function extractMeta(sentence){
   const text = String(sentence||"").trim();
@@ -1067,7 +1075,6 @@ function extractMeta(sentence){
 
   // Lista dozwolonych "imiennych" tokenów (wszystkie wyrazy zaczynające się wielką literą, łączymy w frazy)
   const capTokens = (text.match(/\b[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+\b/gu) || []).map(t => t.trim());
-  // Zbuduj możliwe frazy 2-wyrazowe też (np. "Piesek Lucek")
   const allowedSubjects = new Set();
   for (let i=0;i<capTokens.length;i++){
     allowedSubjects.add(capTokens[i]);
@@ -1110,7 +1117,6 @@ function sanitizeQuestionEntity(question, meta){
       if (meta.subjectExact){
         q = q.replace(cap, meta.subjectExact);
       } else {
-        // neutralne pytanie bez imion
         if (/^\s*Co\s+robi\b/i.test(q)) q = 'Co się dzieje w zdaniu?';
         else if (!/^\s*Co\b/i.test(q)) q = 'Co się dzieje w zdaniu?';
       }
@@ -1307,6 +1313,7 @@ app.post("/agent/comprehend", async (req, res) => {
     });
   }
 });
+
 
 
 /* ===================== START ===================== */
