@@ -27,12 +27,17 @@ app.use(express.json({ limit: '10mb' }));
 app.use(morgan('dev'));
 
 /* ===== Fast config / anti-sleep ===== */
-const DEADLINE_MS = Number(process.env.FAST_TIMEOUT_MS || 1200);
+const DEADLINE_MS = Number(process.env.FAST_TIMEOUT_MS || 1500);
 const MAX_TOKENS_FAST = Number(process.env.MAX_TOKENS_FAST || 64);
 const PREWARM_EVERY_MIN = Number(process.env.PREWARM_EVERY_MIN || 5); // 0 = tylko na starcie
 const BASE_URL = process.env.BASE_URL || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'whisper-large-v3';
-const LLM_PREF = 'openai-only'; // <<<<<<<<<<<<<< TYLKO OPENAI dla pytań/odpowiedzi
+const LLM_PREF = 'openai-only'; // TYLKO OPENAI dla pytań/odpowiedzi
+
+// ★ Dłuższe deadline’y tylko tam gdzie trzeba:
+const GREETING_TIMEOUT_MS = Number(process.env.GREETING_TIMEOUT_MS || 5000);
+const MOTIVATE_TIMEOUT_MS = Number(process.env.MOTIVATE_TIMEOUT_MS || 6000);
+const GENERATE_TEXT_TIMEOUT_MS = Number(process.env.GENERATE_TEXT_TIMEOUT_MS || 7000);
 
 const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
 const now = () => (global.performance?.now?.() ?? Date.now());
@@ -44,6 +49,7 @@ function withDeadline(promise, ms = DEADLINE_MS) {
     promise.then(v => { clearTimeout(to); resolve(v); }, e => { clearTimeout(to); reject(e); });
   });
 }
+
 /* ===== Uploads ===== */
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -117,7 +123,7 @@ function pickAudioExt(file) {
 /* ===================== ROUTES ===================== */
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.16-openai-only' });
+  res.json({ ok: true, service: 'poczytajmy-backend', version: '1.17-natural' });
 });
 
 // Prosty root
@@ -128,11 +134,10 @@ app.get('/', (_req, res) => {
       <h1>poczytajmy-backend</h1>
       <p>Status: <a href="/health">/health</a></p>
       <ul>
-        <li>POST <code>/agent/generate-greeting</code></li>
-        <li>POST <code>/agent/generate-text</code></li>
-        <li>POST <code>/agent/comprehend</code> ✅ pytanie+klucz</li>
-        <li>POST <code>/agent/check-answer-voice</code> ✅ ocena+feedback</li>
-        <li>POST <code>/agent/check-answer-text</code> ✅ ocena+feedback (tekst)</li>
+        <li>POST <code>/agent/generate-greeting</code> oraz <code>/generate-greeting</code></li>
+        <li>POST <code>/agent/generate-text</code> oraz <code>/generate-text</code></li>
+        <li>POST <code>/agent/motivate</code></li>
+        <li>POST <code>/agent/comprehend</code> / <code>/agent/comprehend-multi</code></li>
         <li>POST <code>/asr</code>, <code>/ocr</code></li>
       </ul>
     </body></html>
@@ -140,8 +145,13 @@ app.get('/', (_req, res) => {
 });
 
 /* ===================== LLM helpers (OpenAI-only dla czatu) ===================== */
+// Anty-sztywny setup
+const NAT_TEMPERATURE = 0.95;
+const NAT_TOP_P = 0.9;
+const NAT_FREQ_PENALTY = 0.3;
+const NAT_PRES_PENALTY = 0.2;
+
 async function groqChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 0.3, top_p = 0.95 }) {
-  // Zostawione do ewentualnego pingu/prewarm — NIE używamy do pytań/odpowiedzi.
   const t0 = now();
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -157,6 +167,7 @@ async function groqChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 
   const data = await res.json();
   return { provider: 'groq', text: data?.choices?.[0]?.message?.content?.trim?.() || '', latency_ms: Math.round(now() - t0) };
 }
+
 async function openaiChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature = 0.3, top_p = 0.95 }) {
   if (!openai) throw new Error('OPENAI_OFF');
   const t0 = now();
@@ -166,19 +177,21 @@ async function openaiChat({ messages, max_tokens = MAX_TOKENS_FAST, temperature 
     temperature,
     top_p,
     max_tokens,
+    frequency_penalty: NAT_FREQ_PENALTY,  // ↓ mniej powtórek
+    presence_penalty: NAT_PRES_PENALTY,
   });
   const txt = r?.choices?.[0]?.message?.content?.trim?.() || '';
   if (!txt) throw new Error('OPENAI_EMPTY');
   return { provider: 'openai', text: txt, latency_ms: Math.round(now() - t0) };
 }
-/** ENTRYPOINT — tylko OpenAI */
+
 /* ===== Tekst helper: skróć/wyczyść prompt od użytkownika ===== */
 function trimUserContent(s = "", limit = 800) {
   const t = String(s ?? "").replace(/\s+/g, " ").trim();
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// --- PODMIEŃ TĘ FUNKCJĘ chatPref (ta wersja wspiera deadlineMs) ---
+// ENTRYPOINT — tylko OpenAI + wsparcie deadlineMs
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
   if (!openai) throw new Error('NO_OPENAI');
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
@@ -433,16 +446,44 @@ function sanitizeNoName(name, raw) {
 
 const recentGreetings = new Map();
 
-// dłuższy limit TYLKO dla powitań (env: GREETING_TIMEOUT_MS)
-const GREETING_TIMEOUT_MS = Number(process.env.GREETING_TIMEOUT_MS || 5000);
+// ★ Anty-szablon + soften + pamięć podobieństw (dla zdań/komentarzy)
+const TEMPLATEY_STARTS = [
+  "Dziś", "Dzisiaj", "Po południu", "W ogrodzie", "Choć", "Chociaż", "Na koniec",
+  "Potem", "Następnie", "Po kolacji", "Po obiedzie", "W bibliotece", "W domu"
+];
+function looksTemplatey(s="") {
+  const t = String(s).trim();
+  if (!t) return true;
+  if (/\b[aA]\s+potem\b/.test(t)) return true;
+  if (TEMPLATEY_STARTS.some(p => t.startsWith(p + " "))) return true;
+  const conj = (t.match(/\b(a|oraz)\b/gi) || []).length;
+  if (conj >= 2) return true;
+  return false;
+}
+function softenPolish(s="") {
+  let out = String(s).trim();
+  out = out.replace(/\s*,?\s*a potem\s*/gi, " i ");
+  out = out.replace(/\s*,\s*oraz\s*/gi, " i ");
+  out = out.replace(/\s*,\s*a\s*/gi, " i ");
+  if (!/[.!?…]$/.test(out)) out += ".";
+  out = out.replace(/^Z /, "Ze ");
+  return out.replace(/\s+/g," ").trim();
+}
+const recentTexts = [];
+function rememberText(t) { recentTexts.unshift(String(t)); if (recentTexts.length > 20) recentTexts.pop(); }
+function tooSimilarToRecent(t) {
+  const n = normalize(t);
+  return recentTexts.some(prev => jaccard(n, normalize(prev)) > 0.6);
+}
 
 async function generateGreetingV2({ name, age, character, theme }) {
   const prompt = buildGreetingPrompt({ age: Number(age), character, theme, n: 12 });
-  const { text: raw, provider } = await chatPref({
+  const { text: raw } = await chatPref({
     prompt,
-    temperature: 0.9,
+    temperature: NAT_TEMPERATURE,
     max_tokens: 180,
-    deadlineMs: GREETING_TIMEOUT_MS, // ⬅️ ważne
+    top_p: NAT_TOP_P,
+    deadlineMs: GREETING_TIMEOUT_MS,
   });
 
   let cands = parseList(raw);
@@ -454,10 +495,10 @@ async function generateGreetingV2({ name, age, character, theme }) {
 
   const picked = chooseMostNovel(cands, history);
   const cleaned = sanitizeNoName(name, picked);
-  const finalText = cleaned || picked;
+  const finalText = softenPolish(cleaned || picked);
 
   recentGreetings.set(profileKey, [finalText, ...history].slice(0, 20));
-  return { text: finalText, source: provider || 'unknown' };
+  return { text: finalText, source: 'openai' };
 }
 
 app.post('/agent/generate-greeting', async (req, res) => {
@@ -469,8 +510,7 @@ app.post('/agent/generate-greeting', async (req, res) => {
   } catch (err) {
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
     console.error('agent/generate-greeting error:', err);
-    const fallback = 'Dziś zajrzymy do książki i odkryjemy nowe słowa. 📖';
-    // ZAWSZE 200 z fallbackiem, żeby UI nie wieszał się na 504
+    const fallback = 'Zajrzymy dziś do książki i wyszukamy nowe słowa. 📖';
     return res.status(200).json({
       ok: true,
       text: fallback,
@@ -479,15 +519,26 @@ app.post('/agent/generate-greeting', async (req, res) => {
   }
 });
 
-// Alias 307 (naprawa 404 na /generate-greeting)
-app.post('/generate-greeting', (req, res) => {
-  res.redirect(307, '/agent/generate-greeting');
+// Alias bez redirectu (zero 307)
+app.post('/generate-greeting', async (req, res) => {
+  try {
+    const { name = '', age, character = 'Twój przyjaciel' } = req.body || {};
+    const theme = HERO_THEMES[character] || '';
+    const { text, source } = await generateGreetingV2({ name, age, character, theme });
+    res.json({ ok: true, text, source });
+  } catch (err) {
+    const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
+    console.error('generate-greeting error:', err);
+    const fallback = 'Zajrzymy dziś do książki i wyszukamy nowe słowa. 📖';
+    return res.status(200).json({
+      ok: true,
+      text: fallback,
+      source: timedOut ? 'timeout-fallback' : 'error-fallback',
+    });
+  }
 });
 
 /* ===================== AGENT MOTYWACJI ===================== */
-
-// dłuższy limit TYLKO dla motywacji (możesz nadpisać envem MOTIVATE_TIMEOUT_MS)
-const MOTIVATE_TIMEOUT_MS = Number(process.env.MOTIVATE_TIMEOUT_MS || 6000);
 
 function bucketToneByAge(age) {
   const a = Number(age);
@@ -507,21 +558,19 @@ function rubricByAccuracy(acc) {
 function buildMotivationPrompt({ age, accuracy, text, characterName = 'Bohater', lang = 'pl' }) {
   const tone = bucketToneByAge(age);
   const rubric = rubricByAccuracy(accuracy);
-  const excerpt = trimUserContent(text || '', 220); // używa istniejącej funkcji z pliku
+  const excerpt = trimUserContent(text || '', 220);
 
   return `
-Jesteś ${characterName} z aplikacji do nauki czytania dla dzieci. Twoje zadanie:
-napisz 1 krótki komentarz motywacyjny po polsku (${lang}), dopasowany do wieku dziecka i jakości czytania.
+Jesteś ${characterName} w aplikacji do czytania. Napisz 1 naturalny, krótki komentarz po polsku.
+Styl:
+- ${tone}
+- ${rubric}
+- Brzmij swobodnie (jak żywa rozmowa), unikaj „szkolnych” fraz i szablonu „… a potem …”.
+- Maks. 160 znaków, najlepiej 1 zdanie (wyjątkowo 2 bardzo krótkie).
+- 2. osoba („czytasz”, „spróbuj”), bez imienia dziecka, bez procentów i ocen wprost.
+- Co najwyżej 1 emoji (opcjonalnie).
 
-Zasady stylu:
-- Styl: ${tone}.
-- ${rubric}.
-- Maks. 160 znaków. 1 zdanie (wyjątkowo 2 bardzo krótkie).
-- Brak cudzysłowów i nawiasów. Bez liczb procentowych ani ocen wprost.
-- Mów do dziecka w 2. osobie („czytasz”, „dasz radę”), NIE używaj imienia dziecka.
-- Użyj co najwyżej 1 emoji (opcjonalnie).
-
-Kontekst (fragment przeczytanego tekstu – opcjonalnie możesz nawiązać ogólnie, bez cytowania):
+Kontekst (nie cytuj literalnie, możesz nawiązać ogólnie):
 "${excerpt}"
 
 Podaj tylko gotową wypowiedź.`.trim();
@@ -550,14 +599,28 @@ async function generateMotivation({ age, accuracy, text, characterName, lang = '
   const prompt = buildMotivationPrompt({ age, accuracy, text, characterName, lang });
   const { text: raw, provider } = await chatPref({
     prompt,
-    temperature: 0.9,
+    temperature: NAT_TEMPERATURE,
     max_tokens: 120,
-    deadlineMs: MOTIVATE_TIMEOUT_MS, // ważne: dłuższy limit tylko tutaj
+    top_p: NAT_TOP_P,
+    deadlineMs: MOTIVATE_TIMEOUT_MS,
   });
   let out = String(raw || '').trim();
   out = out.replace(/^["'„”]+|["'„”]+$/g, '').trim();
   out = tightenMotivation(out, 160);
+  out = softenPolish(out);
+  if (looksTemplatey(out) || tooSimilarToRecent(out)) {
+    const rr = await chatPref({
+      prompt,
+      temperature: NAT_TEMPERATURE,
+      max_tokens: 120,
+      top_p: NAT_TOP_P,
+      deadlineMs: MOTIVATE_TIMEOUT_MS,
+    });
+    const alt = softenPolish(tightenMotivation((rr.text||"").trim(), 160));
+    if (!looksTemplatey(alt)) out = alt;
+  }
   if (!out) throw new Error('EMPTY_MOTIVATION');
+  rememberText(out);
   return { text: out, source: provider || 'unknown' };
 }
 
@@ -578,8 +641,7 @@ app.post('/agent/motivate', async (req, res) => {
     const msg = tightenMotivation(rawMsg, 160);
     res.json({ ok: true, text: msg, source });
   } catch (err) {
-    // Zamiast 504/502 — zawsze zwracamy OK z bezpiecznym fallbackiem
-    const fallback = 'Świetna próba! Z każdą stroną będzie coraz lepiej — spróbujmy jeszcze raz! 💪';
+    const fallback = 'Super próba! Z każdą stroną idzie Ci lepiej — spróbujmy jeszcze raz. 💪';
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
     console.error('agent/motivate error:', err);
     return res.status(200).json({
@@ -661,62 +723,84 @@ function validateKidsSentencePL(s, { minWords=8, maxWords=16 } = {}) {
   return { ok: issues.length === 0, issues, text: txt };
 }
 
-async function correctPolishSentence(raw) {
-  const prompt = `
-Popraw zdanie dla dziecka w wieku wczesnoszkolnym.
-Zasady:
-- Jedno zdanie po polsku, 8–16 słów.
-- Proste, naturalne, bez żargonu i cudzysłowów.
-- Popraw ortografię i interpunkcję.
-Zwróć tylko gotowe zdanie.
-Tekst:
-${raw}`.trim();
-
-  const { text } = await chatPref({ prompt, temperature: 0.2, max_tokens: 60, top_p: 0.9 });
-  return cleanSentence(text || "");
-}
-
-app.post("/agent/generate-text", async (req, res) => {
+// handler generatora tekstu — NAT parameters, filtr szablonów, reroll
+async function handleGenerateText(req, res) {
   try {
     const { language = "pl", level = "A1" } = req.body || {};
 
     const prompt =
-`Napisz jedno proste zdanie po polsku na poziomie ${String(level).toUpperCase()} do głośnego czytania przez dziecko.
+`Napisz jedno naturalne i lekkie zdanie po polsku do głośnego czytania przez dziecko (poziom ${String(level).toUpperCase()}).
 Wymagania:
-- Jedno zdanie (8–16 słów), naturalne i poprawne.
-- Słownictwo codzienne, bez żargonu i neologizmów.
-- Zero przemocy, straszenia, polityki, chorób.
-- Brak cudzysłowów i nawiasów.
-- Używaj pełnych polskich znaków.
+- Jedno zdanie (8–16 słów), brzmienie swobodne (jak rozmowa z dzieckiem), bez „szkolnej” składni.
+- Słownictwo codzienne, zero żargonu i neologizmów, bez nawiasów i cudzysłowów.
+- Unikaj sztywnych wzorców typu „… a potem …”, „Dziś/Dzisiaj …”, długich wyliczeń i dwóch „a/oraz” w jednym zdaniu.
+- Używaj polskich znaków.
 Podaj tylko gotowe zdanie.`;
 
-    const first = await chatPref({ prompt, temperature: 0.3, max_tokens: 60, top_p: 0.9 });
+    const first = await chatPref({
+      prompt,
+      temperature: NAT_TEMPERATURE,
+      max_tokens: 70,
+      top_p: NAT_TOP_P,
+      deadlineMs: GENERATE_TEXT_TIMEOUT_MS,
+    });
+
     let sentence = cleanSentence(first.text || "");
-    if (!sentence) throw new Error("EMPTY_GENERATION");
+    sentence = softenPolish(sentence);
+
+    if (looksTemplatey(sentence) || tooSimilarToRecent(sentence)) {
+      const reroll = await chatPref({
+        prompt,
+        temperature: NAT_TEMPERATURE,
+        max_tokens: 70,
+        top_p: NAT_TOP_P,
+        deadlineMs: GENERATE_TEXT_TIMEOUT_MS,
+      });
+      let s2 = softenPolish(cleanSentence(reroll.text || ""));
+      if (!looksTemplatey(s2)) sentence = s2;
+    }
 
     let check = validateKidsSentencePL(sentence);
-    if (!check.ok) {
-      const fixed = cleanSentence(await correctPolishSentence(sentence));
+    if (!check.ok || looksTemplatey(check.text) || tooSimilarToRecent(check.text)) {
+      const fixed = cleanSentence(softenPolish(await chatPref({
+        prompt: `
+Uprość i „rozluźnij” zdanie dla dziecka (naturalny język, 8–16 słów, bez cudzysłowów i „a potem”):
+${sentence}`.trim(),
+        temperature: 0.6,
+        max_tokens: 60,
+        top_p: NAT_TOP_P,
+        deadlineMs: GENERATE_TEXT_TIMEOUT_MS,
+      }).then(r => r.text || "")));
+
       const check2 = validateKidsSentencePL(fixed);
-      if (check2.ok) {
-        return res.json({ ok: true, text: check2.text, level, language, source: `${first.provider}+corrector` });
+      if (check2.ok && !looksTemplatey(check2.text) && !tooSimilarToRecent(check2.text)) {
+        rememberText(check2.text);
+        return res.json({ ok: true, text: check2.text, level, language, source: `${first.provider}+soft-corrector` });
       }
       const backup = pick(bankByLevel(level));
+      rememberText(backup);
       return res.json({ ok: true, text: backup, level, language, source: "fallback-bank" });
     }
+
+    rememberText(check.text);
     return res.json({ ok: true, text: check.text, level, language, source: first.provider });
   } catch (err) {
     const timedOut = String(err?.message || err) === "DEADLINE_EXCEEDED";
-    if (timedOut) return res.status(504).json({ ok: false, error: "DEADLINE_EXCEEDED", timed_out: true });
     console.error("agent/generate-text error:", err);
     const { level = "A1", language = "pl" } = req.body || {};
     const backup = pick(bankByLevel(level));
-    return res.status(200).json({ ok: true, text: backup, level, language, source: "fallback-bank" });
+    return res.status(200).json({
+      ok: true,
+      text: backup,
+      level,
+      language,
+      source: timedOut ? "timeout-fallback" : "error-fallback",
+    });
   }
-});
-app.post("/generate-text", (req, res) => {
-  res.redirect(307, "/agent/generate-text");
-});
+}
+
+app.post("/agent/generate-text", handleGenerateText);
+app.post("/generate-text",      handleGenerateText); // alias bez 307
 
 /* ===================== OCR ===================== */
 app.post('/ocr', upload.single('image'), async (req, res) => {
@@ -846,9 +930,8 @@ function qz_wc(a = "") {
   return (String(a).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
 }
 
-/* — normalizacja (na potrzeby dopasowań ‘ide’ itd.) — */
+/* — normalizacja — */
 function qz_normDiacritics(s=""){
-  // NFD + usunięcie znaków diakrytycznych; dopalacz na ł/Ł
   return String(s||"")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g,"")
@@ -872,15 +955,11 @@ function qz_splitSentences(s="") {
     .filter(Boolean);
 }
 
-/* — wykryj imię na początku zdania + 3. os. (z odcięciem markerów typu „Potem…”) — */
+/* — wykryj imię w 3. os. — */
 function qz_detectThirdName(text) {
   if (!text) return null;
   let src = String(text).trim();
-
-  // usuń markery na początku, żeby nie brać ich za imię
   src = src.replace(/^(Potem|Na koniec|Dziś|Dzisiaj|Wczoraj|Jutro)\s+/iu, "");
-
-  // Imię lub dwa wyrazy z wielkiej litery + czasownik w 3. os.
   const re = /^([A-ZŁŚŻŹĆŃÓ][\p{L}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\-']+)?)\s+(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
   const m = src.match(re);
   if (!m) return null;
@@ -888,15 +967,11 @@ function qz_detectThirdName(text) {
   if (/^Ja$/i.test(name)) return null;
   return name;
 }
-
-/* — czy mamy 3. os. bez imienia? — */
 function qz_isThirdVerbNoName(text){
   const t = String(text||"");
   const thirdVerb = /\b(czyta|ogląda|słucha|je|pije|gra|idzie|posz\w+|wróci\w+|wraca|siedzi|stoi|leży|rysuje|maluje|pisze|gotuje|otwiera|uczy)\b/iu;
   return thirdVerb.test(t) && !qz_detectThirdName(t);
 }
-
-/* — wytnij minimalny fragment po czasowniku do separatora — */
 function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   const src = String(text);
   const re = new RegExp(
@@ -905,57 +980,43 @@ function qz_sliceAfter(text, reVerb, { keepPreposition = false } = {}) {
   );
   const m = src.match(re);
   if (!m) return null;
-  // grupa 1: fragment po czasowniku
   let out = (m[1] || "").trim();
-  // odcięcie celu/uzasadnienia
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
-  // kosmetyka
   out = out.replace(/\s{2,}/g, " ").trim();
   if (!keepPreposition) {
     out = out.replace(/^(w|we|na|do|przy|pod|u|obok|o)\s+/i, "").trim();
   }
   return out || null;
 }
-
-/* — ekstrakcje: czas / miejsce / cel — */
 const QZ_RE_TIME = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|przed\s+(kolacj[ąa]|szkoł[ąa]|sn(em|u))|po\s+(obiedzie|szkole|kolacji|treningu|lekcjach))\b/iu;
-
 function qz_time(text) {
   const m = String(text).match(QZ_RE_TIME);
   return m ? m[0] : null;
 }
-
 function qz_place(text) {
   let m = String(text).match(/\b(w|we|na|do|przy|pod|u|obok)\s+([^.,;!?]+)/i);
   if (!m) return null;
   let out = m[0].trim();
-  // odetnij trailing czas / „żeby…”
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
   out = out.replace(QZ_RE_TIME, "").trim();
   return out;
 }
-
 function qz_destination(text) {
   const m = String(text).match(/\b(do|na)\s+([^.,;!?]+)/iu);
   if (!m) return null;
   let out = m[0].trim();
-  // wytnij ogon czasu/uzasadnienia/spójników
   out = out.replace(/\s*,?\s*(żeby|aby)\s+.*$/i, "").trim();
   out = out.replace(QZ_RE_TIME, "").trim();
   out = out.replace(/\s+i\s+\w+.*$/i, "").trim();
   return out;
 }
-
-/* — kompresja miejsca: usuń prepozycję i kolejne segmenty po następnym przyimku — */
 function qz_compressPlace(p=""){
   let s = String(p||"").trim();
-  s = s.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();      // „w klasie po południu” -> „klasie po południu”
-  s = s.replace(QZ_RE_TIME, "").trim();                              // wytnij czas
-  s = s.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim(); // „oknie w autobusie” -> „oknie”
+  s = s.replace(/^(w|we|na|do|przy|pod|u|obok)\s+/i, "").trim();
+  s = s.replace(QZ_RE_TIME, "").trim();
+  s = s.replace(/\s+(w|we|na|do|przy|pod|u|obok)\s+.*$/i, "").trim();
   return s;
 }
-
-/* — czyszczenie obiektu: odetnij okoliczniki miejsca/czasu/spójniki — */
 function qz_cleanObject(obj=""){
   let s = String(obj||"").trim();
   s = s.replace(/^się\s+/i, "");
@@ -965,8 +1026,6 @@ function qz_cleanObject(obj=""){
   s = s.replace(/\s+i\s+\w+.*$/i, "");
   return s.trim();
 }
-
-/* — mapa czasowników i strategii — */
 const QZ_VERBS = {
   OBJ_CO_1OS: [
     { re: /\b(czytam)\b/iu, q: "Co czytam?" },
@@ -1005,24 +1064,19 @@ const QZ_VERBS = {
     { re: /\b(stoi)\b/iu,   q: n => `Gdzie stoi ${n}?`,  q3: "Gdzie stoi?" },
     { re: /\b(leży)\b/iu,   q: n => `Gdzie leży ${n}?`,  q3: "Gdzie leży?" },
   ],
-  // ruch – 1os ma też wariant bez ogonka: "ide"
   MOVE_1OS: { re: /\b(idę|ide|idziemy|wracam)\b/iu, qDest: "Dokąd idę?", qTime: "Kiedy idę?" },
-  // 3os uwzględnia „posz...” i „wróci...”
   MOVE_3OS: { re: /\b(idzie|posz\w+|wróci\w+|wraca)\b/iu, qDest: n => `Dokąd idzie ${n}?`, qTime: n => `Kiedy idzie ${n}?`, qDest3: "Dokąd idzie?", qTime3: "Kiedy idzie?" },
-  // uczę się → „Czego się …?”
   LEARN_1OS: { re: /\b(uczę się)\b/iu, q: "Czego się uczę?" },
   LEARN_3OS: { re: /\b(uczy się)\b/iu, q: n => `Czego uczy się ${n}?`, q3: "Czego uczy się?" },
 };
 
-/* — główna heurystyka — */
 function qz_heuristic(textRaw, age) {
   const text = String(textRaw || "").trim();
   const name3 = qz_detectThirdName(text);
   const thirdNoName = qz_isThirdVerbNoName(text);
   const isThirdish = !!(name3 || thirdNoName);
 
-  // 1) gram NA … (instrument) – utnij miejsce/czas
-  {
+  { // gram NA …
     const v = isThirdish ? QZ_VERBS.PLAY_3OS_NA : QZ_VERBS.PLAY_1OS_NA;
     if (text.match(v.re)) {
       const m = text.match(/\bna\s+([^.,;!?]+)/i);
@@ -1035,8 +1089,7 @@ function qz_heuristic(textRaw, age) {
       }
     }
   }
-  // 2) gram W … (gra) – utnij miejsce/czas
-  {
+  { // gram W …
     const v = isThirdish ? QZ_VERBS.PLAY_3OS_W : QZ_VERBS.PLAY_1OS_W;
     if (text.match(v.re)) {
       const m = text.match(/\bw\s+([^.,;!?]+)/i);
@@ -1049,8 +1102,7 @@ function qz_heuristic(textRaw, age) {
       }
     }
   }
-  // 3) pozycja (miejsce > czas)
-  {
+  { // pozycja
     const list = isThirdish ? QZ_VERBS.PLACE_3OS : QZ_VERBS.PLACE_1OS;
     for (const v of list) {
       if (!text.match(v.re)) continue;
@@ -1070,8 +1122,7 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 4) ruch (cel > czas)
-  {
+  { // ruch
     const v = isThirdish ? QZ_VERBS.MOVE_3OS : QZ_VERBS.MOVE_1OS;
     if (text.match(v.re)) {
       const dest = qz_destination(text);
@@ -1089,8 +1140,7 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 5) uczę się …
-  {
+  { // uczę się …
     const v = isThirdish ? QZ_VERBS.LEARN_3OS : QZ_VERBS.LEARN_1OS;
     if (text.match(v.re)) {
       const obj = qz_sliceAfter(text, v.re, { keepPreposition: false }) || "";
@@ -1100,8 +1150,7 @@ function qz_heuristic(textRaw, age) {
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 6) Co/Czego…  (1. i 3. os.)
-  {
+  { // Co/Czego…
     const bucket = isThirdish ? QZ_VERBS.OBJ_CO_3OS : QZ_VERBS.OBJ_CO_1OS;
     for (const v of bucket) {
       if (!text.match(v.re)) continue;
@@ -1125,8 +1174,6 @@ function qz_heuristic(textRaw, age) {
                          : (thirdNoName && v.q3 ? v.q3 : v.q)).replace(/^Co|^Czego/, "Kiedy");
         return { question: q, answer: t, fallback: true };
       }
-      // ⬇️ NOWE: jeśli nie udało się wydobyć dopełnienia,
-      // pytaj "Co robi …?" i odpowiedz samym czasownikiem.
       const vm = text.match(v.re);
       const verb = vm && vm[1] ? String(vm[1]).trim() : "";
       if (verb) {
@@ -1134,35 +1181,27 @@ function qz_heuristic(textRaw, age) {
                                : (thirdNoName ? "Co robi?" : "Co robię?");
         return { question: qGeneric, answer: verb, fallback: false };
       }
-
       const q = name3 ? (typeof v.q === "function" ? v.q(name3) : v.q)
                       : (thirdNoName && v.q3 ? v.q3 : v.q);
       return { question: q, answer: "", fallback: true };
     }
   }
-  // 7) fallback ogólny
   const p = qz_place(text);
   if (p) return { question: "Gdzie to się dzieje?", answer: qz_compressPlace(p), fallback: true };
   const t = qz_time(text);
   if (t) return { question: "Kiedy to się dzieje?", answer: t, fallback: true };
   return { question: "O co chodzi w zdaniu?", answer: "", fallback: true };
 }
-
-/* — skrócenie odpowiedzi do max 6 słów — */
 function qz_shortAnswer(a=""){
   const words = (String(a).trim().split(/\s+/)).filter(Boolean);
   if (words.length <= 6) return words.join(' ');
   return words.slice(0,6).join(' ');
 }
-
-/* — jedno Q/A dla jednego zdania — */
 async function qz_makeQAForSentence(sentence, age){
-  // 1) heurystyka
   let h = qz_heuristic(sentence, age);
   if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8) {
     return { question: h.question, answer: h.answer, fallback: !!h.fallback, sentence };
   }
-  // 2) LLM fallback (OpenAI, jeśli dostępny)
   if (typeof openai !== "undefined" && openai) {
     const prompt = `Na podstawie zdania napisz JEDNO proste pytanie i krótką odpowiedź (max 6 słów).
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
@@ -1191,14 +1230,11 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
       }
     } catch { /* miękko */ }
   }
-  // 3) fallback heurystyczny
   h = qz_heuristic(sentence, age);
   const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
   const answer = qz_shortAnswer(h.answer || "");
   return { question, answer, fallback: true, sentence };
 }
-
-/* — scoring zdań i wybór K naj — */
 function qz_scoreSentence(sent){
   const n = qz_norm(sent);
   let sc = 0;
@@ -1219,7 +1255,7 @@ function qz_selectTopSentences(text, k=3){
     .sort((a,b)=>b.score-a.score);
 
   const picked = [];
-  const lambda = 0.75; // balans: trafność vs. różnorodność
+  const lambda = 0.75;
   while (picked.length < k && ranked.length){
     let bestIdx = 0, bestVal = -1;
     for (let i=0;i<ranked.length;i++){
@@ -1232,8 +1268,6 @@ function qz_selectTopSentences(text, k=3){
   }
   return picked.map(x=>x.s);
 }
-
-/* — generator K pytań z długiego tekstu — */
 async function qz_makeQuestions(text, age, count=3){
   const k = Math.max(1, Math.min(6, Number(count)||3));
   const selected = qz_selectTopSentences(text, k);
@@ -1248,9 +1282,7 @@ async function qz_makeQuestions(text, age, count=3){
   }
   return items;
 }
-
 /* ===================== /agent/comprehend-multi ===================== */
-/** Body: { text: string, age?: number, count?: number } */
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
     const { text = "", age, count = 3 } = req.body || {};
@@ -1272,12 +1304,10 @@ app.post("/agent/comprehend", async (req, res) => {
     const src = String(text || "").trim();
     if (!src) return res.status(400).json({ ok: false, error: "NO_TEXT" });
 
-    // 1) Heurystyka
     let h = qz_heuristic(src, age);
     if (qz_qmark(h.question) && h.answer && qz_wc(h.answer) <= 8)
       return res.json({ ok: true, question: h.question, answer: h.answer, fallback: !!h.fallback });
 
-    // 2) Fallback LLM (OpenAI)
     if (typeof openai !== "undefined" && openai) {
       const prompt = `Na podstawie fragmentu napisz JEDNO bardzo proste pytanie kontrolne i krótką odpowiedź (max 6 słów).
 Preferuj: "Co…?", "Czego…?", dla ruchu: "Dokąd…?", dla pozycji: "Gdzie…?".
@@ -1308,7 +1338,6 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
       } catch { /* miękkie pominięcie */ }
     }
 
-    // 3) Ostateczny fallback na heurystykę
     h = qz_heuristic(src, age);
     const question = qz_qmark(h.question) ? h.question : "Gdzie to się dzieje?";
     const answer = h.answer || qz_place(src) || qz_time(src) || "";
@@ -1325,85 +1354,10 @@ Zwróć JSON: {"question":"…?","answer":"…"} — bez komentarza.`;
   }
 });
 
-/* ===================== /agent/check-answer-text ===================== */
-/** Body: { text, age?, question, expectedAnswer, childAnswer } */
-app.post("/agent/check-answer-text", async (req, res) => {
-  try {
-    const {
-      text = "",
-      age = 8,
-      question = "",
-      expectedAnswer = "",
-      childAnswer = "",
-    } = req.body || {};
-
-    const exp = String(expectedAnswer || "").trim();
-    const usr = String(childAnswer || "").trim();
-
-    if (!usr) {
-      return res.json({
-        result: "retry",
-        feedback: "Powiedz lub wpisz krótką odpowiedź.",
-      });
-    }
-
-    // normy z naszych utili
-    const expN = qz_norm(exp);
-    const usrN = qz_norm(usr);
-
-    // twarde trafienie (zawiera)
-    const contains = usrN.includes(expN) || expN.includes(usrN);
-
-    // tokenizacja do pokrycia
-    const expSet = new Set(qz_words(expN));
-    const usrSet = new Set(qz_words(usrN));
-    let inter = 0;
-    for (const t of expSet) if (usrSet.has(t)) inter++;
-
-    // coverage: jaki % klucza pokrył użytkownik (ekstra słowa nie karzą)
-    const coverage = expSet.size ? inter / expSet.size : 0;
-
-    // Jaccard (symetryczny) – zachowujemy jako wsparcie
-    const jac = qz_jaccard(usrN, expN); // 0..1
-
-    // akceptacja: zawiera || 80% klucza || Jaccard >= 0.5
-    const OK = contains || coverage >= 0.8 || jac >= 0.5;
-
-    // raportowane similarity: bardziej intuicyjne (preferuj coverage)
-    const similarityPct = Math.round(Math.max(coverage * 100, jac * 100));
-
-    // krótkie, dziecięce feedbacki
-    const feedbackOk = "Świetnie, dokładnie o to chodziło! 💪";
-    let feedbackRetry = "Pomyśl o najważniejszym fragmencie i spróbuj krócej.";
-
-    // jeśli mamy detekcję miejsca/czasu — możemy precyzyjniej podpowiedzieć
-    const hintPlace = qz_compressPlace(qz_place(text) || "");
-    const hintTime = qz_time(text) || "";
-    if (!OK && hintPlace && /Gdzie/i.test(question)) {
-      feedbackRetry = `Sprawdź miejsce akcji. Podpowiedź: „${hintPlace}”.`;
-    } else if (!OK && hintTime && /Kiedy/i.test(question)) {
-      feedbackRetry = `Zwróć uwagę na czas. Podpowiedź: „${hintTime}”.`;
-    }
-
-    return res.json({
-      result: OK ? "ok" : "retry",
-      feedback: OK ? feedbackOk : feedbackRetry,
-      similarity: similarityPct, // np. 100 dla "do sklepu po chleb" vs "do sklepu"
-    });
-  } catch (err) {
-    console.error("check-answer-text error:", err);
-    return res.status(200).json({
-      result: "retry",
-      feedback: "Coś poszło nie tak. Spróbuj jeszcze raz krócej.",
-    });
-  }
-});
-
 /* ===================== START ===================== */
 async function prewarmOnce() {
   try {
     if (process.env.GROQ_API_KEY) {
-      // lekki ping by utrzymać połączenie przy życiu
       await groqChat({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, temperature: 0.0 }).catch(()=>{});
     }
     if (BASE_URL) {
