@@ -1049,10 +1049,10 @@ app.get('/tts-voices', async (_req, res) => {
 /* ==============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3  =============== */
 /* ===================================================================== */
 
-/** Debug stały (lub dopisz ?debug=1) */
+/** Możesz włączyć stały tryb logów: COMPREHEND_DEBUG=1 w ENV */
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
 
-/* ---------- Utils ---------- */
+/* ----------------- drobne utils ----------------- */
 function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
 function qz_trim(s="", limit=1000){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
 function qz_splitSentences(s=""){
@@ -1064,58 +1064,57 @@ function qz_splitSentences(s=""){
 }
 function qz_shortAnswer(a=""){
   const w=(String(a).trim().split(/\s+/)).filter(Boolean);
-  return w.length<=6 ? w.join(' ') : w.slice(0,6).join(' ');
+  return w.length<=6?w.join(' '):w.slice(0,6).join(' ');
 }
 
-/* Nagłówki — ASCII-safe (można wyłączyć: ?nohdr=1) */
+/* -------------- nagłówki (ASCII-safe) -------------- */
 function safeHeaderASCII(v){
   return String(v ?? '')
     .replace(/[\r\n]+/g, ' ')
-    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[^\x20-\x7E]/g, '')   // tylko ASCII → PowerShell ≈ brak ERR_INVALID_CHAR
     .trim()
     .slice(0, 160);
 }
-function maybeSetComprehendHeaders(req, res, payload){
+function setComprehendHeaders(req, res, payload, provider){
+  if (flag(req?.query?.nohdr)) return; // dla PowerShell: ?nohdr=1 -> bez nagłówków
   if (!payload) return;
-  const nohdr = flag(req?.query?.nohdr);
-  if (nohdr) return; // PS bywa wrażliwy — pozwalamy wyłączyć
-
   const q = safeHeaderASCII(payload.question || '');
   const a = safeHeaderASCII(payload.answer   || '');
   const s = safeHeaderASCII(payload.sentence || '');
   const p = safeHeaderASCII(payload.source_path || payload.path || 'unknown');
-  const prov = safeHeaderASCII(payload.llm_provider || '');
-
   res.setHeader('X-Comprehend-Path', p || '-');
+  if (provider) res.setHeader('X-Comprehend-Provider', safeHeaderASCII(provider));
   if (q) res.setHeader('X-Comprehend-Question', q);
   if (a) res.setHeader('X-Comprehend-Answer', a);
   if (s) res.setHeader('X-Comprehend-Sentence', s);
-  if (prov) res.setHeader('X-Comprehend-Provider', prov);
 }
 
-/* ---------- Heurystyczny 100% fallback ---------- */
+/* -------------- fallback heurystyczny -------------- */
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
   const mSubject = text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)*)\b/iu);
   const subj = mSubject ? mSubject[1] : '';
   const hasPlace = /\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu.test(text);
   const hasTime  = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu.test(text);
-  const mVerb = text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|slucha|słucha|idzie|gra|stoi|patrzy)\b/iu);
+  const mVerb = text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|slucha|słucha|idzie)\b/iu);
 
-  if (hasPlace && subj){
-    const place = (text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu)?.[0] || '').trim();
-    return { question: `Gdzie ${subj} ${mVerb? (mVerb[0]+'?'):'jest?'}`, answer: place };
-  }
-  if (hasTime && subj){
-    const time = (text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu)||[])[0] || '';
-    return { question: `Kiedy ${subj} ${mVerb? (mVerb[0]+'?'):'to robi?'}`, answer: time };
-  }
-  if (mVerb && subj)     return { question: `Co robi ${subj}?`, answer: mVerb[0].toLowerCase() };
-  if (mVerb)             return { question: 'Co się dzieje w zdaniu?', answer: mVerb[0].toLowerCase() };
+  if (hasPlace && subj)  return { question: `Gdzie ${subj} ${mVerb?mVerb[0]:'to robi'}?`, answer: (text.match(/\b(w|we|na|do|przy|pod|u|obok)\s+[^.,;!?]+/iu)||[])[0] || '' };
+  if (hasTime && subj)   return { question: `Kiedy ${subj} ${mVerb?mVerb[0]:'to robi'}?`,    answer: (text.match(/\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro)\b/iu)||[])[0] || '' };
+  if (mVerb && subj)     return { question: `Co robi ${subj}?`, answer: (mVerb[0]||'').toLowerCase() };
+  if (mVerb)             return { question: 'Co się dzieje w zdaniu?', answer: (mVerb[0]||'').toLowerCase() };
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
+function heuristicMulti(text, want = 1){
+  const sents = qz_splitSentences(text).slice(0, Math.max(1, want));
+  const arr = [];
+  for (const s of sents){
+    const qa = heuristicQA(s);
+    arr.push({ question: qa.question, answer: qa.answer, fallback: true, sentence: s, source_path: 'heuristic-fallback' });
+  }
+  return arr;
+}
 
-/* ---------- Parser JSON z modelu ---------- */
+/* -------------- próba z JSON-a -------------- */
 function parseQuestionsFromJSON(raw){
   if (!raw) return [];
   const m = String(raw).match(/\{[\s\S]*\}/);
@@ -1126,12 +1125,12 @@ function parseQuestionsFromJSON(raw){
   return arr
     .map(x => ({
       question: String(x?.question || '').replace(/[„”"']/g,'').trim(),
-      answer:   qz_shortAnswer(String(x?.answer || '').replace(/[„”"']/g,'').trim())
+      answer:   qz_shortAnswer(String(x?.answer   || '').replace(/[„”"']/g,'').trim())
     }))
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
 }
 
-/* ---------- PROMPT główny (nauczyciel 1–3) ---------- */
+/* -------------- główny prompt nauczyciela -------------- */
 function buildTeacherPrompt(text, maxQ=3){
   const clamped = Math.max(1, Math.min(5, Number(maxQ)||3));
   return `
@@ -1158,32 +1157,36 @@ TEKST:
 `.trim();
 }
 
-/* ---------- Koercja: gdy model nie odda JSON-a ---------- */
+/* -------------- koercja z „luźnego” tekstu -------------- */
 function coerceFromFreeform(outText){
   const txt = String(outText || '').trim();
 
-  // 1) "Pytanie:/Odpowiedź:" lub "Q:/A:"
+  // 1) Pytanie/Odpowiedź w jednej paczce
   let m = txt.match(/^\s*(?:Pytanie|Q)\s*:\s*(.+?\?)\s*(?:Odp(?:\.|owiedź)?|A)\s*:\s*(.+)$/ims);
   if (m) {
     return [{ question: m[1].replace(/[„”"']/g,'' ).trim(), answer: qz_shortAnswer(m[2].replace(/[„”"']/g,'').trim()) }];
   }
 
-  // 2) Myślniki z odpowiedzią po kresce/kropce/„—”
+  // 2) Linie z myślnikami lub „—”
   const lines = txt.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   const items = [];
   for (const l of lines){
+    // np.: "- Kto ...? — Kasia" albo "- Kto ...? | Kasia"
     let mm = l.match(/^-+\s*(.+\?)\s*[—\-–|:]\s*(.+)$/);
     if (mm) {
       items.push({ question: mm[1].replace(/[„”"']/g,'' ).trim(), answer: qz_shortAnswer(mm[2].replace(/[„”"']/g,'').trim()) });
       continue;
     }
-    mm = l.match(/^-+\s*(.+\?)\s*$/); // bez odpowiedzi
-    if (mm) items.push({ question: mm[1].replace(/[„”"']/g,'' ).trim(), answer: '' });
+    // samo pytanie
+    mm = l.match(/^-+\s*(.+\?)\s*$/);
+    if (mm) {
+      items.push({ question: mm[1].replace(/[„”"']/g,'' ).trim(), answer: '' });
+    }
   }
   return items.filter(x => x.question && /\?\s*$/.test(x.question));
 }
 
-/* ---------- LLM: JSON → koercja → awaryjny per-zdanie ---------- */
+/* -------------- LLM: JSON → koercja → awaryjne per-zdanie -------------- */
 async function llmQuestions(text, countHint, req){
   const sentences = qz_splitSentences(text);
   const maxQ = Math.min(5, Math.max(1, countHint || sentences.length || 1));
@@ -1193,7 +1196,7 @@ async function llmQuestions(text, countHint, req){
   let outText = '';
   let provider = '';
 
-  // 1) główne podejście (większy deadline)
+  // 1) główna próba z podniesionym deadlinem
   try {
     if (force === 'openai' && typeof openaiChat === 'function') {
       const r = await openaiChat({ messages: [{ role:'user', content: prompt }], max_tokens: 360, temperature: 0.3, top_p: 0.95 });
@@ -1205,12 +1208,14 @@ async function llmQuestions(text, countHint, req){
       const r = await chatPref({ prompt, temperature: 0.3, top_p: 0.95, max_tokens: 360, deadlineMs: 9000 });
       outText = r.text; provider = r.provider || 'llm';
     }
-  } catch { outText = ''; }
+  } catch {
+    outText = '';
+  }
 
-  // 2) JSON → koercja z wolnego tekstu
+  // 2) parse JSON → koercja
   if (outText) {
     const jsonItems = parseQuestionsFromJSON(outText);
-    if (jsonItems.length) return { items: jsonItems.slice(0, maxQ), provider };
+    if (jsonItems.length) return { items: jsonItems, provider };
 
     const coerced = coerceFromFreeform(outText);
     if (coerced.length) {
@@ -1219,7 +1224,7 @@ async function llmQuestions(text, countHint, req){
     }
   }
 
-  // 3) awaryjnie: per-zdanie (po 1 Q/A)
+  // 3) awaryjnie: jedno pytanie per zdanie – mini-prompt
   const perSentence = [];
   for (const s of sentences.slice(0, maxQ)) {
     const mini = `
@@ -1249,12 +1254,12 @@ Zwróć DOKŁADNIE JSON {"question":"…?","answer":"…"} bez żadnych dopiskó
         const a = qz_shortAnswer(String(j?.answer||'').replace(/[„”"']/g,'').trim());
         if (q && a && /\?\s*$/.test(q)) perSentence.push({ question: q, answer: a });
       }
-    } catch { /* mini też mógł nie wyjść – pomijamy */ }
+    } catch { /* mini też mógł nie wyjść – idziemy dalej */ }
   }
 
   if (perSentence.length) return { items: perSentence.slice(0, maxQ), provider: provider || 'llm' };
 
-  // pusto – pozwól handlerom użyć heurystyki
+  // pusto – pozwól handlerowi użyć heurystyki
   return { items: [], provider: provider || 'llm' };
 }
 
@@ -1268,38 +1273,35 @@ app.post('/agent/comprehend-multi', async (req, res) => {
 
     let out = [];
     let provider = null;
+    let path = 'llm';
 
     try {
       const r = await llmQuestions(src, count, req);
       provider = r.provider || 'llm';
       out = (r.items || []).slice(0, Math.min(5, Math.max(1, count)));
     } catch (e) {
+      path = 'llm-error';
       if (dbg) console.log('[COMPREHEND-MULTI][LLM_ERROR]', String(e?.message || e));
       out = [];
     }
 
     if (!out.length) {
-      // heurystyka po zdaniach
-      const sents = qz_splitSentences(src).slice(0, Math.max(1, count));
-      out = sents.map(s => {
-        const h = heuristicQA(s);
-        return { question: h.question, answer: h.answer, fallback: true, sentence: s, source_path: 'heuristic-fallback' };
-      });
+      path = 'heuristic-fallback';
+      out = heuristicMulti(src, Math.min(3, Math.max(1, count)));
     } else {
-      // dopisz meta
-      const sents = qz_splitSentences(src);
+      const sentences = qz_splitSentences(src);
       out = out.map((x, i) => ({
         question: x.question,
         answer: x.answer,
         fallback: false,
-        sentence: sents[i] || src,
+        sentence: sentences[i] || src,
         source_path: 'llm',
         llm_provider: provider
       }));
     }
 
-    // nagłówek z 1. itemu (chyba że ?nohdr=1)
-    maybeSetComprehendHeaders(req, res, out[0]);
+    // nagłówki (wyłączalne przez ?nohdr=1)
+    setComprehendHeaders(req, res, out[0], provider);
 
     if (dbg) {
       console.log('[COMPREHEND-MULTI]', out.map(i => ({
@@ -1344,15 +1346,16 @@ app.post('/agent/comprehend', async (req, res) => {
     }
 
     if (!qa) {
-      const sent = qz_splitSentences(src)[0] || src;
-      const h = heuristicQA(sent);
-      qa = { question: h.question, answer: h.answer, fallback: true, sentence: sent, source_path: 'heuristic-fallback' };
+      const h = heuristicQA(qz_splitSentences(src)[0] || src);
+      qa = { question: h.question, answer: h.answer, fallback: true, sentence: qz_splitSentences(src)[0] || src, source_path: 'heuristic-fallback' };
     }
 
-    maybeSetComprehendHeaders(req, res, qa);
+    setComprehendHeaders(req, res, qa, provider);
 
     if (dbg) {
-      console.log('[COMPREHEND-ONE]', { path: qa.source_path, provider: qa.llm_provider, q: qa.question, a: qa.answer, sent: qa.sentence });
+      console.log('[COMPREHEND-ONE]', {
+        path: qa.source_path, provider: qa.llm_provider, q: qa.question, a: qa.answer, sent: qa.sentence
+      });
     }
 
     return res.json({
@@ -1374,6 +1377,7 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================================================================== */
+
 
 
 /* ===================== START ===================== */
