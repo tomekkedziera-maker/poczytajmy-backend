@@ -1087,25 +1087,47 @@ function parseQuestionsFromJSON(raw){
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
 }
 
-/* — główny PROMPT NAUCZYCIELA PL 1–3 — */
+/* — GŁÓWNY PROMPT NAUCZYCIELA PL 1–3 (z urozmaiceniem pytań) — */
 function buildTeacherPrompt(text, maxQ=3){
   const clamped = Math.max(1, Math.min(5, Number(maxQ)||3));
   return `
 Jesteś nauczycielem języka polskiego w klasach 1–3 szkoły podstawowej.
-Twoim zadaniem jest sprawdzenie, czy dziecko zrozumiało przeczytany tekst.
+Twoim zadaniem jest sprawdzić, czy dziecko zrozumiało przeczytany tekst.
 
-Na podstawie TEKSTU poniżej przygotuj od 1 do ${clamped} prostych pytań (dla dzieci 1–3), oraz krótkie poprawne odpowiedzi (max 6 słów), oparte WYŁĄCZNIE na treści tekstu. 
-Nie wymyślaj nowych imion ani faktów. 
-Pytaj konkretnie o bohatera, czynność, miejsce, czas, cel — tylko jeśli te informacje są w tekście. 
-Jeśli tekst to 1 zdanie, daj 1 pytanie. Jeśli dłuższy — 2–${clamped} pytań. 
-Używaj tylko języka polskiego.
+Na podstawie TEKSTU przygotuj od 1 do ${clamped} bardzo prostych pytań oraz krótkie poprawne odpowiedzi (maks. 6 słów), oparte WYŁĄCZNIE na treści.
+— Nie dopowiadaj faktów, nie wymyślaj imion.
+— Jeśli w tekście jest podmiot, używaj dokładnie tego podmiotu (tej frazy).
+— Pytania mają być UROZMAICONE: unikaj powtarzania tego samego „stemu” we wszystkich pytaniach.
 
-Zwróć DOKŁADNIE czysty JSON:
+PRIORYTETY DOBORU PYTAŃ (w tej kolejności):
+1) „Co robi [podmiot]?” — gdy jest jednoznaczny podmiot i czasownik (np. „Co robi Kasia?”).
+2) „Gdzie [czasownik] [podmiot]?” — gdy w tekście jest miejsce (np. „Gdzie czyta Kasia?”).
+3) „Kiedy [czasownik] [podmiot]?” — gdy w tekście jest czas (np. „Kiedy Tomek pije kakao?”).
+4) „Co [robi/ma/czyta] [podmiot]?” — gdy obiekt/cel czynności jest wprost w zdaniu („Co czyta Kasia?”).
+5) „Kto…?” — używaj tylko, gdy brak jawnego podmiotu, ale wiadomo, że „ktoś/coś” działa.
+NIE zadawaj „Dlaczego…?”/„Po co…?” (za trudne na 1–3).
+
+REGUŁY WYJŚCIA:
+- Polskie pytania i odpowiedzi, zrozumiałe dla dziecka.
+- Odpowiedź maks. 6 słów, bez cudzysłowów i dygresji.
+- Jeśli tekst to jedno krótkie zdanie → daj 1 pytanie. Jeśli dłuższy → 2–${clamped} pytania.
+- Zwróć DOKŁADNIE czysty JSON:
+
 {
   "questions": [
     { "question": "…?", "answer": "…" }
   ]
 }
+
+PRZYKŁADY (styl i różnicowanie):
+Tekst: "Piesek Lucek śpi."
+→ [{"question":"Co robi Piesek Lucek?","answer":"śpi"}]
+
+Tekst: "Kasia czyta książkę w pokoju."
+→ [{"question":"Co czyta Kasia?","answer":"książkę"},{"question":"Gdzie czyta Kasia?","answer":"w pokoju"}]
+
+Tekst: "Rano Tomek pije kakao."
+→ [{"question":"Kiedy Tomek pije kakao?","answer":"rano"},{"question":"Co pije Tomek?","answer":"kakao"}]
 
 TEKST:
 """${qz_trim(text, 1000)}"""
@@ -1123,7 +1145,7 @@ async function llmQuestions(text, countHint){
     prompt,
     temperature: 0.3,
     top_p: 0.95,
-    max_tokens: 280,
+    max_tokens: 320,
     deadlineMs: 3500
   });
 
@@ -1256,7 +1278,6 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================================================================== */
-
 
 
 /* ===================== START ===================== */
