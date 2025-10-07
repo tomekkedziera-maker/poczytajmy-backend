@@ -1219,7 +1219,7 @@ app.post('/agent/comprehend-multi', async (req, res) => {
       }));
     }
 
-    setComprehendHeaders(req, res, qa);
+    setComprehendHeaders(req, res, out[0]);
     if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a:i.answer,s:i.sentence})));
     return res.json({ ok: true, count: out.length, items: out });
   } catch (err) {
@@ -1256,7 +1256,7 @@ app.post('/agent/comprehend', async (req, res) => {
       qa = { question: h.question, answer: h.answer, fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
 
-    setComprehendHeaders(res, qa);
+    setComprehendHeaders(req, res, qa);
     if (dbg) console.log('[COMPREHEND-ONE]', { path: qa.source_path, provider: qa.llm_provider, q: qa.question, a: qa.answer, sent: qa.sentence });
     return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: !!qa.fallback, source_path: qa.source_path });
   } catch (err) {
