@@ -1044,7 +1044,6 @@ app.get('/tts-voices', async (_req, res) => {
     return res.status(500).json({ ok: false, error: 'VOICES_FAILED', details: String(err?.message || err) });
   }
 });
-
 /* ===================================================================== */
 /* ==============  QUIZ / COMPREHEND – NAUCZYCIEL PL 1–3  =============== */
 /* ===================================================================== */
@@ -1098,9 +1097,14 @@ function hardTimeout(promise, ms) {
 }
 
 /* pomocnicze: przytnij frazę miejsca do 1–3 słów + usuń końcowe czasowniki */
-const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije)$/i;
+const PLACE_VERBS = /(jest|stoi|leży|lezy|śpi|spi|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije)$/i;
 function trimPlace(p='') {
-  let toks = String(p).trim().split(/\s+/)
+  let s = String(p).trim();
+
+  // utnij wszystko po pierwszym dużym słowie (np. "Na spacerze Kuba" -> "Na spacerze")
+  s = s.replace(/\s+[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+.*$/u, '');
+
+  let toks = s.split(/\s+/)
     .filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w))
     .slice(0, 3);
   // usuń końcowy czasownik jeśli wylezie
@@ -1140,6 +1144,9 @@ function cleanQuestion(q) {
   if (!q) return q;
   let s = q.trim().replace(/\s+/g,' ').replace(/[„”"']/g, '');
 
+  // usuń nienaturalne "się" po słowie pytającym (Kto/Gdzie/Co)
+  s = s.replace(/^(Kto|Gdzie|Co)\s+się\s+/iu, '$1 ');
+
   // „Kiedy Po …” → „Kiedy to było?”
   s = s.replace(/^Kiedy\s+Po\b.*$/iu, 'Kiedy to było?');
 
@@ -1154,6 +1161,10 @@ function cleanQuestion(q) {
 
   // „Gdzie jest Potem …” (z „Potem…”) → „Gdzie to było?”
   s = s.replace(/^Gdzie\s+jest\s+Potem\b.*$/iu, 'Gdzie to było?');
+
+  // „Kto się [czasownik]?” / „Gdzie się [czasownik]?” → bez „się”
+  s = s.replace(/^Kto\s+się\s+([a-ząćęłńóśźż]+)\?/iu, 'Kto $1?');
+  s = s.replace(/^Gdzie\s+się\s+([a-ząćęłńóśźż]+)\?/iu, 'Gdzie $1?');
 
   // pytanie zawiera przecinki/kropki → skróć
   if (/[.,;:].*\?$/u.test(s)) {
@@ -1224,6 +1235,11 @@ function postProcessLLMItems(items, text, want=3) {
   for (const it of items || []) {
     let q = cleanQuestion(it.question || '');
     let a = (it.answer || '').trim();
+
+    // Jeżeli „Gdzie …?” a odpowiedź wygląda na czas → przerób pytanie na „Kiedy…?”
+    if (/^\s*Gdzie\b/i.test(q) && RE_TIME.test(a)) {
+      q = 'Kiedy to było?';
+    }
 
     // Po co/Dlaczego bez celu → zmiana pytania
     if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) {
