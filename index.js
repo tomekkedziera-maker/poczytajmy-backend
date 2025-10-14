@@ -16,6 +16,15 @@ import Groq from 'groq-sdk';
 import sharp from 'sharp';
 import Tesseract from 'tesseract.js';
 
+// --- NEW (keep-alive dla fetch): undici dispatcher ---
+import { Agent as UndiciAgent, setGlobalDispatcher } from 'undici';
+setGlobalDispatcher(new UndiciAgent({
+  keepAliveTimeout: 10_000,
+  keepAliveMaxTimeout: 10_000,
+  connections: 128
+}));
+// --- END NEW ---
+
 /* ===== Paths / app ===== */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -263,45 +272,48 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// prefer OpenAI + retry; w razie błędu → Groq → fallback
+// --- NEW: chatPref jako wyścig OAI+GROQ (bierze pierwszą odpowiedź) ---
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
 
-  let oaiErr = null;
+  const racers = [];
+
   if (openai) {
     const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
-    try {
-      return await withDeadlineRetry(makeOai, { deadlineMs, retries: 1, backoffMs: 250 });
-    } catch (err) {
-      oaiErr = err;
-      console.warn('[chatPref] OpenAI failed, trying GROQ:', err?.code || err?.status || err?.message || err);
-    }
+    racers.push(withDeadlineRetry(makeOai, {
+      deadlineMs: Math.max(2000, Math.min(deadlineMs, 6000)),
+      retries: 0
+    }));
   }
 
   if (groq) {
-    try {
-      const { text, provider } = await withDeadline(
-        groqChat({
-          messages,
-          max_tokens,
-          temperature: Math.min(0.7, Math.max(0.2, temperature)),
-          top_p
-        }),
-        Math.max(1500, Math.round(deadlineMs * 0.9))
-      );
-      return { text, provider };
-    } catch (gerr) {
-      console.warn('[chatPref] GROQ failed after OAI:', { oai: String(oaiErr), groq: String(gerr) });
-      const e = new Error('GEN_FALLBACK');
-      e.code = 'GEN_FALLBACK';
-      throw e;
-    }
+    const makeGroq = () => groqChat({ messages, max_tokens, temperature, top_p });
+    racers.push(withDeadline(makeGroq(), Math.max(1800, Math.min(deadlineMs, 6000))));
   }
 
+  if (!racers.length) {
+    const e = new Error('GEN_FALLBACK');
+    e.code = 'GEN_FALLBACK';
+    throw e;
+  }
+
+  let lastErr = null;
+  const wrapped = racers.map(p =>
+    p.then(r => r).catch(e => { lastErr = e; return null; })
+  );
+
+  const results = await Promise.allSettled(wrapped);
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value && r.value.text) {
+      return r.value;
+    }
+  }
+  if (lastErr) throw lastErr;
   const e = new Error('GEN_FALLBACK');
   e.code = 'GEN_FALLBACK';
   throw e;
 }
+// --- END NEW ---
 
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const { text } = await chatPref({ prompt, max_tokens, temperature, top_p: 0.95 });
@@ -1020,7 +1032,7 @@ async function genOneSentence(level = "A1") {
 Wymagania:
 - Jedno zdanie (8–16 słów), brzmienie swobodne (jak rozmowa z dzieckiem), bez „szkolnej” składni.
 - Słownictwo codzienne, zero żargonu i neologizmów, bez nawiasów i cudzysłowów.
-- Unikaj sztywnych wzorców typu „… a potem …”, „Dziś/Dzisiaj …”, długich wyliczeń i dwóch „a/oraz” w jednym zdaniu.
+- Unikaj sztywnych wzorców typu: „… a potem …”, „Dziś/Dzisiaj …”, długich wyliczeń i dwóch „a/oraz” w jednym zdaniu.
 - Używaj polskich znaków.
 Podaj tylko gotowe zdanie.`;
 
