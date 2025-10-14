@@ -262,19 +262,21 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// ENTRYPOINT — prefer OpenAI + retry; w razie throttlingu → Groq → fallback
+// ENTRYPOINT — prefer OpenAI + retry; w razie błędu → Groq → fallback
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
 
-  // 1) Spróbuj OpenAI (z retry)
+  // 1) Spróbuj OpenAI (z retry). Każdy błąd → kontynuujemy do GROQ (NIE rzucamy od razu).
   const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
-  try {
-    if (openai) {
+  let oaiErr = null;
+  if (openai) {
+    try {
       return await withDeadlineRetry(makeOai, { deadlineMs, retries: 1, backoffMs: 250 });
+    } catch (err) {
+      oaiErr = err;
+      console.warn('[chatPref] OpenAI failed, trying GROQ:', err?.code || err?.status || err?.message || err);
+      // nie rzucamy — przechodzimy do GROQ
     }
-  } catch (err) {
-    if (err?.code !== 'OPENAI_THROTTLED') throw err; // inny błąd — nie maskujemy
-    // wpadliśmy w throttling — lecimy na Groq bez marnowania czasu
   }
 
   // 2) Failover → Groq
@@ -290,10 +292,15 @@ async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0
         Math.max(1500, Math.round(deadlineMs * 0.9))
       );
       return { text, provider };
-    } catch { /* miękko */ }
+    } catch (gerr) {
+      console.warn('[chatPref] GROQ failed after OAI:', { oai: String(oaiErr), groq: String(gerr) });
+      const e = new Error('GEN_FALLBACK');
+      e.code = 'GEN_FALLBACK';
+      throw e;
+    }
   }
 
-  // 3) Ostateczny fallback — wyżej endpointy mają bezpieczne 200
+  // 3) Ostateczny fallback — brak providerów
   const e = new Error('GEN_FALLBACK');
   e.code = 'GEN_FALLBACK';
   throw e;
@@ -580,7 +587,8 @@ function tooSimilarToRecent(t) {
 
 async function generateGreetingV2({ name, age, character, theme }) {
   const prompt = buildGreetingPrompt({ age: Number(age), character, theme, n: 12 });
-  const { text: raw } = await chatPref({
+  // >>> ZMIANA: bierzemy provider z chatPref <<<
+  const { text: raw, provider } = await chatPref({
     prompt,
     temperature: NAT_TEMPERATURE,
     max_tokens: 180,
@@ -600,15 +608,17 @@ async function generateGreetingV2({ name, age, character, theme }) {
   const finalText = softenPolish(cleaned || picked);
 
   recentGreetings.set(profileKey, [finalText, ...history].slice(0, 20));
-  return { text: finalText, source: 'openai_or_groq' };
+  // >>> ZMIANA: zwracamy provider <<<
+  return { text: finalText, provider: provider || 'llm' };
 }
 
 app.post('/agent/generate-greeting', async (req, res) => {
   try {
     const { name = '', age, character = 'Twój przyjaciel' } = req.body || {};
     const theme = HERO_THEMES[character] || '';
-    const { text, source } = await generateGreetingV2({ name, age, character, theme });
-    res.json({ ok: true, text, source });
+    const { text, provider } = await generateGreetingV2({ name, age, character, theme });
+    // >>> ZMIANA: source = provider <<<
+    res.json({ ok: true, text, source: provider });
   } catch (err) {
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
     console.error('agent/generate-greeting error:', err);
@@ -626,8 +636,9 @@ app.post('/generate-greeting', async (req, res) => {
   try {
     const { name = '', age, character = 'Twój przyjaciel' } = req.body || {};
     const theme = HERO_THEMES[character] || '';
-    const { text, source } = await generateGreetingV2({ name, age, character, theme });
-    res.json({ ok: true, text, source });
+    const { text, provider } = await generateGreetingV2({ name, age, character, theme });
+    // >>> ZMIANA: source = provider <<<
+    res.json({ ok: true, text, source: provider });
   } catch (err) {
     const timedOut = String(err?.message || err) === 'DEADLINE_EXCEEDED';
     console.error('generate-greeting error:', err);
@@ -1182,7 +1193,7 @@ function parseQuestionsFromJSON(raw){
   const arr = Array.isArray(j?.questions) ? j.questions : [];
   return arr.map(x => {
       const q = cleanQuestion(String(x?.question||''));
-      const a = String(x?.answer||'').trim().replace(/[„”"']/g,'').split(/\s+/).slice(0,6).join(' ');
+      const a = String(x?.answer||'').trim().split(/\s+/).slice(0,6).join(' ');
       return { question: q, answer: a };
     })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
@@ -1226,7 +1237,7 @@ function postProcessLLMItems(items, text, want=3) {
   const out = [];
   const placeMatch = (text.match(RE_PLACE)||[])[0];
 
-  for (const it of items || []) {
+  for (const it of (items || [])) {
     let q = cleanQuestion(it.question || '');
     let a = (it.answer || '').trim();
 
