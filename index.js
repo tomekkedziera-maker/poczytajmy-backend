@@ -1595,7 +1595,10 @@ app.post('/agent/comprehend', async (req, res) => {
 });
 
 /* ===================== START ===================== */
+let _prewarmRunning = false;
 async function prewarmOnce() {
+  if (_prewarmRunning) return;
+  _prewarmRunning = true;
   try {
     if (process.env.GROQ_API_KEY) {
       await groqChat({
@@ -1613,12 +1616,21 @@ async function prewarmOnce() {
       }).catch(() => {});
     }
     if (BASE_URL) {
-      await fetch(`${BASE_URL}/health`, { headers: { Connection: 'keep-alive' } }).catch(() => {});
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 2000);
+      try {
+        await fetch(`${BASE_URL}/health`, {
+          method: 'HEAD',
+          headers: { Connection: 'keep-alive' },
+          signal: ctrl.signal
+        });
+      } catch {}
+      clearTimeout(to);
     }
 
     await refillPoolOnce().catch(() => {});
-  } catch {
-    /* noop */
+  } finally {
+    _prewarmRunning = false;
   }
 }
 
@@ -1628,12 +1640,13 @@ app.listen(PORT, () => {
   console.log(`🤖 OpenAI ${openai ? 'podłączony' : 'OFF'}`);
   console.log(`🧠 LLM_PREF=${LLM_PREF}`);
 
-  prewarmOnce();
+  // mały delay, żeby połączenia mogły się ustawić
+  setTimeout(prewarmOnce, 500);
 
   setInterval(() => { refillPoolOnce().catch(() => {}); }, POOL_REFILL_INTERVAL_MS);
 
   if (PREWARM_EVERY_MIN > 0) {
-    setInterval(prewarmOnce, PREWARM_EVERY_MIN * 60_000);
+    setInterval(() => { prewarmOnce().catch(()=>{}); }, PREWARM_EVERY_MIN * 60_000);
     console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
   }
 
