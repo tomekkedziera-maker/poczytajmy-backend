@@ -16,13 +16,28 @@ import Groq from 'groq-sdk';
 import sharp from 'sharp';
 import Tesseract from 'tesseract.js';
 
-// --- NEW (keep-alive dla fetch): undici dispatcher ---
-import { Agent as UndiciAgent, setGlobalDispatcher } from 'undici';
-setGlobalDispatcher(new UndiciAgent({
-  keepAliveTimeout: 10_000,
-  keepAliveMaxTimeout: 10_000,
-  connections: 128
-}));
+/* ===== Opcjonalny keep-alive dla fetch (undici, jeśli dostępne) ===== */
+try {
+  import('undici').then(({ Agent: UndiciAgent, setGlobalDispatcher }) => {
+    try {
+      setGlobalDispatcher(
+        new UndiciAgent({
+          keepAliveTimeout: 10_000,
+          keepAliveMaxTimeout: 10_000,
+          connections: 128,
+        })
+      );
+      console.log('🌐 undici keep-alive enabled');
+    } catch (e) {
+      console.warn('🌐 undici available but failed to configure:', String(e));
+    }
+  }).catch(() => {
+    console.log('🌐 undici not installed; using native fetch');
+  });
+} catch {
+  console.log('🌐 undici dynamic import failed; using native fetch');
+}
+
 // --- END NEW ---
 
 /* ===== Paths / app ===== */
