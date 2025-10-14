@@ -942,7 +942,7 @@ async function chatPrefBg({
           max_tokens,
           temperature,
           top_p
-        }]),
+        }),
         { deadlineMs: Math.max(4000, deadlineMs), retries: 1, backoffMs: 400 }
       );
     } catch { /* fallback */ }
