@@ -951,16 +951,9 @@ app.post("/generate-text",      handleGenerateText); // alias bez 307
 /* ===================== TEXT POOL (prefetch cache) ===================== */
 /* Prosty pool zdań do czytania generowanych w tle, per poziom (A1/A2/B1) */
 
-/* ===== Konfiguracja ===== */
-const POOL_LEVELS = (process.env.POOL_LEVELS || "A1,A2,B1")
-  .split(",")
-  .map(s => s.trim().toUpperCase());
+// [UWAGA] Używa stałych z góry pliku: POOL_LEVELS, POOL_TARGET_SIZE, POOL_REFILL_BATCH, POOL_REFILL_INTERVAL_MS
 
-const POOL_TARGET_SIZE = Number(process.env.POOL_TARGET_SIZE || 24);      // ile trzymamy na poziom
-const POOL_REFILL_BATCH = Number(process.env.POOL_REFILL_BATCH || 8);     // ile dorabiamy w jednym przebiegu
-const POOL_REFILL_INTERVAL_MS = Number(process.env.POOL_REFILL_INTERVAL_MS || 60_000); // co ile uzupełniać (ms)
-
-/* Prefetch tylko na GROQ (domyślnie). Ustaw PREFETCH_PROVIDER=openai jeśli chcesz inaczej. */
+/* Prefetch provider do zadań w tle (opcjonalnie) */
 const PREFETCH_PROVIDER = (process.env.PREFETCH_PROVIDER || 'groq').toLowerCase();
 
 /* ===== Pamięć puli ===== */
@@ -977,7 +970,6 @@ async function chatPrefBg({
 }) {
   if (PREFETCH_PROVIDER === 'groq' && groq) {
     try {
-      // 1 retry + dłuższy deadline dla tła
       return await withDeadlineRetry(
         () => groqChat({
           messages: [{ role: 'user', content: trimUserContent(prompt) }],
@@ -987,11 +979,8 @@ async function chatPrefBg({
         }),
         { deadlineMs: Math.max(4000, deadlineMs), retries: 1, backoffMs: 400 }
       );
-    } catch {
-      // jeśli Groq padnie — spadnij do standardowego toru (OpenAI->Groq)
-    }
+    } catch { /* spadamy niżej */ }
   }
-  // fallback do normalnej ścieżki
   return await chatPref({ prompt, max_tokens, temperature, top_p, deadlineMs });
 }
 
@@ -1143,11 +1132,8 @@ async function refillPoolOnce(levels = POOL_LEVELS) {
       const want = Math.max(POOL_REFILL_BATCH, Math.ceil(need / 2));
       const batch = [];
       for (let i = 0; i < want; i++) {
-        try {
-          batch.push(await genOneSentence(lv));
-        } catch {}
-        // mały odstęp, żeby nie dławić providerów/egress i uniknąć burstów
-        await sleep(150);
+        try { batch.push(await genOneSentence(lv)); } catch {}
+        await sleep(150); // oddech dla providerów
       }
       textPool.set(lv, buf.concat(batch).slice(-POOL_TARGET_SIZE));
     }
@@ -1173,14 +1159,12 @@ function popFromPool(level = "A1", n = 1) {
 }
 
 /* ——— endpointy pomocnicze ——— */
-/* GET /pool/next?level=A1&n=5 — zwróć n gotowych zdań (z puli lub dorób synchronicznie) */
 app.get('/pool/next', async (req, res) => {
   try {
     const level = (req.query?.level || 'A1').toString().toUpperCase();
     const n = Math.min(20, Math.max(1, Number(req.query?.n) || 1));
     if (!textPool.has(level)) textPool.set(level, []);
     let out = popFromPool(level, n);
-    // jeśli pusto — dogeneruj synchronicznie
     if (!out.length) {
       const batch = [];
       for (let i = 0; i < n; i++) batch.push(await genOneSentence(level));
@@ -1189,16 +1173,10 @@ app.get('/pool/next', async (req, res) => {
     return res.json({ ok: true, level, count: out.length, items: out });
   } catch (e) {
     console.error('pool/next error:', e);
-    return res.status(200).json({
-      ok: true,
-      level: String(req.query?.level || 'A1').toUpperCase(),
-      count: 0,
-      items: []
-    });
+    return res.status(200).json({ ok: true, level: String(req.query?.level || 'A1').toUpperCase(), count: 0, items: [] });
   }
 });
 
-/* POST /pool/refill  body: { levels?: ["A1","A2"] } — wymuś refill teraz */
 app.post('/pool/refill', async (req, res) => {
   try {
     const levels = Array.isArray(req.body?.levels) ? req.body.levels : POOL_LEVELS;
@@ -1210,6 +1188,7 @@ app.post('/pool/refill', async (req, res) => {
   }
 });
 /* ===================== /TEXT POOL ===================== */
+
 /* ===================== OCR ===================== */
 app.post('/ocr', upload.single('image'), async (req, res) => {
   try {
