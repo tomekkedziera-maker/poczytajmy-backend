@@ -42,6 +42,11 @@ const LLM_PREF = 'openai-only'; // preferencja, ale mamy failover na Groq
 const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 9000);
 const MOTIVATE_TIMEOUT_MS      = Number(process.env.MOTIVATE_TIMEOUT_MS || 10000);
 const GENERATE_TEXT_TIMEOUT_MS = Number(process.env.GENERATE_TEXT_TIMEOUT_MS || 10000);
+/* ===== Text Pool (prefetch) ===== */
+const POOL_LEVELS = (process.env.POOL_LEVELS || "A1,A2,B1").split(",").map(s=>s.trim().toUpperCase());
+const POOL_TARGET_SIZE = Number(process.env.POOL_TARGET_SIZE || 24);      // ile trzymamy na poziom
+const POOL_REFILL_BATCH = Number(process.env.POOL_REFILL_BATCH || 8);     // ile dorabiamy w jednym przebiegu
+const POOL_REFILL_INTERVAL_MS = Number(process.env.POOL_REFILL_INTERVAL_MS || 60_000); // co ile uzupełniać (ms)
 
 const keepAliveAgent = new http.Agent({ keepAlive: true, timeout: 10_000 });
 const now = () => (global.performance?.now?.() ?? Date.now());
@@ -942,6 +947,210 @@ ${sentence}`.trim(),
 app.post("/agent/generate-text", handleGenerateText);
 app.post("/generate-text",      handleGenerateText); // alias bez 307
 
+/* ===================== TEXT POOL (prefetch cache) ===================== */
+/* Prosty pool zdań do czytania generowanych w tle, per poziom (A1/A2/B1) */
+const textPool = new Map(); // level -> array
+for (const lv of POOL_LEVELS) textPool.set(lv, []);
+
+/* ——— MINI-HELPERY (lokalne, lekkie) ——— */
+function _tp_onlyOneSentence(s) {
+  const parts = String(s).split(/(?<=[.!?…])\s+/).filter(Boolean);
+  return (parts[0] || s).trim();
+}
+function _tp_cleanSentence(s) {
+  let out = String(s).replace(/[„”"“”'()«»]/g, "").replace(/\s+/g, " ").trim();
+  out = _tp_onlyOneSentence(out);
+  if (!/[.!?…]$/.test(out)) out += ".";
+  return out;
+}
+function _tp_countWords(s) {
+  return (String(s).trim().match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []).length;
+}
+function _tp_hasPolishDiacritics(s) { return /[ąćęłńóśźż]/i.test(String(s)); }
+function _tp_softenPolish(s="") {
+  let out = String(s).trim();
+  out = out.replace(/\s*,?\s*a potem\s*/gi, " i ");
+  out = out.replace(/\s*,\s*oraz\s*/gi, " i ");
+  out = out.replace(/\s*,\s*a\s*/gi, " i ");
+  if (!/[.!?…]$/.test(out)) out += ".";
+  out = out.replace(/^Z /, "Ze ");
+  return out.replace(/\s+/g," ").trim();
+}
+const _TP_TEMPLATEY_STARTS = ["Dziś","Dzisiaj","Po południu","W ogrodzie","Choć","Chociaż","Na koniec","Potem","Następnie","Po kolacji","Po obiedzie","W bibliotece","W domu"];
+function _tp_looksTemplatey(s="") {
+  const t = String(s).trim();
+  if (!t) return true;
+  if (/\b[aA]\s+potem\b/.test(t)) return true;
+  if (_TP_TEMPLATEY_STARTS.some(p => t.startsWith(p + " "))) return true;
+  const conj = (t.match(/\b(a|oraz)\b/gi) || []).length;
+  return conj >= 2;
+}
+function _tp_validateKidsSentencePL(s, { minWords=8, maxWords=16 } = {}) {
+  const txt = _tp_cleanSentence(_tp_onlyOneSentence(s));
+  const words = _tp_countWords(txt);
+  if (words < minWords || words > maxWords) return { ok:false, text:txt };
+  if (!_tp_hasPolishDiacritics(txt)) return { ok:false, text:txt };
+  const tokens = (txt.match(/\b[\p{L}\p{M}0-9'-]+\b/gu) || []);
+  const long = tokens.filter(w => w.replace(/[^a-ząćęłńóśźż-]/gi,"").length > 12).length;
+  const ratio = tokens.length ? long / tokens.length : 0;
+  if (tokens.length > 24 || ratio > 0.4) return { ok:false, text:txt };
+  return { ok:true, text:txt };
+}
+const _TP_BANK_A1 = [
+  "Ala ma kota i lubi czytać bajki wieczorem.",
+  "Miś je miodek, a potem słucha krótkiej opowieści.",
+  "Piłka leży na trawie, a Julek czyta na ławce.",
+  "Pies biegnie do domu, gdzie czeka nowa książka.",
+  "Słońce świeci jasno, a my czytamy w ogrodzie."
+];
+const _TP_BANK_A2 = [
+  "W ogrodzie rosną kwiaty, a my czytamy o motylach.",
+  "Kasia czyta książkę o zwierzętach i szuka trudnych słów.",
+  "Na spacerze opowiadamy historię o małej latarni morskiej.",
+  "Po południu wybieramy rozdział o odważnym króliku."
+];
+const _TP_BANK_B1 = [
+  "Choć padał deszcz, przeczytaliśmy rozdział o podróży po mapie.",
+  "Lubię zagadki, bo rozwijają wyobraźnię i pomagają w czytaniu.",
+  "Z zachwytem śledziłem, jak narrator opisuje lot kolorowego motyla.",
+  "Po kolacji wspólnie czytamy i planujemy jutrzejszą przygodę."
+];
+function _tp_bankByLevel(level="A1") {
+  const L = String(level).toUpperCase();
+  if (L === "B1") return _TP_BANK_B1;
+  if (L === "A2") return _TP_BANK_A2;
+  return _TP_BANK_A1;
+}
+const _tp_recentTexts = [];
+function _tp_rememberText(t) { _tp_recentTexts.unshift(String(t)); if (_tp_recentTexts.length > 20) _tp_recentTexts.pop(); }
+function _tp_norm(x){ return String(x||'').toLowerCase().replace(/[^\p{L}\p{M}0-9\s]+/gu,' ').replace(/\s+/g,' ').trim(); }
+function _tp_jacc(a,b){
+  const A=new Set(_tp_norm(a).split(' ').filter(Boolean));
+  const B=new Set(_tp_norm(b).split(' ').filter(Boolean));
+  if (!A.size && !B.size) return 1;
+  let inter=0; for (const w of A) if(B.has(w)) inter++;
+  return inter/(A.size+B.size-inter);
+}
+function _tp_tooSimilarToRecent(t){ const n=_tp_norm(t); return _tp_recentTexts.some(prev => _tp_jacc(n,_tp_norm(prev)) > 0.6); }
+
+/* ——— generator jednego zdania do poola ——— */
+async function genOneSentence(level = "A1") {
+  const prompt =
+`Napisz jedno naturalne i lekkie zdanie po polsku do głośnego czytania przez dziecko (poziom ${String(level).toUpperCase()}).
+Wymagania:
+- Jedno zdanie (8–16 słów), brzmienie swobodne (jak rozmowa z dzieckiem), bez „szkolnej” składni.
+- Słownictwo codzienne, zero żargonu i neologizmów, bez nawiasów i cudzysłowów.
+- Unikaj sztywnych wzorców typu „… a potem …”, „Dziś/Dzisiaj …”, długich wyliczeń i dwóch „a/oraz” w jednym zdaniu.
+- Używaj polskich znaków.
+Podaj tylko gotowe zdanie.`;
+
+  const r = await chatPref({
+    prompt,
+    temperature: 0.9,
+    max_tokens: 70,
+    top_p: 0.9,
+    deadlineMs: Math.min(GENERATE_TEXT_TIMEOUT_MS, 7000)
+  }).catch(() => null);
+
+  let s = r?.text ? _tp_softenPolish(_tp_cleanSentence(r.text)) : _tp_bankByLevel(level)[Math.floor(Math.random()*_tp_bankByLevel(level).length)];
+
+  // sanity i anty-szablon
+  let v = _tp_validateKidsSentencePL(s);
+  if (!v.ok || _tp_looksTemplatey(v.text) || _tp_tooSimilarToRecent(v.text)) {
+    // 1 reroll
+    const r2 = await chatPref({
+      prompt,
+      temperature: 0.9,
+      max_tokens: 70,
+      top_p: 0.9,
+      deadlineMs: Math.min(GENERATE_TEXT_TIMEOUT_MS, 7000)
+    }).catch(() => null);
+    s = r2?.text ? _tp_softenPolish(_tp_cleanSentence(r2.text)) : _tp_bankByLevel(level)[Math.floor(Math.random()*_tp_bankByLevel(level).length)];
+    v = _tp_validateKidsSentencePL(s);
+    if (!v.ok || _tp_looksTemplatey(v.text) || _tp_tooSimilarToRecent(v.text)) {
+      const bank = _tp_bankByLevel(level);
+      s = bank[Math.floor(Math.random()*bank.length)]; // ostateczny fallback
+    } else {
+      s = v.text;
+    }
+  } else {
+    s = v.text;
+  }
+
+  _tp_rememberText(s);
+  return s;
+}
+
+let _refillLock = false;
+async function refillPoolOnce(levels = POOL_LEVELS) {
+  if (_refillLock) return;
+  _refillLock = true;
+  try {
+    for (const lv of levels) {
+      const buf = textPool.get(lv) || [];
+      const need = Math.max(0, POOL_TARGET_SIZE - buf.length);
+      if (need <= 0) continue;
+
+      const want = Math.max(POOL_REFILL_BATCH, Math.ceil(need / 2));
+      const batch = [];
+      for (let i = 0; i < want; i++) {
+        try { batch.push(await genOneSentence(lv)); } catch {}
+      }
+      textPool.set(lv, buf.concat(batch).slice(-POOL_TARGET_SIZE));
+    }
+  } finally {
+    _refillLock = false;
+  }
+}
+
+function popFromPool(level = "A1", n = 1) {
+  const lv = String(level).toUpperCase();
+  if (!textPool.has(lv)) textPool.set(lv, []);
+  const buf = textPool.get(lv);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const s = buf.shift();
+    if (s) out.push(s);
+  }
+  textPool.set(lv, buf);
+  // miękki trigger uzupełnienia
+  setTimeout(() => refillPoolOnce([lv]).catch(()=>{}), 0);
+  return out;
+}
+
+/* endpointy: GET /pool/next?level=A1&n=5, POST /pool/refill */
+app.get('/pool/next', async (req, res) => {
+  try {
+    const level = (req.query?.level || 'A1').toString().toUpperCase();
+    const n = Math.min(20, Math.max(1, Number(req.query?.n) || 1));
+    if (!textPool.has(level)) textPool.set(level, []);
+    let out = popFromPool(level, n);
+    // jeśli pusto — dogeneruj synchronicznie
+    if (!out.length) {
+      const batch = [];
+      for (let i = 0; i < n; i++) batch.push(await genOneSentence(level));
+      out = batch;
+    }
+    return res.json({ ok: true, level, count: out.length, items: out });
+  } catch (e) {
+    console.error('pool/next error:', e);
+    return res.status(200).json({ ok: true, level: String(req.query?.level || 'A1').toUpperCase(), count: 0, items: [] });
+  }
+});
+
+app.post('/pool/refill', async (req, res) => {
+  try {
+    const levels = Array.isArray(req.body?.levels) ? req.body.levels : POOL_LEVELS;
+    await refillPoolOnce(levels.map(l=>String(l).toUpperCase()));
+    return res.json({ ok: true, levels });
+  } catch (e) {
+    console.error('pool/refill error:', e);
+    return res.status(500).json({ ok: false, error: 'REFILL_FAILED' });
+  }
+});
+/* ===================== /TEXT POOL ===================== */
+
+
 /* ===================== OCR ===================== */
 app.post('/ocr', upload.single('image'), async (req, res) => {
   try {
@@ -1446,16 +1655,30 @@ app.post('/agent/comprehend', async (req, res) => {
 async function prewarmOnce() {
   try {
     if (process.env.GROQ_API_KEY) {
-      await groqChat({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, temperature: 0.0 }).catch(()=>{});
+      await groqChat({
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 8,
+        temperature: 0.0
+      }).catch(() => {});
     }
     // ★ prewarm OpenAI (ultrakrótki)
     if (openai) {
-      await openaiChat({ messages: [{ role: 'user', content: 'ok' }], max_tokens: 1, temperature: 0.0, top_p: 1.0 }).catch(()=>{});
+      await openaiChat({
+        messages: [{ role: 'user', content: 'ok' }],
+        max_tokens: 1,
+        temperature: 0.0,
+        top_p: 1.0
+      }).catch(() => {});
     }
     if (BASE_URL) {
-      await fetch(`${BASE_URL}/health`, { headers: { Connection: 'keep-alive' } }).catch(()=>{});
+      await fetch(`${BASE_URL}/health`, { headers: { Connection: 'keep-alive' } }).catch(() => {});
     }
-  } catch { /* noop */ }
+
+    // 🔥 uzupełnij pulę tekstów przy starcie
+    await refillPoolOnce().catch(() => {});
+  } catch {
+    /* noop */
+  }
 }
 
 app.listen(PORT, () => {
@@ -1463,9 +1686,16 @@ app.listen(PORT, () => {
   console.log(`🎧 Groq ${groq ? 'podłączony' : 'OFF'} (chat=${GROQ_CHAT_MODEL}, asr=${GROQ_ASR_MODEL})`);
   console.log(`🤖 OpenAI ${openai ? 'podłączony' : 'OFF'}`);
   console.log(`🧠 LLM_PREF=${LLM_PREF}`);
+
   prewarmOnce();
+
+  // ⏱ cykliczne uzupełnianie puli tekstów
+  setInterval(() => { refillPoolOnce().catch(() => {}); }, POOL_REFILL_INTERVAL_MS);
+
   if (PREWARM_EVERY_MIN > 0) {
     setInterval(prewarmOnce, PREWARM_EVERY_MIN * 60_000);
     console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
   }
+
+  console.log(`🧺 Text pool: levels=${POOL_LEVELS.join(', ')} target=${POOL_TARGET_SIZE}, refill every ${POOL_REFILL_INTERVAL_MS}ms`);
 });
