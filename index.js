@@ -290,22 +290,24 @@ function trimUserContent(s = "", limit = 800) {
 // --- NEW: chatPref jako wyścig OAI+GROQ (bierze pierwszą odpowiedź) ---
 async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
-
   const racers = [];
 
- if (openai) {
-  const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
-  racers.push(
-    withDeadlineRetry(makeOai, { deadlineMs, retries: 0 })
-  );
-}
+  if (openai) {
+    const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
+    racers.push(
+      withDeadlineRetry(makeOai, {
+        deadlineMs: Math.max(1200, Math.min(deadlineMs, 6000)),
+        retries: 0,
+      })
+    );
+  }
 
-if (groq) {
-  const makeGroq = () => groqChat({ messages, max_tokens, temperature, top_p });
-  racers.push(
-    withDeadline(makeGroq(), deadlineMs)
-  );
-}
+  if (groq) {
+    const makeGroq = () => groqChat({ messages, max_tokens, temperature, top_p });
+    racers.push(
+      withDeadline(makeGroq(), Math.max(1200, Math.min(deadlineMs, 6000)))
+    );
+  }
 
   if (!racers.length) {
     const e = new Error('GEN_FALLBACK');
@@ -313,20 +315,16 @@ if (groq) {
     throw e;
   }
 
-    // Zwróć pierwszą poprawną odpowiedź, bez czekania na resztę.
   try {
     const winner = await Promise.any(racers);
     return winner; // { provider, text, latency_ms? }
-  } catch (agg) {
-    // jeśli wszystkie padły → fallback
+  } catch {
     const e = new Error('GEN_FALLBACK');
     e.code = 'GEN_FALLBACK';
     throw e;
   }
 }
-
 // --- END NEW ---
-
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const { text } = await chatPref({ prompt, max_tokens, temperature, top_p: 0.95 });
   return (text || '').trim();
@@ -610,7 +608,7 @@ async function generateGreetingV2({ name, age, character, theme }) {
   const { text: raw, provider } = await chatPref({
     prompt,
     temperature: NAT_TEMPERATURE,
-    max_tokens: 180,
+    max_tokens: 120,
     top_p: NAT_TOP_P,
     deadlineMs: GREETING_TIMEOUT_MS,
   });
