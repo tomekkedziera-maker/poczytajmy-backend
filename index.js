@@ -62,7 +62,7 @@ const GROQ_ASR_MODEL  = process.env.GROQ_ASR_MODEL  || 'whisper-large-v3';
 
 const LLM_PREF = 'openai-only';
 
-const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 9000);
+const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 1500);
 const MOTIVATE_TIMEOUT_MS      = Number(process.env.MOTIVATE_TIMEOUT_MS || 10000);
 const GENERATE_TEXT_TIMEOUT_MS = Number(process.env.GENERATE_TEXT_TIMEOUT_MS || 10000);
 
@@ -296,14 +296,14 @@ async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0
   if (openai) {
     const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
     racers.push(withDeadlineRetry(makeOai, {
-      deadlineMs: Math.max(2000, Math.min(deadlineMs, 6000)),
+      deadlineMs: Math.max(800, Math.min(deadlineMs, 2000)),
       retries: 0
     }));
   }
 
   if (groq) {
     const makeGroq = () => groqChat({ messages, max_tokens, temperature, top_p });
-    racers.push(withDeadline(makeGroq(), Math.max(1800, Math.min(deadlineMs, 6000))));
+    racers.push(withDeadline(makeGroq(), Math.max(800, Math.min(deadlineMs, 2000))));
   }
 
   if (!racers.length) {
@@ -312,22 +312,17 @@ async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0
     throw e;
   }
 
-  let lastErr = null;
-  const wrapped = racers.map(p =>
-    p.then(r => r).catch(e => { lastErr = e; return null; })
-  );
-
-  const results = await Promise.allSettled(wrapped);
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value && r.value.text) {
-      return r.value;
-    }
+    // Zwróć pierwszą poprawną odpowiedź, bez czekania na resztę.
+  try {
+    const winner = await Promise.any(racers);
+    return winner; // { provider, text, latency_ms? }
+  } catch (agg) {
+    // jeśli wszystkie padły → fallback
+    const e = new Error('GEN_FALLBACK');
+    e.code = 'GEN_FALLBACK';
+    throw e;
   }
-  if (lastErr) throw lastErr;
-  const e = new Error('GEN_FALLBACK');
-  e.code = 'GEN_FALLBACK';
-  throw e;
-}
+
 // --- END NEW ---
 
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
