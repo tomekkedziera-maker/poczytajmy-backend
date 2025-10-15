@@ -606,7 +606,7 @@ async function generateGreetingV2({ name, age, character, theme }) {
   const { text: raw, provider } = await chatPref({
     prompt,
     temperature: NAT_TEMPERATURE,
-    max_tokens: 180,
+    max_tokens: 60,
     top_p: NAT_TOP_P,
     deadlineMs: GREETING_TIMEOUT_MS,
   });
