@@ -322,6 +322,7 @@ async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0
     e.code = 'GEN_FALLBACK';
     throw e;
   }
+}
 
 // --- END NEW ---
 
