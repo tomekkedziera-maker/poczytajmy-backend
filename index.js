@@ -62,7 +62,7 @@ const GROQ_ASR_MODEL  = process.env.GROQ_ASR_MODEL  || 'whisper-large-v3';
 
 const LLM_PREF = 'openai-only';
 
-const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 2200);
+const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 2800);
 const MOTIVATE_TIMEOUT_MS      = Number(process.env.MOTIVATE_TIMEOUT_MS || 10000);
 const GENERATE_TEXT_TIMEOUT_MS = Number(process.env.GENERATE_TEXT_TIMEOUT_MS || 10000);
 
@@ -608,7 +608,7 @@ async function generateGreetingV2({ name, age, character, theme }) {
   const { text: raw, provider } = await chatPref({
     prompt,
     temperature: NAT_TEMPERATURE,
-    max_tokens: 60,
+    max_tokens: 180,
     top_p: NAT_TOP_P,
     deadlineMs: GREETING_TIMEOUT_MS,
   });
