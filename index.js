@@ -287,44 +287,63 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// --- NEW: chatPref jako wyścig OAI+GROQ (bierze pierwszą odpowiedź) ---
-async function chatPref({ prompt, max_tokens = 150, temperature = 0.3, top_p = 0.95, deadlineMs = DEADLINE_MS }) {
+// --- ROBUST chatPref: wyścig OAI+GROQ, a potem sekwencyjne "last chance" ---
+async function chatPref({
+  prompt,
+  max_tokens = 150,
+  temperature = 0.3,
+  top_p = 0.95,
+  deadlineMs = DEADLINE_MS,
+}) {
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
+
+  const oaiRunner = async (ms) =>
+    withDeadlineRetry(
+      () => openaiChat({ messages, max_tokens, temperature, top_p }),
+      { deadlineMs: ms, retries: 0 }
+    );
+
+  const groqRunner = async (ms) =>
+    withDeadline(
+      groqChat({ messages, max_tokens, temperature, top_p }),
+      ms
+    );
+
+  const minPerProv = 1400;                       // rozsądne minimum na cold start
+  const cap        = 6500;                       // twardy limit per provider
+  const perProvMs  = Math.max(minPerProv, Math.min(deadlineMs, cap));
+
   const racers = [];
-
-  if (openai) {
-    const makeOai = () => openaiChat({ messages, max_tokens, temperature, top_p });
-    racers.push(
-      withDeadlineRetry(makeOai, {
-        deadlineMs: Math.max(1200, Math.min(deadlineMs, 6000)),
-        retries: 0,
-      })
-    );
-  }
-
-  if (groq) {
-    const makeGroq = () => groqChat({ messages, max_tokens, temperature, top_p });
-    racers.push(
-      withDeadline(makeGroq(), Math.max(1200, Math.min(deadlineMs, 6000)))
-    );
-  }
+  if (openai) racers.push(oaiRunner(perProvMs).catch(e => { throw Object.assign(e, { __prov: 'openai' }); }));
+  if (groq)   racers.push(groqRunner(perProvMs).catch(e => { throw Object.assign(e, { __prov: 'groq'   }); }));
 
   if (!racers.length) {
-    const e = new Error('GEN_FALLBACK');
-    e.code = 'GEN_FALLBACK';
-    throw e;
+    const e = new Error('GEN_FALLBACK'); e.code = 'GEN_FALLBACK'; throw e;
   }
 
+  // 1) szybki wyścig – bierzemy pierwszą odpowiedź
   try {
-    const winner = await Promise.any(racers);
-    return winner; // { provider, text, latency_ms? }
-  } catch {
-    const e = new Error('GEN_FALLBACK');
-    e.code = 'GEN_FALLBACK';
-    throw e;
+    return await Promise.any(racers);
+  } catch (err) {
+    // 2) ostatnia szansa – spróbuj sekwencyjnie z dłuższym oknem
+    const lastChanceMs = Math.min(cap, Math.max(perProvMs + 1000, 5000));
+    // preferuj tego, kogo masz pewniej – tu Groq bywa wolniejszy, ale stabilny
+    const order = groq && openai ? ['groq', 'openai'] : (groq ? ['groq'] : ['openai']);
+
+    for (const prov of order) {
+      try {
+        if (prov === 'groq' && groq)  return await groqRunner(lastChanceMs);
+        if (prov === 'openai' && openai) return await oaiRunner(lastChanceMs);
+      } catch (e) {
+        console.warn('[chatPref:last-chance]', prov, String(e?.message || e));
+      }
+    }
+
+    const e = new Error('GEN_FALLBACK'); e.code = 'GEN_FALLBACK'; throw e;
   }
 }
-// --- END NEW ---
+// --- END ROBUST ---
+
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const { text } = await chatPref({ prompt, max_tokens, temperature, top_p: 0.95 });
   return (text || '').trim();
