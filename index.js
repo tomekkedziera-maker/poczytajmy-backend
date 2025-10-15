@@ -287,62 +287,106 @@ function trimUserContent(s = "", limit = 800) {
   return t.length > limit ? t.slice(0, limit) : t;
 }
 
-// --- ROBUST chatPref: wyścig OAI+GROQ, a potem sekwencyjne "last chance" ---
+// --- RESILIENT chatPref (phased, anti-429) ---
+function isSoftFail(err) {
+  const m = String(err?.message || err);
+  return m.includes('DEADLINE_EXCEEDED') || m.includes('429') ||
+         err?.code === 'OPENAI_THROTTLED';
+}
+
+async function callWithDeadline(makePromiseFn, ms, retries = 0, backoffMs = 300) {
+  let lastErr = null, cur = ms;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await withDeadline(makePromiseFn(), cur);
+    } catch (e) {
+      lastErr = e;
+      if (isSoftFail(e) && i < retries) {
+        await sleep(backoffMs * (i + 1));
+        cur = Math.round(cur * 1.6);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 async function chatPref({
   prompt,
   max_tokens = 150,
   temperature = 0.3,
   top_p = 0.95,
   deadlineMs = DEADLINE_MS,
+  prefer = (process.env.LLM_PREF || 'openai-first')  // 'openai-first' | 'groq-first' | 'race'
 }) {
   const messages = [{ role: 'user', content: trimUserContent(prompt) }];
 
-  const oaiRunner = async (ms) =>
-    withDeadlineRetry(
+  const tryOpenAI = async (ms, retries=0) =>
+    openai ? await callWithDeadline(
       () => openaiChat({ messages, max_tokens, temperature, top_p }),
-      { deadlineMs: ms, retries: 0 }
-    );
+      ms, retries
+    ) : Promise.reject(new Error('OPENAI_OFF'));
 
-  const groqRunner = async (ms) =>
-    withDeadline(
-      groqChat({ messages, max_tokens, temperature, top_p }),
-      ms
-    );
+  const tryGroq = async (ms, retries=0) =>
+    groq ? await callWithDeadline(
+      () => groqChat({ messages, max_tokens, temperature, top_p }),
+      ms, retries
+    ) : Promise.reject(new Error('GROQ_OFF'));
 
-  const minPerProv = 1400;                       // rozsądne minimum na cold start
-  const cap        = 6500;                       // twardy limit per provider
-  const perProvMs  = Math.max(minPerProv, Math.min(deadlineMs, cap));
+  // 1) try preferred first (short-ish)
+  const short = Math.max(1200, Math.min(deadlineMs, 2500));
+  const long  = Math.max(2000, Math.min(deadlineMs * 1.8, 6000));
 
-  const racers = [];
-  if (openai) racers.push(oaiRunner(perProvMs).catch(e => { throw Object.assign(e, { __prov: 'openai' }); }));
-  if (groq)   racers.push(groqRunner(perProvMs).catch(e => { throw Object.assign(e, { __prov: 'groq'   }); }));
+  const order = (() => {
+    if (prefer === 'groq-first') return ['groq', 'openai'];
+    if (prefer === 'race')       return ['race'];
+    return ['openai', 'groq']; // default openai-first
+  })();
 
-  if (!racers.length) {
-    const e = new Error('GEN_FALLBACK'); e.code = 'GEN_FALLBACK'; throw e;
-  }
-
-  // 1) szybki wyścig – bierzemy pierwszą odpowiedź
   try {
-    return await Promise.any(racers);
-  } catch (err) {
-    // 2) ostatnia szansa – spróbuj sekwencyjnie z dłuższym oknem
-    const lastChanceMs = Math.min(cap, Math.max(perProvMs + 1000, 5000));
-    // preferuj tego, kogo masz pewniej – tu Groq bywa wolniejszy, ale stabilny
-    const order = groq && openai ? ['groq', 'openai'] : (groq ? ['groq'] : ['openai']);
-
-    for (const prov of order) {
-      try {
-        if (prov === 'groq' && groq)  return await groqRunner(lastChanceMs);
-        if (prov === 'openai' && openai) return await oaiRunner(lastChanceMs);
-      } catch (e) {
-        console.warn('[chatPref:last-chance]', prov, String(e?.message || e));
-      }
+    if (order[0] === 'race' && openai && groq) {
+      // conservative race: krótszy timeout, kto pierwszy — ten lepszy
+      const p1 = tryOpenAI(short, 0).catch(e => { throw e; });
+      const p2 = tryGroq(short, 0).catch(e => { throw e; });
+      return await Promise.any([p1, p2]);
     }
 
-    const e = new Error('GEN_FALLBACK'); e.code = 'GEN_FALLBACK'; throw e;
+    for (const who of order) {
+      try {
+        if (who === 'openai') return await tryOpenAI(short, 0);
+        if (who === 'groq')   return await tryGroq(short, 0);
+      } catch (e) {
+        if (!isSoftFail(e)) throw e; // błąd twardy — nie ma co odraczać
+        // miękki błąd — spróbujemy drugiego w pętli
+      }
+    }
+  } catch (e) {
+    if (!isSoftFail(e)) throw e;
   }
+
+  // 2) last-chance: dwie próby łącznie (po jednej na provider) z dłuższym deadline’em
+  const attempts = [];
+  if (prefer !== 'groq-first') {
+    if (openai) attempts.push(() => tryOpenAI(long, 1));
+    if (groq)   attempts.push(() => tryGroq(long, 1));
+  } else {
+    if (groq)   attempts.push(() => tryGroq(long, 1));
+    if (openai) attempts.push(() => tryOpenAI(long, 1));
+  }
+
+  let lastErr = null;
+  for (const make of attempts) {
+    try { return await make(); } catch (e) { lastErr = e; }
+  }
+
+  const err = new Error('GEN_FALLBACK');
+  err.cause = lastErr;
+  err.code = 'GEN_FALLBACK';
+  throw err;
 }
-// --- END ROBUST ---
+// --- END RESILIENT chatPref ---
+
 
 async function raceLLM({ prompt, max_tokens = 150, temperature = 0.3 }) {
   const { text } = await chatPref({ prompt, max_tokens, temperature, top_p: 0.95 });
