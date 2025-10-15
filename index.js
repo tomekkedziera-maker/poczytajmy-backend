@@ -605,13 +605,42 @@ function tooSimilarToRecent(t) {
 
 async function generateGreetingV2({ name, age, character, theme }) {
   const prompt = buildGreetingPrompt({ age: Number(age), character, theme, n: 12 });
+
+  // 🧠 Więcej tokenów = unikamy ucięć typu „Oto 12…”
   const { text: raw, provider } = await chatPref({
     prompt,
     temperature: NAT_TEMPERATURE,
-    max_tokens: 180,
+    max_tokens: 180,         // było 60
     top_p: NAT_TOP_P,
     deadlineMs: GREETING_TIMEOUT_MS,
   });
+
+  // 🧹 Usuń nagłówki typu „Oto 12...”, „Przykłady:”, puste linie itd.
+  let cleanedRaw = String(raw || "")
+    .replace(/^[^\n]{1,120}:\s*$/gmi, "")                   // linie zakończone dwukropkiem
+    .replace(/^(?:\s*[-*]\s*)?Oto\b[^\n]*$/gmi, "")         // linie zaczynające się od "Oto ..."
+    .replace(/^(?:\s*[-*]\s*)?Przykłady\b[^\n]*$/gmi, "")   // lub "Przykłady..."
+    .replace(/^\s*$/gm, "")                                 // puste linie
+    .trim();
+
+  // 🧩 Zbuduj listę kandydatów z oczyszczonego tekstu
+  let cands = parseList(cleanedRaw);
+  if (!cands.length && cleanedRaw)
+    cands = cleanedRaw.split(/[.\n]/).map(s => s.trim()).filter(Boolean);
+  if (!cands.length) throw new Error('EMPTY_GENERATION');
+
+  // 🧠 Historia dla unikania powtórek
+  const profileKey = `${(name || '').toLowerCase()}|${Number(age) || 'X'}`;
+  const history = recentGreetings.get(profileKey) || [];
+
+  const picked = chooseMostNovel(cands, history);
+  const cleaned = sanitizeNoName(name, picked);
+  const finalText = softenPolish(cleaned || picked);
+
+  recentGreetings.set(profileKey, [finalText, ...history].slice(0, 20));
+  return { text: finalText, provider: provider || 'llm' };
+}
+  
 
   let cands = parseList(raw);
   if (!cands.length && raw) cands = raw.split(/[.\n]/).map(s => s.trim()).filter(Boolean);
