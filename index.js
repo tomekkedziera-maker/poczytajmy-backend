@@ -1378,9 +1378,8 @@ const RE_TIME = new RegExp(
   'iu'
 );
 
-/** CEL/PRZYCZYNA: bez zmian, ale używany szerzej przy sanityzacji */
+/** CEL/PRZYCZYNA */
 const RE_PURPOSE  = /\b(żeby|aby|by|bo|ponieważ|dlatego że|w celu|po to)\b/iu;
-
 /** odpowiedzi na „Gdzie…?” powinny zaczynać się przyimkiem miejsca */
 const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza)\b/iu;
 
@@ -1420,7 +1419,7 @@ function trimPlace(p='') {
   return toks.join(' ');
 }
 
-/** Detekcja osoby: 1. osoba => ja/końcówki „-ę”; 2. osoba => „ty/siedzisz”; fallback 3. */
+/** Detekcja osoby */
 function detectPerson(text='') {
   const t = String(text).toLowerCase();
   if (/\b(ja|jestem|robię|ide|idę|mam|czytam|siedzę|będę|zrobiłem|poszedłem|jadę|jem)\b/.test(t) || /\b\w+ę\b/.test(t)) return 1;
@@ -1429,11 +1428,32 @@ function detectPerson(text='') {
 }
 
 // === helpers do formatu odpowiedzi/pytania ===
-function cleanShortAnswer(a) {
+function cleanShortAnswer(a, srcSentence = '') {
   let s = String(a || '').trim();
-  s = s.replace(/[.,;:!?…]+$/u, '').trim();        // usuń końcową interpunkcję
-  s = s.split(/\s+/).slice(0, 6).join(' ');       // max 6 słów
-  if (s) s = s[0].toLowerCase() + s.slice(1);     // mała litera na starcie
+  s = s.replace(/[.,;:!?…]+$/u, '').trim();    // usuń końcową interpunkcję
+  s = s.split(/\s+/).slice(0, 6).join(' ');   // max 6 słów
+  if (!s) return s;
+
+  // Jeżeli odpowiedź zaczyna się od przyimka miejsca/czasu – zostaw małą literę
+  const PREP_START = /^(w|we|na|do|u|o|po|za|nad|pod|między|miedzy|przy)\b/i;
+  const TIME_START = /^(wczoraj|dzisiaj|dziś|jutro|pojutrze|rano|wieczorem|w\s+południe|po\s+południu|w\s+(poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|po\s+(śniadaniu|sniadaniu|obiedzie|kolacji)|o\s+\d{1,2}[:.]\d{2})\b/i;
+
+  const looksPlaceTime = PREP_START.test(s) || TIME_START.test(s);
+
+  if (looksPlaceTime) {
+    return s[0].toLowerCase() + s.slice(1);
+  }
+
+  // Inne (np. imię/nazwa własna): zachowaj wielką, jeśli występuje w zdaniu źródłowym
+  if (s[0] === s[0].toLowerCase()) {
+    const words = s.split(' ');
+    const first = words[0];
+    const properInSrc = (srcSentence || '').match(new RegExp(`\\b${first[0].toUpperCase()}${first.slice(1)}\\b`));
+    if (properInSrc) {
+      words[0] = first[0].toUpperCase() + first.slice(1);
+      return words.join(' ');
+    }
+  }
   return s;
 }
 
@@ -1477,7 +1497,7 @@ function parseQuestionsFromJSON(raw){
   const arr = Array.isArray(j?.questions) ? j.questions : [];
   return arr.map(x => {
       const q = cleanQuestion(String(x?.question||''));
-      const a = cleanShortAnswer(String(x?.answer||'')); // <= oczyszczenie
+      const a = cleanShortAnswer(String(x?.answer||''));
       return { question: q, answer: a };
     })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
@@ -1698,18 +1718,42 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     }
 
     const sents = qz_splitSentences(src);
+
+    // formatuj
     out = out.slice(0, want).map((x,i)=>({
       question: dedupeVerbInQuestion(x.question),
-      answer: cleanShortAnswer(x.answer),
+      answer: cleanShortAnswer(x.answer, sents[i] || sents[0] || src),
       fallback: !!x.fallback,
-      sentence: x.sentence || sents[i-1] || sents[i] || sents[0] || src,
-
+      sentence: x.sentence || sents[i] || sents[0] || src,
       source_path: x.source_path || 'llm+post',
       llm_provider: provider || (x.fallback ? 'fallback' : null)
     }));
 
+    // WYMUSZENIE: jeśli dana fraza ma miejsce/czas, nadpisz pytaniem heurystycznym
+    out = out.map((item, i) => {
+      const sent = sents[i] || sents[0] || src;
+      const hasPlace = RE_PLACE.test(sent);
+      const hasTime  = RE_TIME.test(sent);
+
+      if (hasPlace || hasTime) {
+        const h = heuristicQA(sent);
+        if (h && h.answer) {
+          return {
+            ...item,
+            question: dedupeVerbInQuestion(h.question),
+            answer: cleanShortAnswer(h.answer, sent),
+            fallback: true,
+            sentence: sent,
+            source_path: 'heuristic-merge',
+            llm_provider: item.llm_provider || 'fallback'
+          };
+        }
+      }
+      return item;
+    });
+
     setComprehendHeaders(res, out[0]);
-if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i => ({ path: i.source_path, prov: i.llm_provider, q: i.question, a: i.answer, s: i.sentence })));
+    if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a:i.answer,s:i.sentence})));
     return res.json({ ok: true, count: out.length, items: out });
   } catch (err) {
     console.error('comprehend-multi error:', err);
@@ -1734,7 +1778,7 @@ app.post('/agent/comprehend', async (req, res) => {
     if ((hasPlace || hasTime || hasVerb) && h0.answer) {
       const qa = {
         question: dedupeVerbInQuestion(h0.question),
-        answer: cleanShortAnswer(h0.answer),
+        answer: cleanShortAnswer(h0.answer, bestSent),
         fallback: false,
         sentence: bestSent,
         source_path: 'heuristic-fast',
@@ -1753,7 +1797,7 @@ app.post('/agent/comprehend', async (req, res) => {
     if (pp.length) {
       qa = {
         question: dedupeVerbInQuestion(pp[0].question),
-        answer: cleanShortAnswer(pp[0].answer),
+        answer: cleanShortAnswer(pp[0].answer, bestSent),
         fallback: false,
         sentence: bestSent,
         source_path: 'llm+post',
@@ -1761,7 +1805,7 @@ app.post('/agent/comprehend', async (req, res) => {
       };
     } else {
       const h = heuristicQA(bestSent);
-      qa = { question: dedupeVerbInQuestion(h.question), answer: cleanShortAnswer(h.answer), fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
+      qa = { question: dedupeVerbInQuestion(h.question), answer: cleanShortAnswer(h.answer, bestSent), fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
 
     setComprehendHeaders(res, qa);
