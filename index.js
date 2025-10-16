@@ -1363,26 +1363,8 @@ const RE_TIME = /\b(w\s+(poniedziałek|wtorek|środę|czwartek|piątek|sobotę|n
 const RE_PLACE = /\b(w|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza)\s+[A-ZĄĆĘŁŃÓŚŹŻa-ząćęłńóśźż0-9\s]+/u;
 const RE_PLACE_ANS_START = /\b(w|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza)\b/i;
 
-const VERB_RE = /\b(
-  śpi|spi|śpię|śpisz|spię|spisz|śpicie|śpią|spia|
-  czyta|czytam|czytasz|czytamy|czytacie|czytają|czytaja|
-  pisze|piszę|piszesz|piszemy|piszecie|piszą|pisza|
-  rysuje|rysuję|rysujesz|rysujemy|rysujecie|rysują|rysuja|
-  maluje|maluję|malujesz|malujemy|malujecie|malują|maluja|
-  je|jem|jesz|jemy|jecie|jedzą|jedza|
-  pije|piję|pijesz|pijemy|pijecie|piją|pija|
-  ogląda|oglądam|oglądasz|oglądamy|oglądacie|oglądają|oglada|ogladaja|
-  słucha|słucham|słuchasz|słuchamy|słuchacie|słuchają|slucha|sluchaja|
-  idzie|idę|idziesz|idziemy|idziecie|idą|ide|ida|
-  biegnie|biegnę|biegniesz|biegniemy|biegniecie|biegną|biegna|
-  gra|gram|grasz|gramy|gracie|grają|graja|
-  stoi|stoję|stoisz|stoimy|stoicie|stoją|stoje|stoja|
-  siedzi|siedzę|siedzisz|siedzimy|siedzicie|siedzą|siedze|siedza|
-  leży|lezy|leżę|leze|leżysz|lezysz|leżymy|lezymy|leżycie|lezycie|leżą|leza|
-  patrzy|uczy\s+się|uczę\s+się|uczy|uczę|dzwoni|dzwonię|dzwonisz|dzwonimy|dzwonicie|dzwonią|
-  szuka|szukam|szukasz|szukamy|szukacie|szukają|szukaja|
-  wraca|wracam|wracasz|wracamy|wracacie|wracają|wracaja
-)\b/iu;
+const VERB_RE = new RegExp(String.raw`\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę)\b`, 'iu');
+
 
 const PLACE_VERBS = /\b(jest|stoi|leży|lezy|idzie|biegnie|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|dzwoni|szuka|wraca)\b/iu;
 const VERBISH_SUFFIX = /\b(?:[a-ząćęłńóśźż]{1,12})(?:ę|esz|e|emy|ecie|ą|am|asz|a|amy|acie|ają)\b/iu;
