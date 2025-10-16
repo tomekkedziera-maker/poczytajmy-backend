@@ -1374,7 +1374,7 @@ const RE_TIME = new RegExp(
     String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|` +
     String.raw`po\s+(?:śniadaniu|sniadaniu|obiedzie|kolacji)|` +
     String.raw`o\s+\d{1,2}[:.]\d{2}` +
-  String.raw`)\\b`,
+  String.raw`)\b`,
   'iu'
 );
 
@@ -1645,9 +1645,8 @@ async function llmQuestionsRace(text, countHint){
       Math.min(COMPREHEND_TIMEOUT_MS-300, 2500)
     );
     if (r?.__timeout || r?.__error) throw new Error('GROQ_FAIL');
-    const out = r?.text || '';
-    theItems = parseQuestionsFromJSON(out);
-    const items = theItems;
+   const out = r?.text || '';
+const items = parseQuestionsFromJSON(out);
     if (!items.length) throw new Error('GROQ_EMPTY');
     return { items, provider: 'groq' };
   })();
@@ -1752,6 +1751,94 @@ app.post('/agent/comprehend', async (req, res) => {
     return res.status(200).json({ ok: true, question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'error-fallback' });
   }
 });
+
+// ===== OLLAMA client (prosty, bez SDK) =====
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+async function ollamaChatJSON({ model = 'poczytajmy-qa', prompt, timeoutMs = 2500, maxQ = 3 }) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort('timeout'), timeoutMs);
+
+  const body = {
+    model,
+    stream: false,
+    format: 'json', // ⬅️ proś o czysty JSON
+    messages: [
+      { role: 'user', content: `
+Na podstawie TEKSTU przygotuj od 1 do ${Math.max(1, Math.min(5, maxQ))} PYTAŃ i krótkich odpowiedzi (max 6 słów) — TYLKO z treści.
+Zwróć dokładnie JSON {"questions":[{"question":"…?","answer":"…"}]}.
+
+TEKST:
+"""${qz_trim(prompt, 650)}"""
+`.trim() }
+    ]
+  };
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) throw new Error(`ollama http ${res.status}`);
+    const data = await res.json(); // { message: { content: '...' }, ... }
+    const content = data?.message?.content || '';
+    // content powinien być JSON-em (bo format: 'json'); jeśli nie – spróbuj wyłuskać
+    let parsed;
+    try { parsed = JSON.parse(content); } catch { 
+      const m = String(content).match(/\{[\s\S]*\}/);
+      parsed = m ? JSON.parse(m[0]) : { questions: [] };
+    }
+    const arr = Array.isArray(parsed?.questions) ? parsed.questions : [];
+    return arr;
+  } catch (e) {
+    clearTimeout(t);
+    return [];
+  }
+}
+
+// ====== /agent/comprehend-local (Ollama-only, do porównań) ======
+app.post('/agent/comprehend-local', async (req, res) => {
+  const { text = '', count = 1 } = req.body || {};
+  const src = String(text || '').trim();
+  if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
+
+  // 1) strzał do Ollamy (szybki)
+  const rawItems = await ollamaChatJSON({ model: 'poczytajmy-qa', prompt: src, timeoutMs: 2500, maxQ: count });
+
+  // 2) Twoje istniejące „doczyszczanie” i walidacja:
+  const items = postProcessLLMItems(rawItems, src, Math.min(5, Math.max(1, Number(count)||1)));
+
+  // 3) w razie pustki – Twoja heurystyka
+  let out = items;
+  if (!out.length) {
+    out = heuristicMulti(src, Math.min(5, Math.max(1, Number(count)||1)));
+  }
+
+  // 4) format odpowiedzi
+  if (Number(count||1) > 1) {
+    return res.json({ ok: true, count: out.length, items: out.map(i => ({
+      question: dedupeVerbInQuestion(i.question),
+      answer: String(i.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+      fallback: !!i.fallback,
+      sentence: i.sentence || src,
+      source_path: i.source_path || 'ollama',
+      llm_provider: 'ollama'
+    }))});
+  } else {
+    const qa = out[0] || { question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'heuristic-fallback' };
+    return res.json({
+      ok: true,
+      question: dedupeVerbInQuestion(qa.question),
+      answer: String(qa.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+      fallback: !!qa.fallback,
+      source_path: qa.source_path || 'ollama',
+      llm_provider: 'ollama'
+    });
+  }
+});
+
 
 /* ===================== START ===================== */
 let _prewarmRunning = false;
