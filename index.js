@@ -1365,16 +1365,19 @@ const RE_PLACE = new RegExp(
 );
 
 /**
- * CZAS: dopisane dni tygodnia, „o 18:30”, pory (rano/wieczorem/po południu),
- * „po śniadaniu/obiedzie/kolacji”, „w weekend”, „w poniedziałek”.
+ * CZAS: lepsze łapanie złożonych form: „jutro o 8:15”, dni tygodnia, pory dnia, po-posiłkach, sama godzina.
  */
 const RE_TIME = new RegExp(
-  String.raw`\b(` +
-    String.raw`rano|wieczorem|w\s+południe|po\s+południu|wczoraj|dzisiaj|dziś|jutro|pojutrze|` +
-    String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|` +
-    String.raw`po\s+(?:śniadaniu|sniadaniu|obiedzie|kolacji)|` +
+  String.raw`\b(?:` +
+    // „wczoraj/dzisiaj/jutro/pojutrze” + opcjonalne „o 12:34”
+    String.raw`(?:wczoraj|dzisiaj|dziś|jutro|pojutrze)(?:\s+o\s+\d{1,2}[:.]\d{2})?` + String.raw`|` +
+    // dni tygodnia
+    String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)` + String.raw`|` +
+    // pory dnia i po-posiłkach
+    String.raw`rano|wieczorem|w\s+południe|po\s+południu|po\s+(?:śniadaniu|sniadaniu|obiedzie|kolacji)` + String.raw`|` +
+    // sama godzina
     String.raw`o\s+\d{1,2}[:.]\d{2}` +
-  String.raw`)\b`,
+  String.raw`)`,
   'iu'
 );
 
@@ -1440,7 +1443,7 @@ function heuristicQA(sentence){
   };
 
   let subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
-  if (isTimeToken(subjToken)) subjToken = ''; // ⬅️ kluczowe: „Jutro” nie jest imieniem
+  if (isTimeToken(subjToken)) subjToken = ''; // ⬅️ „Jutro” nie jest imieniem
 
   const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
   const person = detectPerson(text);
@@ -1453,14 +1456,18 @@ function heuristicQA(sentence){
   const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy|uczy\s+się|uczy)\b/iu)||[])[0];
   const verbLow = mVerb ? mVerb.toLowerCase() : '';
 
-  if (place && subject && verbLow)  return { question: person===1?`Gdzie jesteś?`:`Gdzie ${subject} ${verbLow}?`, answer: place };
-  if (place && subject)             return { question: person===1?`Gdzie jesteś?`:`Gdzie jest ${subject}?`,         answer: place };
+  // ➜ PRIORYTET: najpierw czas, dopiero potem miejsce
   if (time && subject && verbLow)   return { question: person===1?`Kiedy to się dzieje?`:`Kiedy ${subject} ${verbLow}?`, answer: time };
   if (time)                         return { question: 'Kiedy to było?', answer: time };
+
+  if (place && subject && verbLow)  return { question: person===1?`Gdzie jesteś?`:`Gdzie ${subject} ${verbLow}?`, answer: place };
+  if (place && subject)             return { question: person===1?`Gdzie jesteś?`:`Gdzie jest ${subject}?`,         answer: place };
+
   if (verbLow && subject)           return { question: person===1? 'Co robisz?' : `Co robi ${subject}?`, answer: verbLow };
   if (verbLow)                      return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
+
 function dedupeVerbInQuestion(q){
   if (!q) return q;
   let s = String(q).replace(/\s+/g,' ').trim();
@@ -1637,8 +1644,8 @@ async function llmQuestionsRace(text, countHint){
       Math.min(COMPREHEND_TIMEOUT_MS-300, 2500)
     );
     if (r?.__timeout || r?.__error) throw new Error('GROQ_FAIL');
-   const out = r?.text || '';
-const items = parseQuestionsFromJSON(out);
+    const out = r?.text || '';
+    const items = parseQuestionsFromJSON(out);
     if (!items.length) throw new Error('GROQ_EMPTY');
     return { items, provider: 'groq' };
   })();
@@ -1690,11 +1697,30 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     }
 
     const sents = qz_splitSentences(src);
+
+    // ⬇ per-zdanie: jeśli zdanie ma MIEJSCE, a pozycja nie jest „Gdzie…?”, podmień na heurystyczne „Gdzie…?”
+    for (let i = 0; i < Math.min(out.length, sents.length); i++) {
+      const sent = sents[i];
+      if (RE_PLACE.test(sent)) {
+        const h = heuristicQA(sent);
+        if (/^\s*Gdzie\b/i.test(h.question) && RE_PLACE_ANS_START.test(h.answer)) {
+          out[i] = {
+            question: dedupeVerbInQuestion(h.question),
+            answer: h.answer,
+            fallback: true,
+            sentence: sent,
+            source_path: 'heuristic-merge',
+            llm_provider: 'fallback'
+          };
+        }
+      }
+    }
+
     out = out.slice(0, want).map((x,i)=>({
       question: dedupeVerbInQuestion(x.question),
       answer: String(x.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
       fallback: !!x.fallback,
-      sentence: sents[i] || sents[0] || src,
+      sentence: x.sentence || sents[i] || sents[0] || src,
       source_path: x.source_path || 'llm+post',
       llm_provider: provider || (x.fallback ? 'fallback' : null)
     }));
@@ -1717,7 +1743,7 @@ app.post('/agent/comprehend', async (req, res) => {
 
     const bestSent = qz_splitSentences(src)[0] || src;
 
-    // FAST-PATH: jeśli mamy oczywisty sygnał, zwróć heurystykę od razu
+    // FAST-PATH: jeśli mamy oczywisty sygnał, zwróć heurystykę od razu (już NIE jako fallback)
     const h0 = heuristicQA(bestSent);
     const hasPlace = RE_PLACE.test(bestSent);
     const hasTime  = RE_TIME.test(bestSent);
@@ -1726,14 +1752,14 @@ app.post('/agent/comprehend', async (req, res) => {
       const qa = {
         question: dedupeVerbInQuestion(h0.question),
         answer: String(h0.answer).trim().split(/\s+/).slice(0,6).join(' '),
-        fallback: true,
+        fallback: false,
         sentence: bestSent,
         source_path: 'heuristic-fast',
-        llm_provider: 'fallback'
+        llm_provider: 'heuristic'
       };
       setComprehendHeaders(res, qa);
       if (dbg) console.log('[COMPREHEND-ONE/FAST]', qa);
-      return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: true, source_path: qa.source_path });
+      return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: qa.fallback, source_path: qa.source_path });
     }
 
     // standard: LLM → postprocess → heurystyka
