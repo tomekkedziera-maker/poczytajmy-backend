@@ -1429,8 +1429,19 @@ function detectPerson(text='') {
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
 
-  // Podmiot: imię/nazwa własna z początku albo rzeczownik typu „piesek”
-  const subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
+  const TIME_TOKENS = [
+    'wczoraj','dzisiaj','dziś','jutro','pojutrze','rano','wieczorem','w południe','po południu',
+    'w poniedziałek','we wtorek','w środę','w srodę','w czwartek','w piątek','w piatek',
+    'w sobotę','w sobote','w niedzielę','w niedziele','w weekend'
+  ];
+  const isTimeToken = (w) => {
+    const low = String(w||'').toLowerCase();
+    return TIME_TOKENS.some(t => low === t || low.startsWith(t + ' '));
+  };
+
+  let subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
+  if (isTimeToken(subjToken)) subjToken = ''; // ⬅️ kluczowe: „Jutro” nie jest imieniem
+
   const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
   const person = detectPerson(text);
   const subject = person === 1 ? 'Ty' : (subjToken || subjNoun || 'On/Ona');
@@ -1439,16 +1450,17 @@ function heuristicQA(sentence){
   const place = placeRaw ? trimPlace(placeRaw) : '';
   const time  = (text.match(RE_TIME)||[])[0];
 
-  // Najpopularniejsze czynności i stany – normalizacja do małych
   const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy|uczy\s+się|uczy)\b/iu)||[])[0];
   const verbLow = mVerb ? mVerb.toLowerCase() : '';
 
-  // Kolejność: GDZIE > KIEDY > CO ROBI > fallback
-  if (place && subject && verbLow)  {
-    const q = person === 1 ? `Gdzie jesteś?` : `Gdzie ${subject} ${verbLow}?`;
-    return { question: q, answer: place };
-  }
-  if (place && subject) {
+  if (place && subject && verbLow)  return { question: person===1?`Gdzie jesteś?`:`Gdzie ${subject} ${verbLow}?`, answer: place };
+  if (place && subject)             return { question: person===1?`Gdzie jesteś?`:`Gdzie jest ${subject}?`,         answer: place };
+  if (time && subject && verbLow)   return { question: person===1?`Kiedy to się dzieje?`:`Kiedy ${subject} ${verbLow}?`, answer: time };
+  if (time)                         return { question: 'Kiedy to było?', answer: time };
+  if (verbLow && subject)           return { question: person===1? 'Co robisz?' : `Co robi ${subject}?`, answer: verbLow };
+  if (verbLow)                      return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
+  return { question: 'O co chodzi w zdaniu?', answer: '' };
+}  if (place && subject) {
     const q = person === 1 ? `Gdzie jesteś?` : `Gdzie jest ${subject}?`;
     return { question: q, answer: place };
   }
@@ -1725,6 +1737,26 @@ app.post('/agent/comprehend', async (req, res) => {
 
     const bestSent = qz_splitSentences(src)[0] || src;
 
+    // FAST-PATH: jeśli mamy oczywisty sygnał, zwróć heurystykę od razu
+    const h0 = heuristicQA(bestSent);
+    const hasPlace = RE_PLACE.test(bestSent);
+    const hasTime  = RE_TIME.test(bestSent);
+    const hasVerb  = /\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy|uczy\s+się|uczy)\b/iu.test(bestSent);
+    if ((hasPlace || hasTime || hasVerb) && h0.answer) {
+      const qa = {
+        question: dedupeVerbInQuestion(h0.question),
+        answer: String(h0.answer).trim().split(/\s+/).slice(0,6).join(' '),
+        fallback: true,
+        sentence: bestSent,
+        source_path: 'heuristic-fast',
+        llm_provider: 'fallback'
+      };
+      setComprehendHeaders(res, qa);
+      if (dbg) console.log('[COMPREHEND-ONE/FAST]', qa);
+      return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: true, source_path: qa.source_path });
+    }
+
+    // standard: LLM → postprocess → heurystyka
     const race = await llmQuestionsRace(bestSent, 1);
     const pp = postProcessLLMItems(race.items, bestSent, 1);
 
