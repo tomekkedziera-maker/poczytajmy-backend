@@ -1358,7 +1358,6 @@ const RE_PLACE = new RegExp(
   String.raw`w(?!\s+celu)\b|we\b|na\b|do(?!\s+(?:\d+|jedn\w*|dwu\w*|dwie\w*|trzech|czterech|pięciu|piec\w*|sześciu|siedmiu|ośmiu|dziewięciu|dziesięciu))\b|` +
   String.raw`przy\b|pod\b|u\b|obok\b|koło\b|kolo\b|nad\b|za\b|między\b|miedzy\b|poza\b` +
   String.raw`)` +
-  // łap do końca frazy (do znaku interpunkcyjnego lub końca linii), ale nie dopuszczaj gołego spójnika na końcu
   String.raw`\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,4})` +
   String.raw`(?=[\s,;.!?]|$)`,
   'iu'
@@ -1413,7 +1412,6 @@ const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuj�
 const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi)$/i;
 
 function trimPlace(p='') {
-  // Utnij do 4 tokenów, wywal spójniki i końcowy czasownik
   let toks = String(p).trim().split(/\s+/)
     .filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w))
     .slice(0, 4);
@@ -1450,7 +1448,6 @@ function cleanQuestion(q) {
   if (!q) return q;
   let s = q.trim().replace(/\s+/g,' ').replace(/[„”"']/g, '');
 
-  // Proste normy i anty-glitche
   s = s.replace(/^Kiedy\s+Po\b.*$/iu, 'Kiedy to było?');
   s = s.replace(/^Gdzie\s+.+\b(jest|stoi|leży|lezy)\?$/iu, 'Gdzie to było?');
   s = s.replace(/^Co robi\s+Po\b.*$/iu, 'Co robi?');
@@ -1459,13 +1456,11 @@ function cleanQuestion(q) {
   s = s.replace(/^Gdzie\s+jest\s+(Na|Po|W|We)\b.*$/iu, 'Gdzie to było?');
   s = s.replace(/^Gdzie\b.*\bPotem\b.*$/iu, 'Kiedy to było?');
 
-  // Jeśli pytanie zawiera przecinki/średniki PRZED znakiem zapytania — uprość
   if (/[.,;:].*\?$/u.test(s)) {
     s = /^(?=.*\bGdzie\b)/iu.test(s) ? 'Gdzie to było?' :
         /^(?=.*\bKiedy\b)/iu.test(s) ? 'Kiedy to było?' : 'Co się dzieje?';
   }
 
-  // Limit słów (8) + znak zapytania
   const words = s.split(' ');
   if (words.length > 8) s = words.slice(0, 8).join(' ') + '?';
   if (!/\?\s*$/.test(s)) s = s.replace(/[?]*\s*$/,'') + '?';
@@ -1527,20 +1522,17 @@ function postProcessLLMItems(items, text, want=3) {
     let q = cleanQuestion(it.question || '');
     let a = cleanShortAnswer(it.answer || '');
 
-    // Jeśli LLM da „Po co”/„Dlaczego”, ale brak markerów celu — przekwalifikuj
     if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) {
       if (RE_PLACE.test(text)) q = 'Gdzie to było?';
       else if (RE_TIME.test(text)) q = 'Kiedy to było?';
       else q = 'Co się dzieje?';
     }
 
-    // Gdzie: odpowiedź musi zaczynać się przyimkiem; w razie czego – z tekstu
     if (/^\s*Gdzie\b/i.test(q)) {
       if (RE_PURPOSE.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
       if (!RE_PLACE_ANS_START.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
     }
 
-    // Jeśli odpowiedź wygląda na cel (żeby/aby/bo...), a pytanie nie jest „Po co/Dlaczego” – popraw
     if (RE_PURPOSE.test(a) && !/^\s*(Po co|Dlaczego)\b/i.test(q)) {
       q = 'Po co?';
     }
@@ -1715,7 +1707,7 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     }));
 
     setComprehendHeaders(res, out[0]);
-    if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a:i.answer,s:i.sentence})));
+    if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a	i.answer,s:i.sentence})));
     return res.json({ ok: true, count: out.length, items: out });
   } catch (err) {
     console.error('comprehend-multi error:', err);
@@ -1778,94 +1770,8 @@ app.post('/agent/comprehend', async (req, res) => {
     return res.status(200).json({ ok: true, question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'error-fallback' });
   }
 });
-
-// ===== OLLAMA client (prosty, bez SDK) =====
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-async function ollamaChatJSON({ model = 'poczytajmy-qa', prompt, timeoutMs = 2500, maxQ = 3 }) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort('timeout'), timeoutMs);
-
-  const body = {
-    model,
-    stream: false,
-    format: 'json', // ⬅️ proś o czysty JSON
-    messages: [
-      { role: 'user', content: `
-Na podstawie TEKSTU przygotuj od 1 do ${Math.max(1, Math.min(5, maxQ))} PYTAŃ i krótkich odpowiedzi (max 6 słów) — TYLKO z treści.
-Zwróć dokładnie JSON {"questions":[{"question":"…?","answer":"…"}]}.
-
-TEKST:
-"""${qz_trim(prompt, 650)}"""
-`.trim() }
-    ]
-  };
-
-  try {
-    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(t);
-    if (!res.ok) throw new Error(`ollama http ${res.status}`);
-    const data = await res.json(); // { message: { content: '...' }, ... }
-    const content = data?.message?.content || '';
-    // content powinien być JSON-em (bo format: 'json'); jeśli nie – spróbuj wyłuskać
-    let parsed;
-    try { parsed = JSON.parse(content); } catch {
-      const m = String(content).match(/\{[\s\S]*\}/);
-      parsed = m ? JSON.parse(m[0]) : { questions: [] };
-    }
-    const arr = Array.isArray(parsed?.questions) ? parsed.questions : [];
-    return arr;
-  } catch (e) {
-    clearTimeout(t);
-    return [];
-  }
-}
-
-// ====== /agent/comprehend-local (Ollama-only, do porównań) ======
-app.post('/agent/comprehend-local', async (req, res) => {
-  const { text = '', count = 1 } = req.body || {};
-  const src = String(text || '').trim();
-  if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
-
-  // 1) strzał do Ollamy (szybki)
-  const rawItems = await ollamaChatJSON({ model: 'poczytajmy-qa', prompt: src, timeoutMs: 2500, maxQ: count });
-
-  // 2) Twoje istniejące „doczyszczanie” i walidacja:
-  const items = postProcessLLMItems(rawItems, src, Math.min(5, Math.max(1, Number(count)||1)));
-
-  // 3) w razie pustki – Twoja heurystyka
-  let out = items;
-  if (!out.length) {
-    out = heuristicMulti(src, Math.min(5, Math.max(1, Number(count)||1)));
-  }
-
-  // 4) format odpowiedzi
-  if (Number(count||1) > 1) {
-    return res.json({ ok: true, count: out.length, items: out.map(i => ({
-      question: dedupeVerbInQuestion(i.question),
-      answer: cleanShortAnswer(i.answer),
-      fallback: !!i.fallback,
-      sentence: i.sentence || src,
-      source_path: i.source_path || 'ollama',
-      llm_provider: 'ollama'
-    }))});
-  } else {
-    const qa = out[0] || { question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'heuristic-fallback' };
-    return res.json({
-      ok: true,
-      question: dedupeVerbInQuestion(qa.question),
-      answer: cleanShortAnswer(qa.answer),
-      fallback: !!qa.fallback,
-      source_path: qa.source_path || 'ollama',
-      llm_provider: 'ollama'
-    });
-  }
-});
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 // ===== OLLAMA client (prosty, bez SDK) =====
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
