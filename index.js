@@ -1702,7 +1702,8 @@ app.post('/agent/comprehend-multi', async (req, res) => {
       question: dedupeVerbInQuestion(x.question),
       answer: cleanShortAnswer(x.answer),
       fallback: !!x.fallback,
-      sentence: x.sentence || sents[i] || sents[0] || src,
+      sentence: x.sentence || sents[i-1] || sents[i] || sents[0] || src,
+
       source_path: x.source_path || 'llm+post',
       llm_provider: provider || (x.fallback ? 'fallback' : null)
     }));
