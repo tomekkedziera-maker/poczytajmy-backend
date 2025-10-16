@@ -60,7 +60,8 @@ const BASE_URL = process.env.BASE_URL || '';
 const GROQ_CHAT_MODEL = process.env.GROQ_CHAT_MODEL || 'llama-3.1-8b-instant';
 const GROQ_ASR_MODEL  = process.env.GROQ_ASR_MODEL  || 'whisper-large-v3';
 
-const LLM_PREF = 'openai-only';
+const LLM_PREF = process.env.LLM_PREF || 'openai-first';
+
 
 const GREETING_TIMEOUT_MS      = Number(process.env.GREETING_TIMEOUT_MS || 2800);
 const MOTIVATE_TIMEOUT_MS      = Number(process.env.MOTIVATE_TIMEOUT_MS || 10000);
@@ -1707,7 +1708,7 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     }));
 
     setComprehendHeaders(res, out[0]);
-    if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i=>({path:i.source_path,prov:i.llm_provider,q:i.question,a	i.answer,s:i.sentence})));
+if (dbg) console.log('[COMPREHEND-MULTI]', out.map(i => ({ path: i.source_path, prov: i.llm_provider, q: i.question, a: i.answer, s: i.sentence })));
     return res.json({ ok: true, count: out.length, items: out });
   } catch (err) {
     console.error('comprehend-multi error:', err);
