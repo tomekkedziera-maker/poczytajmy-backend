@@ -1349,21 +1349,40 @@ app.get('/tts-voices', async (_req, res) => {
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
 const COMPREHEND_TIMEOUT_MS = Number(process.env.COMPREHEND_TIMEOUT_MS || 3200);
 
+/**
+ * MIEJSCE: dodane przyimki (nad, za, między, koło, obok, poza), bezpieczniejsze
+ * domknięcie frazy do interpunkcji lub końca zdania. Zachowana ochrona dla "do + liczebnik".
+ */
 const RE_PLACE = new RegExp(
   String.raw`\b(?:` +
-  String.raw`w(?!\s+celu)\b|we\b|na\b|` +
-  String.raw`do(?!\s+(?:\d+|jedn\w*|dwu\w*|dwie\w*|trzech|czterech|pięciu|piec\w*|sześciu|siedmiu|ośmiu|dziewięciu|dziesięciu))\b|` +
-  String.raw`przy\b|pod\b|u\b|obok\b` +
+  String.raw`w(?!\s+celu)\b|we\b|na\b|do(?!\s+(?:\d+|jedn\w*|dwu\w*|dwie\w*|trzech|czterech|pięciu|piec\w*|sześciu|siedmiu|ośmiu|dziewięciu|dziesięciu))\b|` +
+  String.raw`przy\b|pod\b|u\b|obok\b|koło\b|kolo\b|nad\b|za\b|między\b|miedzy\b|poza\b` +
   String.raw`)` +
-  String.raw`\s+(?!\s)(?:` +
-    String.raw`(?!i\b|oraz\b|ale\b|a\b|potem\b|jest\b|stoi\b|leży\b|lezy\b|idzie\b|biegnie\b|wieje\b|patrzy\b|pisze\b|czyta\b)[^\s0-9.,;!?]+` +
-    String.raw`(?:\s+(?!i\b|oraz\b|ale\b|a\b|potem\b|jest\b|stoi\b|leży\b|lezy\b|idzie\b|biegnie\b|wieje\b|patrzy\b|pisze\b|czyta\b)[^\s0-9.,;!?]+){0,2}` +
-  String.raw`)`,
+  // łap do końca frazy (do znaku interpunkcyjnego lub końca linii), ale nie dopuszczaj gołego spójnika na końcu
+  String.raw`\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,4})` +
+  String.raw`(?=[\s,;.!?]|$)`,
   'iu'
 );
-const RE_TIME     = /\b(rano|wieczorem|w południe|po południu|wczoraj|dzisiaj|dziś|jutro|po obiedzie|w niedzielę|później)\b/iu;
+
+/**
+ * CZAS: dopisane dni tygodnia, „o 18:30”, pory (rano/wieczorem/po południu),
+ * „po śniadaniu/obiedzie/kolacji”, „w weekend”, „w poniedziałek”.
+ */
+const RE_TIME = new RegExp(
+  String.raw`\b(` +
+    String.raw`rano|wieczorem|w\s+południe|po\s+południu|wczoraj|dzisiaj|dziś|jutro|pojutrze|` +
+    String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|` +
+    String.raw`po\s+(?:śniadaniu|sniadaniu|obiedzie|kolacji)|` +
+    String.raw`o\s+\d{1,2}[:.]\d{2}` +
+  String.raw`)\\b`,
+  'iu'
+);
+
+/** CEL/PRZYCZYNA: bez zmian, ale używany szerzej przy sanityzacji */
 const RE_PURPOSE  = /\b(żeby|aby|by|bo|ponieważ|dlatego że|w celu|po to)\b/iu;
-const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok)\b/iu;
+
+/** odpowiedzi na „Gdzie…?” powinny zaczynać się przyimkiem miejsca */
+const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza)\b/iu;
 
 function flag(v){ return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
 function qz_trim(s="", limit=900){ const t=String(s||"").replace(/\s+/g," ").trim(); return t.length>limit?t.slice(0,limit):t; }
@@ -1387,36 +1406,73 @@ function hardTimeout(promise, ms) {
   });
 }
 
-const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije)$/i;
+/** poszerzona lista czasowników czynności i stanów */
+const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi)$/i;
+
 function trimPlace(p='') {
+  // Utnij do 4 tokenów, wywal spójniki i końcowy czasownik
   let toks = String(p).trim().split(/\s+/)
     .filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w))
-    .slice(0, 3);
+    .slice(0, 4);
   while (toks.length && PLACE_VERBS.test(toks[toks.length-1])) toks.pop();
   return toks.join(' ');
 }
 
+/** Detekcja osoby: 1. osoba => ja/końcówki „-ę”; 2. osoba => „ty/siedzisz”; fallback 3. */
+function detectPerson(text='') {
+  const t = String(text).toLowerCase();
+  if (/\b(ja|jestem|robię|ide|idę|mam|czytam|siedzę|będę|zrobiłem|poszedłem|jadę|jem)\b/.test(t) || /\b\w+ę\b/.test(t)) return 1;
+  if (/\b(ty|robisz|idziesz|masz|czytasz|siedzisz|będziesz|zrobiłeś|jesz)\b/.test(t)) return 2;
+  return 3;
+}
+
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
-  const subj = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
+
+  // Podmiot: imię/nazwa własna z początku albo rzeczownik typu „piesek”
+  const subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
+  const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
+  const person = detectPerson(text);
+  const subject = person === 1 ? 'Ty' : (subjToken || subjNoun || 'On/Ona');
+
   const placeRaw = (text.match(RE_PLACE)||[])[0];
   const place = placeRaw ? trimPlace(placeRaw) : '';
   const time  = (text.match(RE_TIME)||[])[0];
-  const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy)\b/iu)||[])[0];
 
-  if (place && subj && mVerb)  return { question: `Gdzie ${subj} ${mVerb.toLowerCase()}?`, answer: place };
-  if (place && subj)           return { question: `Gdzie jest ${subj}?`,            answer: place };
-  if (time && subj && mVerb)   return { question: `Kiedy ${subj} ${mVerb.toLowerCase()}?`, answer: time };
-  if (time && subj)            return { question: `Kiedy to było?`,                 answer: time };
-  if (mVerb && subj)           return { question: `Co robi ${subj}?`,               answer: mVerb.toLowerCase() };
-  if (mVerb)                   return { question: 'Co się dzieje w zdaniu?',        answer: mVerb.toLowerCase() };
+  // Najpopularniejsze czynności i stany – normalizacja do małych
+  const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy|uczy\s+się|uczy)\b/iu)||[])[0];
+  const verbLow = mVerb ? mVerb.toLowerCase() : '';
+
+  // Kolejność: GDZIE > KIEDY > CO ROBI > fallback
+  if (place && subject && verbLow)  {
+    const q = person === 1 ? `Gdzie jesteś?` : `Gdzie ${subject} ${verbLow}?`;
+    return { question: q, answer: place };
+  }
+  if (place && subject) {
+    const q = person === 1 ? `Gdzie jesteś?` : `Gdzie jest ${subject}?`;
+    return { question: q, answer: place };
+  }
+  if (time && subject && verbLow) {
+    const q = person === 1 ? `Kiedy to się dzieje?` : `Kiedy ${subject} ${verbLow}?`;
+    return { question: q, answer: time };
+  }
+  if (time) {
+    return { question: 'Kiedy to było?', answer: time };
+  }
+  if (verbLow && subject) {
+    const q = person === 1 ? 'Co robisz?' : `Co robi ${subject}?`;
+    return { question: q, answer: verbLow };
+  }
+  if (verbLow) {
+    return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
+  }
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
 
 function dedupeVerbInQuestion(q){
   if (!q) return q;
   let s = String(q).replace(/\s+/g,' ').trim();
-  s = s.replace(/\b(czyta|pije|je|gra|idzie|biegnie|stoi|siedzi|leży|lezy|ogląda|oglad|pisze|rysuje|maluje)\s+\1\b/gi, '$1');
+  s = s.replace(/\b(czyta|pije|je|gra|idzie|biegnie|stoi|siedzi|leży|lezy|ogląda|oglad|pisze|rysuje|maluje|śpi|spi)\s+\1\b/gi, '$1');
   s = s.replace(/\b(ksiazke|książkę|kakao|zup[eęa]|komiks|piłk[ae]|muzyke|muzykę)\s+(czyta|pije|je|gra)\?/gi, '$2?');
   return s;
 }
@@ -1425,6 +1481,7 @@ function cleanQuestion(q) {
   if (!q) return q;
   let s = q.trim().replace(/\s+/g,' ').replace(/[„”"']/g, '');
 
+  // Proste normy i anty-glitche
   s = s.replace(/^Kiedy\s+Po\b.*$/iu, 'Kiedy to było?');
   s = s.replace(/^Gdzie\s+.+\b(jest|stoi|leży|lezy)\?$/iu, 'Gdzie to było?');
   s = s.replace(/^Co robi\s+Po\b.*$/iu, 'Co robi?');
@@ -1433,11 +1490,13 @@ function cleanQuestion(q) {
   s = s.replace(/^Gdzie\s+jest\s+(Na|Po|W|We)\b.*$/iu, 'Gdzie to było?');
   s = s.replace(/^Gdzie\b.*\bPotem\b.*$/iu, 'Kiedy to było?');
 
+  // Jeśli pytanie zawiera przecinki/średniki PRZED znakiem zapytania — uprość
   if (/[.,;:].*\?$/u.test(s)) {
     s = /^(?=.*\bGdzie\b)/iu.test(s) ? 'Gdzie to było?' :
         /^(?=.*\bKiedy\b)/iu.test(s) ? 'Kiedy to było?' : 'Co się dzieje?';
   }
 
+  // Limit słów (8) + znak zapytania
   const words = s.split(' ');
   if (words.length > 8) s = words.slice(0, 8).join(' ') + '?';
   if (!/\?\s*$/.test(s)) s = s.replace(/[?]*\s*$/,'') + '?';
@@ -1453,7 +1512,8 @@ function parseQuestionsFromJSON(raw){
   const arr = Array.isArray(j?.questions) ? j.questions : [];
   return arr.map(x => {
       const q = cleanQuestion(String(x?.question||''));
-      const a = String(x?.answer||'').trim().split(/\s+/).slice(0,6).join(' ');
+      // odpowiedź: twardo obetnij do 6 słów, usuń końcową kropkę
+      const a = String(x?.answer||'').trim().replace(/[.]+$/,'').split(/\s+/).slice(0,6).join(' ');
       return { question: q, answer: a };
     })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
@@ -1497,19 +1557,22 @@ function postProcessLLMItems(items, text, want=3) {
 
   for (const it of (items || [])) {
     let q = cleanQuestion(it.question || '');
-    let a = (it.answer || '').trim();
+    let a = (it.answer || '').trim().replace(/[.]+$/,''); // usuń kropkę na końcu
 
+    // Jeśli LLM da „Po co”/„Dlaczego”, ale brak markerów celu — przekwalifikuj
     if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) {
       if (RE_PLACE.test(text)) q = 'Gdzie to było?';
       else if (RE_TIME.test(text)) q = 'Kiedy to było?';
       else q = 'Co się dzieje?';
     }
 
+    // Gdzie: odpowiedź musi zaczynać się przyimkiem; w razie czego – z tekstu
     if (/^\s*Gdzie\b/i.test(q)) {
       if (RE_PURPOSE.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
       if (!RE_PLACE_ANS_START.test(a)) { if (placeMatch) a = trimPlace(placeMatch); else continue; }
     }
 
+    // Jeśli odpowiedź wygląda na cel (żeby/aby/bo...), a pytanie nie jest „Po co/Dlaczego” – popraw
     if (RE_PURPOSE.test(a) && !/^\s*(Po co|Dlaczego)\b/i.test(q)) {
       q = 'Po co?';
     }
@@ -1535,8 +1598,14 @@ function ruleFallback(text, want=1) {
   if (/U babci\b.*piecze/i.test(text) && out.length < want) {
     out.push({ question: 'Gdzie piecze?', answer: 'u babci', fallback: true, source_path: 'rule' });
   }
-  if (/w ogrodzie\b/i.test(text) && out.length < want) {
+  if (/\bw ogrodzie\b/i.test(text) && out.length < want) {
     out.push({ question: 'Gdzie to było?', answer: 'w ogrodzie', fallback: true, source_path: 'rule' });
+  }
+  if (/\bna kanapie\b/i.test(text) && out.length < want) {
+    out.push({ question: 'Gdzie to było?', answer: 'na kanapie', fallback: true, source_path: 'rule' });
+  }
+  if (/\bw domu\b/i.test(text) && out.length < want) {
+    out.push({ question: 'Gdzie to było?', answer: 'w domu', fallback: true, source_path: 'rule' });
   }
   return out;
 }
@@ -1577,7 +1646,8 @@ async function llmQuestionsRace(text, countHint){
     );
     if (r?.__timeout || r?.__error) throw new Error('GROQ_FAIL');
     const out = r?.text || '';
-    const items = parseQuestionsFromJSON(out);
+    theItems = parseQuestionsFromJSON(out);
+    const items = theItems;
     if (!items.length) throw new Error('GROQ_EMPTY');
     return { items, provider: 'groq' };
   })();
