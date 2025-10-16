@@ -1460,27 +1460,7 @@ function heuristicQA(sentence){
   if (verbLow && subject)           return { question: person===1? 'Co robisz?' : `Co robi ${subject}?`, answer: verbLow };
   if (verbLow)                      return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
   return { question: 'O co chodzi w zdaniu?', answer: '' };
-}  if (place && subject) {
-    const q = person === 1 ? `Gdzie jesteś?` : `Gdzie jest ${subject}?`;
-    return { question: q, answer: place };
-  }
-  if (time && subject && verbLow) {
-    const q = person === 1 ? `Kiedy to się dzieje?` : `Kiedy ${subject} ${verbLow}?`;
-    return { question: q, answer: time };
-  }
-  if (time) {
-    return { question: 'Kiedy to było?', answer: time };
-  }
-  if (verbLow && subject) {
-    const q = person === 1 ? 'Co robisz?' : `Co robi ${subject}?`;
-    return { question: q, answer: verbLow };
-  }
-  if (verbLow) {
-    return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
-  }
-  return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
-
 function dedupeVerbInQuestion(q){
   if (!q) return q;
   let s = String(q).replace(/\s+/g,' ').trim();
