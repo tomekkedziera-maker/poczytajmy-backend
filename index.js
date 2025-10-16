@@ -1365,19 +1365,16 @@ const RE_PLACE = new RegExp(
 );
 
 /**
- * CZAS: lepsze łapanie złożonych form: „jutro o 8:15”, dni tygodnia, pory dnia, po-posiłkach, sama godzina.
+ * CZAS: dopisane dni tygodnia, „o 18:30”, pory (rano/wieczorem/po południu),
+ * „po śniadaniu/obiedzie/kolacji”, „w weekend”, „w poniedziałek”.
  */
 const RE_TIME = new RegExp(
-  String.raw`\b(?:` +
-    // „wczoraj/dzisiaj/jutro/pojutrze” + opcjonalne „o 12:34”
-    String.raw`(?:wczoraj|dzisiaj|dziś|jutro|pojutrze)(?:\s+o\s+\d{1,2}[:.]\d{2})?` + String.raw`|` +
-    // dni tygodnia
-    String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)` + String.raw`|` +
-    // pory dnia i po-posiłkach
-    String.raw`rano|wieczorem|w\s+południe|po\s+południu|po\s+(?:śniadaniu|sniadaniu|obiedzie|kolacji)` + String.raw`|` +
-    // sama godzina
+  String.raw`\b(` +
+    String.raw`rano|wieczorem|w\s+południe|po\s+południu|wczoraj|dzisiaj|dziś|jutro|pojutrze|` +
+    String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|` +
+    String.raw`po\s+(?:śniadaniu|sniadaniu|obiedzie|kolacji)|` +
     String.raw`o\s+\d{1,2}[:.]\d{2}` +
-  String.raw`)`,
+  String.raw`)\b`,
   'iu'
 );
 
@@ -1409,7 +1406,10 @@ function hardTimeout(promise, ms) {
   });
 }
 
-/** poszerzona lista czasowników czynności i stanów */
+/** lista czasowników (również 1. os. l.poj.) do wykrywania czynności */
+const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę)\b/iu;
+
+/** (do przycinania końcówki „miejsce + czasownik”) */
 const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi)$/i;
 
 function trimPlace(p='') {
@@ -1429,43 +1429,13 @@ function detectPerson(text='') {
   return 3;
 }
 
-function heuristicQA(sentence){
-  const text = String(sentence||'').trim();
-
-  const TIME_TOKENS = [
-    'wczoraj','dzisiaj','dziś','jutro','pojutrze','rano','wieczorem','w południe','po południu',
-    'w poniedziałek','we wtorek','w środę','w srodę','w czwartek','w piątek','w piatek',
-    'w sobotę','w sobote','w niedzielę','w niedziele','w weekend'
-  ];
-  const isTimeToken = (w) => {
-    const low = String(w||'').toLowerCase();
-    return TIME_TOKENS.some(t => low === t || low.startsWith(t + ' '));
-  };
-
-  let subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
-  if (isTimeToken(subjToken)) subjToken = ''; // ⬅️ „Jutro” nie jest imieniem
-
-  const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
-  const person = detectPerson(text);
-  const subject = person === 1 ? 'Ty' : (subjToken || subjNoun || 'On/Ona');
-
-  const placeRaw = (text.match(RE_PLACE)||[])[0];
-  const place = placeRaw ? trimPlace(placeRaw) : '';
-  const time  = (text.match(RE_TIME)||[])[0];
-
-  const mVerb = (text.match(/\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy|uczy\s+się|uczy)\b/iu)||[])[0];
-  const verbLow = mVerb ? mVerb.toLowerCase() : '';
-
-  // ➜ PRIORYTET: najpierw czas, dopiero potem miejsce
-  if (time && subject && verbLow)   return { question: person===1?`Kiedy to się dzieje?`:`Kiedy ${subject} ${verbLow}?`, answer: time };
-  if (time)                         return { question: 'Kiedy to było?', answer: time };
-
-  if (place && subject && verbLow)  return { question: person===1?`Gdzie jesteś?`:`Gdzie ${subject} ${verbLow}?`, answer: place };
-  if (place && subject)             return { question: person===1?`Gdzie jesteś?`:`Gdzie jest ${subject}?`,         answer: place };
-
-  if (verbLow && subject)           return { question: person===1? 'Co robisz?' : `Co robi ${subject}?`, answer: verbLow };
-  if (verbLow)                      return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
-  return { question: 'O co chodzi w zdaniu?', answer: '' };
+// === helpers do formatu odpowiedzi/pytania ===
+function cleanShortAnswer(a) {
+  let s = String(a || '').trim();
+  s = s.replace(/[.,;:!?…]+$/u, '').trim();        // usuń końcową interpunkcję
+  s = s.split(/\s+/).slice(0, 6).join(' ');       // max 6 słów
+  if (s) s = s[0].toLowerCase() + s.slice(1);     // mała litera na starcie
+  return s;
 }
 
 function dedupeVerbInQuestion(q){
@@ -1511,8 +1481,7 @@ function parseQuestionsFromJSON(raw){
   const arr = Array.isArray(j?.questions) ? j.questions : [];
   return arr.map(x => {
       const q = cleanQuestion(String(x?.question||''));
-      // odpowiedź: twardo obetnij do 6 słów, usuń końcową kropkę
-      const a = String(x?.answer||'').trim().replace(/[.]+$/,'').split(/\s+/).slice(0,6).join(' ');
+      const a = cleanShortAnswer(String(x?.answer||'')); // <= oczyszczenie
       return { question: q, answer: a };
     })
     .filter(x => x.question && x.answer && /\?\s*$/.test(x.question));
@@ -1556,7 +1525,7 @@ function postProcessLLMItems(items, text, want=3) {
 
   for (const it of (items || [])) {
     let q = cleanQuestion(it.question || '');
-    let a = (it.answer || '').trim().replace(/[.]+$/,''); // usuń kropkę na końcu
+    let a = cleanShortAnswer(it.answer || '');
 
     // Jeśli LLM da „Po co”/„Dlaczego”, ale brak markerów celu — przekwalifikuj
     if (/^\s*(Po co|Dlaczego)\b/i.test(q) && !RE_PURPOSE.test(text)) {
@@ -1662,6 +1631,45 @@ async function llmQuestionsRace(text, countHint){
   }
 }
 
+function heuristicQA(sentence){
+  const text = String(sentence||'').trim();
+
+  const TIME_TOKENS = [
+    'wczoraj','dzisiaj','dziś','jutro','pojutrze','rano','wieczorem','w południe','po południu',
+    'w poniedziałek','we wtorek','w środę','w srodę','w czwartek','w piątek','w piatek',
+    'w sobotę','w sobote','w niedzielę','w niedziele','w weekend'
+  ];
+  const isTimeToken = (w) => {
+    const low = String(w||'').toLowerCase();
+    return TIME_TOKENS.some(t => low === t || low.startsWith(t + ' '));
+  };
+
+  let subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
+  if (isTimeToken(subjToken)) subjToken = ''; // „Jutro” nie jest imieniem
+
+  const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
+  const person = detectPerson(text);
+  const subject = person === 1 ? 'Ty' : (subjToken || subjNoun || 'On/Ona');
+
+  const placeRaw = (text.match(RE_PLACE)||[])[0];
+  const place = placeRaw ? trimPlace(placeRaw) : '';
+  const time  = (text.match(RE_TIME)||[])[0];
+
+  const mVerb = (text.match(VERB_RE)||[])[0];
+  const verbLow = mVerb ? mVerb.toLowerCase() : '';
+
+  // najpierw czas (poprawna forma dla 1. os.)
+  if (time && subject && verbLow)  return { question: person===1?`Kiedy to się dzieje?`:`Kiedy ${subject} ${verbLow}?`, answer: time };
+  if (time)                        return { question: 'Kiedy to się dzieje?', answer: time };
+
+  if (place && subject && verbLow) return { question: person===1?`Gdzie jesteś?`:`Gdzie ${subject} ${verbLow}?`, answer: place };
+  if (place && subject)            return { question: person===1?`Gdzie jesteś?`:`Gdzie jest ${subject}?`,         answer: place };
+
+  if (verbLow && subject)          return { question: person===1? 'Co robisz?' : `Co robi ${subject}?`, answer: verbLow };
+  if (verbLow)                     return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
+  return { question: 'O co chodzi w zdaniu?', answer: '' };
+}
+
 function heuristicMulti(text, want=1){
   const sents = qz_splitSentences(text).slice(0, Math.max(1, want));
   return sents.map(s => {
@@ -1697,28 +1705,9 @@ app.post('/agent/comprehend-multi', async (req, res) => {
     }
 
     const sents = qz_splitSentences(src);
-
-    // ⬇ per-zdanie: jeśli zdanie ma MIEJSCE, a pozycja nie jest „Gdzie…?”, podmień na heurystyczne „Gdzie…?”
-    for (let i = 0; i < Math.min(out.length, sents.length); i++) {
-      const sent = sents[i];
-      if (RE_PLACE.test(sent)) {
-        const h = heuristicQA(sent);
-        if (/^\s*Gdzie\b/i.test(h.question) && RE_PLACE_ANS_START.test(h.answer)) {
-          out[i] = {
-            question: dedupeVerbInQuestion(h.question),
-            answer: h.answer,
-            fallback: true,
-            sentence: sent,
-            source_path: 'heuristic-merge',
-            llm_provider: 'fallback'
-          };
-        }
-      }
-    }
-
     out = out.slice(0, want).map((x,i)=>({
       question: dedupeVerbInQuestion(x.question),
-      answer: String(x.answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+      answer: cleanShortAnswer(x.answer),
       fallback: !!x.fallback,
       sentence: x.sentence || sents[i] || sents[0] || src,
       source_path: x.source_path || 'llm+post',
@@ -1743,15 +1732,15 @@ app.post('/agent/comprehend', async (req, res) => {
 
     const bestSent = qz_splitSentences(src)[0] || src;
 
-    // FAST-PATH: jeśli mamy oczywisty sygnał, zwróć heurystykę od razu (już NIE jako fallback)
+    // FAST-PATH: jeśli mamy oczywisty sygnał, zwróć heurystykę od razu
     const h0 = heuristicQA(bestSent);
     const hasPlace = RE_PLACE.test(bestSent);
     const hasTime  = RE_TIME.test(bestSent);
-    const hasVerb  = /\b(śpi|spi|czyta|pisze|rysuje|maluje|je|pije|ogląda|oglad|słucha|slucha|idzie|biegnie|gra|stoi|siedzi|leży|lezy|patrzy|uczy\s+się|uczy)\b/iu.test(bestSent);
+    const hasVerb  = VERB_RE.test(bestSent);
     if ((hasPlace || hasTime || hasVerb) && h0.answer) {
       const qa = {
         question: dedupeVerbInQuestion(h0.question),
-        answer: String(h0.answer).trim().split(/\s+/).slice(0,6).join(' '),
+        answer: cleanShortAnswer(h0.answer),
         fallback: false,
         sentence: bestSent,
         source_path: 'heuristic-fast',
@@ -1759,7 +1748,7 @@ app.post('/agent/comprehend', async (req, res) => {
       };
       setComprehendHeaders(res, qa);
       if (dbg) console.log('[COMPREHEND-ONE/FAST]', qa);
-      return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: qa.fallback, source_path: qa.source_path });
+      return res.json({ ok: true, question: qa.question, answer: qa.answer, fallback: false, source_path: qa.source_path });
     }
 
     // standard: LLM → postprocess → heurystyka
@@ -1770,7 +1759,7 @@ app.post('/agent/comprehend', async (req, res) => {
     if (pp.length) {
       qa = {
         question: dedupeVerbInQuestion(pp[0].question),
-        answer: String(pp[0].answer||'').trim().split(/\s+/).slice(0,6).join(' '),
+        answer: cleanShortAnswer(pp[0].answer),
         fallback: false,
         sentence: bestSent,
         source_path: 'llm+post',
@@ -1778,7 +1767,7 @@ app.post('/agent/comprehend', async (req, res) => {
       };
     } else {
       const h = heuristicQA(bestSent);
-      qa = { question: h.question, answer: h.answer, fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
+      qa = { question: dedupeVerbInQuestion(h.question), answer: cleanShortAnswer(h.answer), fallback: true, sentence: bestSent, source_path: 'heuristic-fallback' };
     }
 
     setComprehendHeaders(res, qa);
@@ -1789,6 +1778,94 @@ app.post('/agent/comprehend', async (req, res) => {
     return res.status(200).json({ ok: true, question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'error-fallback' });
   }
 });
+
+// ===== OLLAMA client (prosty, bez SDK) =====
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+async function ollamaChatJSON({ model = 'poczytajmy-qa', prompt, timeoutMs = 2500, maxQ = 3 }) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort('timeout'), timeoutMs);
+
+  const body = {
+    model,
+    stream: false,
+    format: 'json', // ⬅️ proś o czysty JSON
+    messages: [
+      { role: 'user', content: `
+Na podstawie TEKSTU przygotuj od 1 do ${Math.max(1, Math.min(5, maxQ))} PYTAŃ i krótkich odpowiedzi (max 6 słów) — TYLKO z treści.
+Zwróć dokładnie JSON {"questions":[{"question":"…?","answer":"…"}]}.
+
+TEKST:
+"""${qz_trim(prompt, 650)}"""
+`.trim() }
+    ]
+  };
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) throw new Error(`ollama http ${res.status}`);
+    const data = await res.json(); // { message: { content: '...' }, ... }
+    const content = data?.message?.content || '';
+    // content powinien być JSON-em (bo format: 'json'); jeśli nie – spróbuj wyłuskać
+    let parsed;
+    try { parsed = JSON.parse(content); } catch {
+      const m = String(content).match(/\{[\s\S]*\}/);
+      parsed = m ? JSON.parse(m[0]) : { questions: [] };
+    }
+    const arr = Array.isArray(parsed?.questions) ? parsed.questions : [];
+    return arr;
+  } catch (e) {
+    clearTimeout(t);
+    return [];
+  }
+}
+
+// ====== /agent/comprehend-local (Ollama-only, do porównań) ======
+app.post('/agent/comprehend-local', async (req, res) => {
+  const { text = '', count = 1 } = req.body || {};
+  const src = String(text || '').trim();
+  if (!src) return res.status(400).json({ ok: false, error: 'NO_TEXT' });
+
+  // 1) strzał do Ollamy (szybki)
+  const rawItems = await ollamaChatJSON({ model: 'poczytajmy-qa', prompt: src, timeoutMs: 2500, maxQ: count });
+
+  // 2) Twoje istniejące „doczyszczanie” i walidacja:
+  const items = postProcessLLMItems(rawItems, src, Math.min(5, Math.max(1, Number(count)||1)));
+
+  // 3) w razie pustki – Twoja heurystyka
+  let out = items;
+  if (!out.length) {
+    out = heuristicMulti(src, Math.min(5, Math.max(1, Number(count)||1)));
+  }
+
+  // 4) format odpowiedzi
+  if (Number(count||1) > 1) {
+    return res.json({ ok: true, count: out.length, items: out.map(i => ({
+      question: dedupeVerbInQuestion(i.question),
+      answer: cleanShortAnswer(i.answer),
+      fallback: !!i.fallback,
+      sentence: i.sentence || src,
+      source_path: i.source_path || 'ollama',
+      llm_provider: 'ollama'
+    }))});
+  } else {
+    const qa = out[0] || { question: 'Co się dzieje w zdaniu?', answer: '', fallback: true, source_path: 'heuristic-fallback' };
+    return res.json({
+      ok: true,
+      question: dedupeVerbInQuestion(qa.question),
+      answer: cleanShortAnswer(qa.answer),
+      fallback: !!qa.fallback,
+      source_path: qa.source_path || 'ollama',
+      llm_provider: 'ollama'
+    });
+  }
+});
+/* ===================== /QUIZ / COMPREHEND ===================== */
 
 // ===== OLLAMA client (prosty, bez SDK) =====
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
