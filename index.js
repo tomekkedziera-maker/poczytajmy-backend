@@ -1346,178 +1346,205 @@ app.get('/tts-voices', async (_req, res) => {
   }
 });
 
-/* ===================== QUIZ / COMPREHEND (nauczyciel 1–3, proste pytania, ODPOWIEDZI TYLKO ZE ZDANIA) ===================== */
-const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
+// ===================== QUIZ: rule-teacher-strict-v4 =====================
+// Cel: bardzo proste pytania i krótkie odpowiedzi (wyłącznie słowa ze zdania)
+// Priorytet: Gdzie? > Dokąd? > Kiedy? > Kto? > Co robi? > Co?
+// Wyjście: { ok, question, answer, source_path }
 
-function qz_splitSentences(s=""){
-  return String(s||"")
-    .replace(/\s*[\r\n]+\s*/g," ")
-    .split(/(?<=[.!?…])\s+/u)
-    .map(t=>t.trim())
-    .filter(Boolean);
-}
-function setComprehendHeaders(res, payload){
-  if (!payload) return;
-  res.setHeader('Content-Type','application/json; charset=utf-8');
-  res.setHeader('X-Comprehend-Path', 'rule-teacher-strict');
-  if (payload.question) res.setHeader('X-Comprehend-Question', payload.question);
-  if (payload.answer)   res.setHeader('X-Comprehend-Answer', payload.answer);
-  if (payload.sentence) res.setHeader('X-Comprehend-Sentence', payload.sentence);
-}
+function generateQuestionAndAnswerTeacher(textRaw) {
+  if (!textRaw || typeof textRaw !== "string") {
+    return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
+  }
 
-/* ——— Normalizacje + twarde sprawdzenie, że odpowiedź jest fragmentem zdania ——— */
-function stripQuotesPunctEdge(s){
-  return String(s||'').trim()
-    .replace(/[„”"']+/g,'')
-    .replace(/[.,;:!?…]+$/u,'')
-    .trim();
-}
-function normalizeSpaces(s){ return String(s||'').replace(/\s+/g,' ').trim(); }
-function stripDiacritics(s){
-  return String(s||'')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g,'');
-}
-function isSpanFromText(ans, text){
-  if (!ans) return false;
-  const A = normalizeSpaces(ans);
-  const T = normalizeSpaces(text);
-  if (!A || !T) return false;
-  if (T.toLowerCase().includes(A.toLowerCase())) return true;
-  // awaryjnie: porównanie bez znaków diakrytycznych (często logi je gubią)
-  return stripDiacritics(T).toLowerCase().includes(stripDiacritics(A).toLowerCase());
-}
-function finalizeAnswer(ans, text){
-  // przytnij do max 5 słów i potwierdź, że to fragment zdania
-  let out = normalizeSpaces(stripQuotesPunctEdge(ans)).split(/\s+/).slice(0,5).join(' ');
-  if (!isSpanFromText(out, text)) return ''; // TWARDY BEZPIECZNIK
-  return out;
-}
+  // --- Normalizacja (zachowujemy polskie znaki) ---
+  const text = textRaw.trim();
+  // do dopasowań bez kropek/wykrzykników (ale NIE używamy tego do zwrotki)
+  const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
-/* ——— Detektory ——— */
-// Czas
-const RE_TIME = new RegExp(
-  String.raw`\b(` +
-    String.raw`wczoraj|dzisiaj|dziś|jutro|pojutrze|` +
-    String.raw`rano|wieczorem|w\s+południe|po\s+południu|` +
-    String.raw`w\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|` +
-    String.raw`o\s+\d{1,2}[:.]\d{2}` +
-  String.raw`)\b`,
-  'iu'
-);
+  // --- Słowniki/pomoc ---
+  const VERBS = [
+    "rysuje","idzie","jadę","jade","jemy","bawię","bawie","leży","lezy","czyta",
+    "piszą","pisza","skaczą","skacza","padał","padal","biegnie","oglądam","ogladam",
+    "stoi","idziemy","śpi","spi","rosną","rosna","myje","zakładam","zakladam",
+    "czytamy","mam","patrzę","patrze","wracam","wracamy"
+  ];
 
-// Dokąd / Skąd (krótkie 1–4 wyrazy)
-const RE_DIR_TO   = /\bdo\s+(?!\s)(?:[^\s,.;!?0-9]+\s*){1,4}(?=[\s,.;!?]|$)/iu;
-const RE_DIR_FROM = /\b(?:z|ze)\s+(?!\s)(?:[^\s,.;!?0-9]+\s*){1,4}(?=[\s,.;!?]|$)/iu;
+  const WHO_LIST = [
+    "Dzieci","Pies","Kot","Dziadek","Tata","Mama","Basia","Kuba",
+    "Zosia","Ala","Lena","Julek","Ola","Chłopiec","Chlopiec","Dziewczynka"
+  ];
 
-// Miejsce (nie mylić z dniem tygodnia po „w …”)
-const RE_PLACE = new RegExp(
-  String.raw`\b(?:` +
-  String.raw`w(?!\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend))|` +
-  String.raw`we|na|pod|u|przy|obok|koło|kolo|nad|za|między|miedzy|poza|przed` + // ⬅️ dodano „przed”
-  String.raw`)\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,4})` +
-  String.raw`(?=[\s,;.!?]|$)`,
-  'iu'
-);
+  // szybkie testy cech
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|jad[eę]|jedziesz|jedziemy|wracam|wracamy|biegnie|biegne|biegniemy)\b/i.test(t);
+  const hasToPhrase = /\b(do|na)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+(?:\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+){0,3}\b/.test(t); // do sklepu / na boisko
+  const hasTime =
+    /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
+    /\b(wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie)\b/i.test(t) ||
+    /\bw\s+(poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)\b/i.test(t) ||
+    /\bpo\s+(lekcjach|obiedzie|śniadaniu|sniadaniu)\b/i.test(t);
 
-// Cel (używamy całego dopasowania m[0], żeby ODPOWIEDŹ BYŁA FRAGMENTEM ZDANIA)
-const RE_PURPOSE_WORD  = /\b(żeby|aby|by|w\s+celu|po\s+to)\b/iu;
-const RE_PURPOSE_SPAN1 = /(żeby|aby|by)\s+([^.!?]+?)(?=[.!?]|$)/iu;
-const RE_PURPOSE_SPAN2 = /\b(w\s+celu|po\s+to)\s+([^.!?]+?)(?=[.!?]|$)/iu;
+  const hasLoc =
+    /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+/i.test(t);
 
-// Czasowniki (pod „Co robi?” i obcinanie ogonków miejsca)
-const RE_VERB_ANY = /\b(maluje|maluję|rysuje|rysuję|czyta|czytam|pisze|piszę|gra|gram|pije|piję|je|jem|ogląda|oglądam|słucha|słucham|slucha|spi|śpi|spię|śpię|stoi|stoję|siedzi|siedzę|leży|lezy|leżę|leze|biegnie|biegnę|biegne|idzie|idę|ide|jadę|jade|wraca|wracam|wracamy|wieje)\b/iu;
+  // --- Helpery ekstrakcji krótkich fraz ---
+  // 1) fraza przyimkowa (lokalizacja) — ucinamy zanim pojawi się czasownik/znak kończący
+  function extractLocationPhrase(s) {
+    const re = new RegExp(
+      String.raw`(?:^|\s)(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+(?:\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+){0,4})`,
+      "i"
+    );
+    const m = s.match(re);
+    if (!m) return null;
 
-// obcięcie ogonka czasownika z końca frazy miejsca
-function trimPlaceTail(span){
-  let toks = String(span||'').trim().split(/\s+/);
-  while (toks.length && RE_VERB_ANY.test(toks[toks.length-1])) toks.pop();
-  return toks.join(' ');
-}
+    const raw = `${m[1]} ${m[2]}`.trim();
+    // Skróć do momentu potencjalnego czasownika ze słownika lub znaku interpunkcyjnego
+    const cut = raw
+      .split(" ")
+      .reduce((acc, w) => {
+        if (VERBS.includes(w.toLowerCase())) return acc; // stop
+        if (/[.,;:]/.test(w)) return acc;
+        acc.push(w);
+        return acc;
+      }, [])
+      .join(" ");
+    return cut || raw;
+  }
 
-/* ——— Logika: 1 pytanie na zdanie, odpowiedź = fragment zdania ——— */
-function makeQAFromSentence(text=''){
-  const t = String(text||'').trim();
-  if (!t) return { question:'Co się dzieje?', answer:'' };
+  // 2) fraza celu ruchu (Dokąd?)
+  function extractDestination(s) {
+    const re = /\b(do|na)\s+([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+(?:\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+){0,3})/i;
+    const m = s.match(re);
+    if (!m) return null;
+    return `${m[1]} ${m[2]}`.trim();
+  }
 
-  const hasPurpose = RE_PURPOSE_WORD.test(t);
-  const mTime  = t.match(RE_TIME);
-  const mTo    = t.match(RE_DIR_TO);
-  const mFrom  = t.match(RE_DIR_FROM);
-  const mPlace = mTo ? null : t.match(RE_PLACE); // „do …” > miejsce
+  // 3) fraza czasu (Kiedy?)
+  function extractTime(s) {
+    const re =
+      /\b(o\s+\d{1,2}:\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\b/i;
+    const m = s.match(re);
+    return m ? m[0].trim() : null;
+  }
 
-  // 1) Po co?
-  if (hasPurpose) {
-    const m1 = t.match(RE_PURPOSE_SPAN1);
-    const m2 = m1 || t.match(RE_PURPOSE_SPAN2);
-    if (m2) {
-      const ans = finalizeAnswer(m2[0], t); // całe dopasowanie -> gwarancja fragmentu
-      return { question: 'Po co?', answer: ans };
+  // 4) kto (pierwszy wyraz z wielkiej litery ze znanej listy lub imię)
+  function extractWho(s) {
+    const whoRe = /\b([A-ZŁŚŻŹĆŃÓĄĘ][a-ząćęłńóśźż]+|Dzieci|Pies|Kot|Dziadek|Tata|Mama)\b/;
+    const m = s.match(whoRe);
+    if (m) return m[1];
+    for (const w of WHO_LIST) {
+      if (s.includes(w)) return w;
+    }
+    return null;
+  }
+
+  // 5) co robi (czasownik w formie zdanego słownika)
+  function extractAction(s) {
+    const re = new RegExp(`\\b(${VERBS.join("|")})\\b`, "i");
+    const m = s.match(re);
+    return m ? m[1] : null;
+  }
+
+  // 6) co (np. „mam zeszyt i ołówek” → „zeszyt i ołówek”)
+  function extractWhat(s) {
+    const m = s.match(/\bmam\s+([^,.;!?]+)$/i);
+    return m ? m[1].trim() : null;
+  }
+
+  // --- Kolejność decyzji (priorytety pytań) ---
+  // Gdzie?
+  if (hasLoc) {
+    const loc = extractLocationPhrase(t);
+    if (loc) {
+      return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
     }
   }
-  // 2) Kiedy?
-  if (mTime)  return { question: 'Kiedy?', answer: finalizeAnswer(mTime[0], t) };
-  // 3) Dokąd?
-  if (mTo)    return { question: 'Dokąd?', answer: finalizeAnswer(mTo[0], t) };
-  // 4) Skąd?
-  if (mFrom)  return { question: 'Skąd?',  answer: finalizeAnswer(mFrom[0], t) };
-  // 5) Gdzie?
-  if (mPlace){
-    const trimmed = trimPlaceTail(mPlace[0]);
-    return { question: 'Gdzie?', answer: finalizeAnswer(trimmed, t) };
+
+  // Dokąd?
+  if (hasMoveVerb && hasToPhrase) {
+    const dest = extractDestination(t);
+    if (dest) {
+      return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
+    }
   }
-  // 6) Co robi?
-  const mVerb = t.match(RE_VERB_ANY);
-  if (mVerb)  return { question: 'Co robi?', answer: finalizeAnswer(mVerb[0], t) };
-  // 7) Kto?
-  const mWho = t.match(/^[A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+/u);
-  if (mWho)   return { question: 'Kto?', answer: finalizeAnswer(mWho[0], t) };
 
-  return { question:'Co się dzieje?', answer:'' };
+  // Kiedy?
+  if (hasTime) {
+    const time = extractTime(t);
+    if (time) {
+      return { ok: true, question: "Kiedy?", answer: time, source_path: "rule-teacher-strict-v4" };
+    }
+  }
+
+  // Kto?
+  // (pomijamy 1. os. l.poj. „idę/oglądam…” — wtedy lepiej „Co robi?”)
+  if (!/\b(ide|oglądam|ogladam|czytam|piszę|pisze|patrzę|patrze|zakładam|zakladam|wracam)\b/i.test(t)) {
+    const who = extractWho(t);
+    if (who) {
+      return { ok: true, question: "Kto?", answer: who, source_path: "rule-teacher-strict-v4" };
+    }
+  }
+
+  // Co robi?
+  const act = extractAction(t);
+  if (act) {
+    return { ok: true, question: "Co robi?", answer: act, source_path: "rule-teacher-strict-v4" };
+  }
+
+  // Co?
+  const what = extractWhat(t);
+  if (what) {
+    return { ok: true, question: "Co?", answer: what, source_path: "rule-teacher-strict-v4" };
+  }
+
+  // Fallback
+  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v4-fallback" };
 }
 
-/* ——— Multi ——— */
-function toItems(text, n){
-  const sents = qz_splitSentences(text).slice(0, Math.max(1,n));
-  return sents.map(s => {
-    const {question, answer} = makeQAFromSentence(s);
-    return { question, answer, sentence: s, source_path: 'rule-teacher-strict', llm_provider: null };
-  });
-}
-
-/* ——— Endpointy ——— */
-app.post('/agent/comprehend', async (req, res) => {
+// --------------------- ENDPOINT: /agent/comprehend -----------------------
+app.post("/agent/comprehend", async (req, res) => {
   try {
-    const { text = '' } = req.body || {};
-    const src = String(text || '').trim();
-    if (!src) return res.status(400).json({ ok:false, error:'NO_TEXT' });
-
-    const best = qz_splitSentences(src)[0] || src;
-    const qa = makeQAFromSentence(best);
-    const out = { ...qa, fallback:false, sentence: best, source_path:'rule-teacher-strict' };
-    setComprehendHeaders(res, out);
-    return res.json({ ok:true, question: out.question, answer: out.answer, fallback:false, source_path: out.source_path });
-  } catch (e){
-    console.error('comprehend error:', e);
-    return res.status(200).json({ ok:true, question:'Co się dzieje?', answer:'', fallback:true, source_path:'error-fallback' });
+    const { text } = req.body || {};
+    const result = generateQuestionAndAnswerTeacher(text);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
   }
 });
 
-app.post('/agent/comprehend-multi', async (req, res) => {
+// ------------------ ENDPOINT: /agent/comprehend-multi --------------------
+app.post("/agent/comprehend-multi", async (req, res) => {
   try {
-    const { text = '', count = 3 } = req.body || {};
-    const src = String(text || '').trim();
-    if (!src) return res.status(400).json({ ok:false, error:'NO_TEXT' });
+    const { text, count = 1 } = req.body || {};
+    if (!text || !text.trim()) {
+      return res.json({ ok: true, count: 0, items: [] });
+    }
 
-    const want = Math.min(5, Math.max(1, Number(count)||3));
-    const items = toItems(src, want).slice(0, want);
-    setComprehendHeaders(res, items[0]);
-    return res.json({ ok:true, count: items.length, items });
-  } catch (e){
-    console.error('comprehend-multi error:', e);
-    return res.status(200).json({ ok:true, count:0, items:[] });
+    // Dzielenie po zdaniach. Zostawiamy do 'count' sztuk.
+    const sentences = text
+      .split(/[.!?]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, Math.max(1, Number(count)));
+
+    const items = sentences.map((s) => {
+      const r = generateQuestionAndAnswerTeacher(s);
+      return {
+        ...r,
+        sentence: s,
+        llm_provider: "",        // brak LLM; heurystyka
+        source_path: r.source_path
+      };
+    });
+
+    return res.json({ ok: true, count: items.length, items });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
   }
 });
+
+// (opcjonalnie) export jeśli w osobnym module:
+// module.exports = { generateQuestionAndAnswerTeacher };
+
 /* ===================== /QUIZ / COMPREHEND ===================== */
 
 
