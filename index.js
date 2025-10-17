@@ -1409,7 +1409,7 @@ function hardTimeout(promise, ms) {
 const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|wracamy|szukamy|wracam|szukam|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę)\b/iu;
 
 /** (do przycinania końcówki „miejsce + czasownik”) */
-const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi)$/i;
+const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi|szuka|szukamy|dzwoni)$/i;
 
 function trimPlace(p='') {
   let toks = String(p).trim().split(/\s+/)
