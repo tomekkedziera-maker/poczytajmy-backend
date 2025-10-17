@@ -1405,17 +1405,35 @@ function hardTimeout(promise, ms) {
   });
 }
 
-/** lista czasowników (również 1. os. l.poj.) do wykrywania czynności */
-const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę)\b/iu;
+/** lista czasowników (rozszerzona o szuka/wraca/dzwoni) */
+const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę|szuka|szukam|szukamy|wraca|wracam|wracamy|dzwoni|dzwonię)\b/iu;
 
-/** (do przycinania końcówki „miejsce + czasownik”) */
-const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi)$/i;
+/** (do przycinania końcówki „miejsce + czasownik”) – używane też do cięcia po pierwszym czasowniku */
+const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi|dzwoni|szuka|wraca|wracam|wracamy|szukam|szukamy)$/i;
+
+/** prepozycje, by nie mylić z podmiotem („Po”, „W”, „Na”, „Do” itd.) */
+const PREP_TOKENS = /^(po|w|we|na|do|u|o|za|nad|pod|między|miedzy|przy)$/i;
 
 function trimPlace(p='') {
-  let toks = String(p).trim().split(/\s+/)
-    .filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w))
-    .slice(0, 4);
+  const toksAll = String(p).trim().split(/\s+/).filter(Boolean);
+
+  // 1) utnij przy pierwszym czasowniku (np. "w bibliotece szukamy nowej..." -> "w bibliotece")
+  let cut = toksAll.length;
+  for (let i = 0; i < toksAll.length; i++) {
+    const tok = toksAll[i];
+    if (PLACE_VERBS.test(tok) || VERB_RE.test(tok)) { cut = i; break; }
+  }
+  let toks = toksAll.slice(0, cut);
+
+  // 2) usuń spójnik końcowy typu "i", "oraz", "a", "potem"
+  while (toks.length && /^(i|oraz|ale|a|potem)$/i.test(toks[toks.length-1])) toks.pop();
+
+  // 3) ogranicz do 4 tokenów
+  toks = toks.slice(0, 4);
+
+  // 4) jeśli nadal ostatni to czasownik – usuń
   while (toks.length && PLACE_VERBS.test(toks[toks.length-1])) toks.pop();
+
   return toks.join(' ');
 }
 
@@ -1437,22 +1455,15 @@ function cleanShortAnswer(a, srcSentence = '') {
   // Jeżeli odpowiedź zaczyna się od przyimka miejsca/czasu – zostaw małą literę
   const PREP_START = /^(w|we|na|do|u|o|po|za|nad|pod|między|miedzy|przy)\b/i;
   const TIME_START = /^(wczoraj|dzisiaj|dziś|jutro|pojutrze|rano|wieczorem|w\s+południe|po\s+południu|w\s+(poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|po\s+(śniadaniu|sniadaniu|obiedzie|kolacji)|o\s+\d{1,2}[:.]\d{2})\b/i;
-
   const looksPlaceTime = PREP_START.test(s) || TIME_START.test(s);
-
-  if (looksPlaceTime) {
-    return s[0].toLowerCase() + s.slice(1);
-  }
+  if (looksPlaceTime) return s[0].toLowerCase() + s.slice(1);
 
   // Inne (np. imię/nazwa własna): zachowaj wielką, jeśli występuje w zdaniu źródłowym
   if (s[0] === s[0].toLowerCase()) {
     const words = s.split(' ');
     const first = words[0];
     const properInSrc = (srcSentence || '').match(new RegExp(`\\b${first[0].toUpperCase()}${first.slice(1)}\\b`));
-    if (properInSrc) {
-      words[0] = first[0].toUpperCase() + first.slice(1);
-      return words.join(' ');
-    }
+    if (properInSrc) { words[0] = first[0].toUpperCase() + first.slice(1); return words.join(' '); }
   }
   return s;
 }
@@ -1659,6 +1670,7 @@ function heuristicQA(sentence){
 
   let subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
   if (isTimeToken(subjToken)) subjToken = ''; // „Jutro” nie jest imieniem
+  if (subjToken && PREP_TOKENS.test(subjToken)) subjToken = ''; // <-- NOWE: nie traktuj „Po/W/Na/Do/…” jako podmiotu
 
   const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
   const person = detectPerson(text);
@@ -1729,12 +1741,11 @@ app.post('/agent/comprehend-multi', async (req, res) => {
       llm_provider: provider || (x.fallback ? 'fallback' : null)
     }));
 
-    // WYMUSZENIE: jeśli dana fraza ma miejsce/czas, nadpisz pytaniem heurystycznym
+    // WYMUSZENIE: jeśli dana fraza ma miejsce/czas, nadpisz pytaniem heurystycznym (preferuj czas nad miejsce)
     out = out.map((item, i) => {
       const sent = sents[i] || sents[0] || src;
       const hasPlace = RE_PLACE.test(sent);
       const hasTime  = RE_TIME.test(sent);
-
       if (hasPlace || hasTime) {
         const h = heuristicQA(sent);
         if (h && h.answer) {
@@ -1817,6 +1828,7 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
