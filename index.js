@@ -1349,7 +1349,13 @@ app.get('/tts-voices', async (_req, res) => {
 /* ===================== QUIZ / COMPREHEND (nauczyciel 1–3, proste pytania, ODPOWIEDZI TYLKO ZE ZDANIA) ===================== */
 const COMPREHEND_DEBUG = process.env.COMPREHEND_DEBUG === '1';
 
-function qz_splitSentences(s=""){ return String(s||"").replace(/\s*[\r\n]+\s*/g," ").split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean); }
+function qz_splitSentences(s=""){
+  return String(s||"")
+    .replace(/\s*[\r\n]+\s*/g," ")
+    .split(/(?<=[.!?…])\s+/u)
+    .map(t=>t.trim())
+    .filter(Boolean);
+}
 function setComprehendHeaders(res, payload){
   if (!payload) return;
   res.setHeader('Content-Type','application/json; charset=utf-8');
@@ -1361,7 +1367,10 @@ function setComprehendHeaders(res, payload){
 
 /* ——— Normalizacje + twarde sprawdzenie, że odpowiedź jest fragmentem zdania ——— */
 function stripQuotesPunctEdge(s){
-  return String(s||'').trim().replace(/[„”"']+/g,'').replace(/[.,;:!?…]+$/u,'').trim();
+  return String(s||'').trim()
+    .replace(/[„”"']+/g,'')
+    .replace(/[.,;:!?…]+$/u,'')
+    .trim();
 }
 function normalizeSpaces(s){ return String(s||'').replace(/\s+/g,' ').trim(); }
 function stripDiacritics(s){
@@ -1405,14 +1414,14 @@ const RE_DIR_FROM = /\b(?:z|ze)\s+(?!\s)(?:[^\s,.;!?0-9]+\s*){1,4}(?=[\s,.;!?]|$
 const RE_PLACE = new RegExp(
   String.raw`\b(?:` +
   String.raw`w(?!\s+(?:poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend))|` +
-  String.raw`we|na|pod|u|przy|obok|koło|kolo|nad|za|między|miedzy|poza` +
+  String.raw`we|na|pod|u|przy|obok|koło|kolo|nad|za|między|miedzy|poza|przed` + // ⬅️ dodano „przed”
   String.raw`)\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,4})` +
   String.raw`(?=[\s,;.!?]|$)`,
   'iu'
 );
 
 // Cel (używamy całego dopasowania m[0], żeby ODPOWIEDŹ BYŁA FRAGMENTEM ZDANIA)
-const RE_PURPOSE_WORD = /\b(żeby|aby|by|w\s+celu|po\s+to)\b/iu;
+const RE_PURPOSE_WORD  = /\b(żeby|aby|by|w\s+celu|po\s+to)\b/iu;
 const RE_PURPOSE_SPAN1 = /(żeby|aby|by)\s+([^.!?]+?)(?=[.!?]|$)/iu;
 const RE_PURPOSE_SPAN2 = /\b(w\s+celu|po\s+to)\s+([^.!?]+?)(?=[.!?]|$)/iu;
 
@@ -1510,6 +1519,7 @@ app.post('/agent/comprehend-multi', async (req, res) => {
   }
 });
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
