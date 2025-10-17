@@ -1357,12 +1357,18 @@ const RE_PLACE = new RegExp(
   String.raw`w(?!\s+celu)\b|we\b|na\b|do(?!\s+(?:\d+|jedn\w*|dwu\w*|dwie\w*|trzech|czterech|pięciu|piec\w*|sześciu|siedmiu|ośmiu|dziewięciu|dziesięciu))\b|` +
   String.raw`przy\b|pod\b|u\b|obok\b|koło\b|kolo\b|nad\b|za\b|między\b|miedzy\b|poza\b|przed\b` +
   String.raw`)` +
-  String.raw`\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,6})` + // do 7 słów po przyimku (troszkę szerzej)
+  String.raw`\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,6})` +
   String.raw`(?=[\s,;.!?]|$)`,
   'iu'
 );
 
-// CZAS: pory, dni, „o 18:30”, „po obiedzie”, „w weekend” itp.
+// KIERUNEK (dokąd?) — preferuj „do …”
+const RE_DIR_TO = new RegExp(
+  String.raw`\bdo\s+(?!\s)(?:[^\n\r,;.!?0-9]\S*(?:\s+[^\n\r,;.!?0-9]\S*){0,5})(?=[\s,;.!?]|$)`,
+  'iu'
+);
+
+// CZAS
 const RE_TIME = new RegExp(
   String.raw`\b(` +
     String.raw`rano|wieczorem|w\s+południe|po\s+południu|wczoraj|dzisiaj|dziś|dzis|jutro|pojutrze|` +
@@ -1375,7 +1381,6 @@ const RE_TIME = new RegExp(
 
 // CEL/PRZYCZYNA
 const RE_PURPOSE  = /\b(żeby|aby|by|bo|ponieważ|poniewaz|dlatego że|dlatego ze|w celu|po to)\b/iu;
-// miejsce – odpowiedź powinna zaczynać się przyimkiem
 const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza|przed)\b/iu;
 
 // ——— Utils ———
@@ -1392,27 +1397,22 @@ function setComprehendHeaders(res, payload){
   if (s) res.setHeader('X-Comprehend-Sentence', s);
 }
 
-// ——— Normalizacja miękka (ogonki/słowa często bez ogonków) ———
+// ——— Normalizacja ———
 const NORM_MAP = new Map([
   ['dzis','dziś'], ['wczoraj','wczoraj'], ['jutro','jutro'],
-  ['srode','środę'], ['sroda','środa'],
-  ['sobote','sobotę'], ['niedziele','niedzielę'],
-  ['poludniu','po południu'], ['poludnie','południe'],
-  ['sniadaniu','śniadaniu'], ['piatek','piątek'],
-  ['ide','idę'], ['jade','jadę'], ['slucha','słucha'], ['slucham','słucham'],
-  ['ogladam','oglądam'], ['oglada','ogląda'], ['lezy','leży'],
-  ['pisze','piszę'], ['wracamy','wracamy'], ['kolo','koło'], ['plazy','plaży'],
-  ['szkoly','szkoły'], ['rzeka','rzeką'], ['wiecej','więcej']
+  ['srode','środę'], ['sroda','środa'], ['sobote','sobotę'],
+  ['niedziele','niedzielę'], ['poludniu','po południu'], ['poludnie','południe'],
+  ['sniadaniu','śniadaniu'], ['piatek','piątek'], ['ide','idę'], ['jade','jadę'],
+  ['slucha','słucha'], ['slucham','słucham'], ['ogladam','oglądam'], ['oglada','ogląda'],
+  ['lezy','leży'], ['pisze','piszę'], ['wracamy','wracamy'], ['kolo','koło'], ['plazy','plaży'],
+  ['szkoly','szkoły'], ['rzeka','rzeką']
 ]);
-
 function normalizeSoft(s=''){
   let t = String(s||'').replace(/\s+/g,' ').trim();
-  // słownikowy podmiankowy (tylko całe słowa)
   t = t.replace(/\b[\p{L}\p{M}]+?\b/gu, (w) => {
     const lw = w.toLowerCase();
     if (NORM_MAP.has(lw)) {
       const rep = NORM_MAP.get(lw);
-      // zachowaj wielkość pierwszej litery jeśli słowo zaczyna się wielką
       return w[0] === w[0].toUpperCase() ? (rep[0].toUpperCase() + rep.slice(1)) : rep;
     }
     return w;
@@ -1423,13 +1423,11 @@ function normalizeSoft(s=''){
 // ——— Czasowniki i przycięcie „miejsca” ———
 const VERB_RE = /\b(śpię|śpi|spi|spie|czytam|czyta|piszę|pisze|rysuję|rysuje|maluję|maluje|jem|je|piję|pije|oglądam|ogląda|ogladam|oglada|słucham|słucha|slucham|slucha|idę|ide|idzie|jadę|jade|biegnę|biegne|biegnie|gram|gra|gramy|stoję|stoje|stoi|siedzę|siedze|siedzi|leżę|leze|leży|lezy|patrzy|uczę\s+się|ucze\s+sie|uczy\s+się|uczy|wracam|wraca|wracamy|czytał|czytal)\b/iu;
 
-// czasowniki kończące „kawałek miejsca”
 const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|idę|ide|biegnie|biegnę|biegne|wieje|patrzy|pisze|piszę|czyta|maluje|rysuje|słucha|slucha|gra|gram|gramy|je|jem|pije|piję|śpi|spi|ogląda|oglad|siedzi|siedzę|siedze|wraca|wracam|wracamy|czytał|czytal)$/i;
 
 function trimPlace(p='', wholeSentence='') {
   let chunk = String(p).trim();
 
-  // utnij przy pierwszym czasowniku po przyimku
   const afterPrep = chunk.replace(/^(w|we|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza|przed)\s+/i, '');
   const vm = afterPrep.match(VERB_RE);
   if (vm) {
@@ -1437,11 +1435,9 @@ function trimPlace(p='', wholeSentence='') {
     if (cutIdx > 0) chunk = chunk.slice(0, cutIdx).trim();
   }
 
-  // tokenizacja + odrzucenie spójników/czasowników z końca
   let toks = chunk.split(/\s+/).filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w));
   while (toks.length && PLACE_VERBS.test(toks[toks.length-1])) toks.pop();
 
-  // ogranicz długość
   toks = toks.slice(0, 6);
   return toks.join(' ');
 }
@@ -1449,12 +1445,11 @@ function trimPlace(p='', wholeSentence='') {
 // ——— Detekcja osoby/podmiotu ———
 function detectPerson(text='') {
   const t = String(text).toLowerCase();
-  if (/\b(ja|jestem|robię|robie|idę|ide|mam|czytam|siedzę|siedze|będę|bede|zrobiłem|zrobilem|poszedłem|poszedlem|jadę|jade|jem|piszę|pisze)\b/.test(t) || /\b\w+ę\b/.test(t)) return 1;     // 1 os. l.poj.
-  if (/\b\w+my\b/.test(t)) return 1.5; // 1 os. l.mn. („my”)
+  if (/\b(ja|jestem|robię|robie|idę|ide|mam|czytam|siedzę|siedze|będę|bede|zrobiłem|zrobilem|poszedłem|poszedlem|jadę|jade|jem|piszę|pisze)\b/.test(t) || /\b\w+ę\b/.test(t)) return 1;
+  if (/\b\w+my\b/.test(t) || /\b(wracamy|gramy|idziemy|jedziemy|robimy|piszemy|czytamy)\b/.test(t)) return 1.5;
   if (/\b(ty|robisz|idziesz|masz|czytasz|siedzisz|będziesz|bedziesz|zrobiłeś|zrobiles|jesz)\b/.test(t)) return 2;
   return 3;
 }
-
 function pickSubject(sentence='') {
   const s = String(sentence||'').trim();
   const person = detectPerson(s);
@@ -1465,7 +1460,7 @@ function pickSubject(sentence='') {
   if (m && !/^(W|We|Na|Do|Po|O|U|Za|Nad|Pod|Między|Miedzy|Przed|Koło|Kolo)$/i.test(m[1])) {
     return { subject: m[1], person: 3 };
   }
-  const m2 = s.toLowerCase().match(/\b(piesek|pies|kot|mama|tata|kolega|koleżanka|kolezanka|chłopiec|chlopiec|dziewczynka|dzieci|ptaki)\b/);
+  const m2 = s.toLowerCase().match(/\b(piesek|pies|kot|mama|tata|kolega|koleżanka|kolezanka|chłopiec|chlopiec|dziewczynka|dzieci|ptaki|wiatr)\b/);
   if (m2) return { subject: (m2[1][0].toUpperCase()+m2[1].slice(1)), person: 3 };
 
   return { subject: 'On/Ona', person: 3 };
@@ -1479,12 +1474,10 @@ function dedupeVerbInQuestion(q){
   s = s.replace(/\b(ksiazke|książkę|kakao|zup[eęa]|komiks|piłk[ae]|muzyke|muzykę)\s+(czyta|pije|je|gra)\?/gi, '$2?');
   return s;
 }
-
 function cleanQuestion(q) {
   if (!q) return q;
   let s = q.trim().replace(/\s+/g,' ').replace(/[„”"']/g, '');
 
-  // sanizacja „dziwne konstrukcje”
   s = s.replace(/^Kiedy\s+Po\b.*$/iu, 'Kiedy to było?');
   s = s.replace(/^Gdzie\s+.+\b(jest|stoi|leży|lezy)\?$/iu, 'Gdzie to było?');
   s = s.replace(/^Co robi\s+Po\b.*$/iu, 'Co robi?');
@@ -1497,17 +1490,15 @@ function cleanQuestion(q) {
     s = /^(?=.*\bGdzie\b)/iu.test(s) ? 'Gdzie to było?' :
         /^(?=.*\bKiedy\b)/iu.test(s) ? 'Kiedy to było?' : 'Co się dzieje?';
   }
-
   const words = s.split(' ');
   if (words.length > 8) s = words.slice(0, 8).join(' ') + '?';
   if (!/\?\s*$/.test(s)) s = s.replace(/[?]*\s*$/,'') + '?';
   s = s[0].toUpperCase() + s.slice(1);
   return dedupeVerbInQuestion(s);
 }
-
 function cleanShortAnswer(a, srcSentence = '') {
   let s = normalizeSoft(String(a || '').trim());
-  s = s.replace(/\bpo\s+południu\b(?:\s+po\s+południu\b)+/gi, 'po południu'); // duplikaty
+  s = s.replace(/\bpo\s+południu\b(?:\s+po\s+południu\b)+/gi, 'po południu');
   s = s.replace(/[.,;:!?…]+$/u, '').trim();
   s = s.split(/\s+/).slice(0, 6).join(' ');
   if (!s) return s;
@@ -1518,7 +1509,6 @@ function cleanShortAnswer(a, srcSentence = '') {
   if (PREP_START.test(s) || TIME_START.test(s)) {
     return s[0].toLowerCase() + s.slice(1);
   }
-  // Nazwy własne — podnieś, jeśli w źródle była wielka
   if (s[0] === s[0].toLowerCase()) {
     const words = s.split(' ');
     const first = words[0];
@@ -1534,30 +1524,42 @@ function cleanShortAnswer(a, srcSentence = '') {
 // ——— Ekstrakcja slotów ———
 function extractSlots(sentence=''){
   const src = normalizeSoft(sentence);
+
   const timeMatch = (src.match(RE_TIME)||[])[0] || '';
+  const dirMatch = (src.match(RE_DIR_TO)||[])[0] || '';
+
   const placeMatchRaw = (src.match(RE_PLACE)||[])[0] || '';
   let place = placeMatchRaw ? trimPlace(placeMatchRaw, src) : '';
 
-  let purpose = '';
-  let purposeStarts = false;
-  const pm = src.match(RE_PURPOSE);
-  if (pm) {
-    purposeStarts = src.trim().toLowerCase().startsWith(pm[0].toLowerCase());
-    const pm2 = src.match(/(żeby|aby|by|bo|ponieważ|poniewaz|dlatego że|dlatego ze|w celu|po to)\s+([^,.!?]{1,80})/iu);
-    if (pm2){
-      purpose = (pm2[1] + ' ' + pm2[2]).replace(/\s+/g,' ').trim();
-      purpose = purpose.split(/\s+/).slice(0,8).join(' ');
-    }
+  // jeżeli jest kierunek „do …”, preferuj jako miejsce
+  let direction = '';
+  if (dirMatch) {
+    direction = trimPlace(dirMatch, src);
+    if (direction) place = direction;
   }
 
-  const verbMatch = (src.match(VERB_RE)||[])[0] || '';
+  // cel — bierzemy zawsze, jeśli istnieje marker
+  let purpose = '';
+  const pm2 = src.match(/(żeby|aby|by|bo|ponieważ|poniewaz|dlatego że|dlatego ze|w celu|po to)\s+([^,.!?]{1,80})/iu);
+  if (pm2){
+    purpose = (pm2[1] + ' ' + pm2[2]).replace(/\s+/g,' ').trim();
+    purpose = purpose.split(/\s+/).slice(0,8).join(' ');
+  }
+
+  let verbMatch = (src.match(VERB_RE)||[])[0] || '';
+  if (!verbMatch){
+    // bardzo miękki fallback: pierwszy wyraz z końcówką „ę/e/amy/emy”
+    const alt = src.match(/\b[\p{L}\p{M}]+(?:ę|e|amy|emy)\b/iu);
+    if (alt) verbMatch = alt[0];
+  }
+
   const { subject, person } = pickSubject(src);
 
   return {
-    time: timeMatch.trim(),
-    place: place.trim(),
-    purpose: purpose.trim(),
-    purposeStarts,
+    time: (timeMatch||'').trim(),
+    place: (place||'').trim(),
+    direction: (direction||'').trim(),
+    purpose: (purpose||'').trim(),
     verb: (verbMatch||'').trim(),
     subject, person,
     normalized: src
@@ -1566,14 +1568,14 @@ function extractSlots(sentence=''){
 
 // ——— Budowa Q/A ———
 function buildQAFromSlots(slots, sentence){
-  const { time, place, purpose, purposeStarts, verb, subject, person } = slots;
+  const { time, place, direction, purpose, verb, subject, person } = slots;
 
-  // priorytet: początek zdania celem → „Po co?”
-  if (purpose && purposeStarts) {
+  // 1) CEL — jeśli występuje marker celu, zawsze „Po co?”
+  if (purpose) {
     return { question: 'Po co?', answer: cleanShortAnswer(purpose, sentence) };
   }
 
-  // czas > miejsce > cel > akcja
+  // 2) CZAS
   if (time) {
     if (person === 1.5 && /wracamy\b/i.test(sentence)) {
       return { question: 'Kiedy wracamy?', answer: cleanShortAnswer(time, sentence) };
@@ -1583,26 +1585,34 @@ function buildQAFromSlots(slots, sentence){
     return { question: cleanQuestion(q), answer: cleanShortAnswer(time, sentence) };
   }
 
+  // 3) KIERUNEK/MIEJSCE
   if (place) {
-    if (person === 1.5 && /wracamy\b/i.test(sentence)) {
-      return { question: 'Dokąd wracamy?', answer: cleanShortAnswer(place, sentence) };
+    // kierunek „do …” → Dokąd…?
+    if (/^do\b/i.test(place)) {
+      let q;
+      if (person === 1.5 && verb) q = `Dokąd ${verb}?`;        // „Dokąd wracamy?”
+      else if (person === 1)      q = 'Dokąd idziesz?';
+      else if (subject && verb)   q = `Dokąd ${subject} ${verb}?`;
+      else                        q = 'Dokąd?';
+      return { question: cleanQuestion(q), answer: cleanShortAnswer(place, sentence) };
     }
+
+    // zwykłe „Gdzie…?”
     let q;
-    if (person===1 && verb) q = `Gdzie jesteś?`;
+    if (person===1) q = 'Gdzie jesteś?';
+    else if (person===1.5 && verb) q = `Gdzie ${verb}?`;       // „Gdzie gramy?”
     else if (subject && verb) q = `Gdzie ${subject} ${verb}?`;
     else if (subject) q = `Gdzie jest ${subject}?`;
     else q = `Gdzie to było?`;
     return { question: cleanQuestion(q), answer: cleanShortAnswer(place, sentence) };
   }
 
-  if (purpose) {
-    return { question: 'Po co?', answer: cleanShortAnswer(purpose, sentence) };
-  }
-
+  // 4) AKCJA
   if (verb) {
     const q = person===1 ? 'Co robisz?' : (person===1.5 ? 'Co robimy?' : (subject ? `Co robi ${subject}?` : 'Co się dzieje w zdaniu?'));
     return { question: cleanQuestion(q), answer: cleanShortAnswer(verb, sentence) };
   }
+
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
 
@@ -1619,7 +1629,6 @@ function ruleOne(sentence=''){
     llm_provider: null
   };
 }
-
 function ruleMulti(text='', want=3){
   const sents = qz_splitSentences(text);
   return sents.slice(0, Math.max(1, Math.min(want, sents.length||1))).map(s => ruleOne(s));
@@ -1635,10 +1644,8 @@ app.post('/agent/comprehend-multi', async (req, res) => {
 
     const want = Math.min(5, Math.max(1, Number(count)||3));
 
-    // Deterministycznie z reguł
     let out = ruleMulti(src, want);
 
-    // format + nagłówki
     const sents = qz_splitSentences(src);
     out = out.slice(0, want).map((x,i)=>({
       question: cleanQuestion(x.question),
@@ -1678,6 +1685,7 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
