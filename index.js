@@ -1379,7 +1379,7 @@ const RE_TIME = new RegExp(
 );
 
 /** CEL/PRZYCZYNA */
-const RE_PURPOSE  = /\b(żeby|aby|by|bo|ponieważ|dlatego że|w celu|po to)\b/iu;
+const RE_PURPOSE  = /\b(żeby|zeby|aby|by|bo|ponieważ|poniewaz|dlatego że|dlatego ze|w celu|po to)\b/iu;
 /** odpowiedzi na „Gdzie…?” powinny zaczynać się przyimkiem miejsca */
 const RE_PLACE_ANS_START = /^\s*(w|we|na|do|przy|pod|u|obok|koło|kolo|nad|za|między|miedzy|poza)\b/iu;
 
@@ -1405,44 +1405,27 @@ function hardTimeout(promise, ms) {
   });
 }
 
-/** lista czasowników (rozszerzona o szuka/wraca/dzwoni) */
-const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę|szuka|szukam|szukamy|wraca|wracam|wracamy|dzwoni|dzwonię)\b/iu;
+/** lista czasowników (również 1. os. l.poj. i parę -my) do wykrywania czynności */
+const VERB_RE = /\b(śpi|śpię|spi|spie|czyta|czytam|pisze|piszę|rysuje|rysuję|maluje|maluję|je|jem|pije|piję|ogląda|oglądam|oglad|słucha|słucham|slucha|slucham|idzie|idę|ide|biegnie|biegnę|biegne|wracamy|szukamy|wracam|szukam|gra|gram|stoi|stoję|stoje|siedzi|siedzę|siedze|leży|lezy|leżę|leze|patrzy|uczy\s+się|uczę\s+się|uczy|uczę)\b/iu;
 
-/** (do przycinania końcówki „miejsce + czasownik”) – używane też do cięcia po pierwszym czasowniku */
-const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi|dzwoni|szuka|wraca|wracam|wracamy|szukam|szukamy)$/i;
-
-/** prepozycje, by nie mylić z podmiotem („Po”, „W”, „Na”, „Do” itd.) */
-const PREP_TOKENS = /^(po|w|we|na|do|u|o|za|nad|pod|między|miedzy|przy)$/i;
+/** (do przycinania końcówki „miejsce + czasownik”) */
+const PLACE_VERBS = /(jest|stoi|leży|lezy|idzie|biegnie|wieje|patrzy|pisze|czyta|maluje|rysuje|słucha|slucha|gra|je|pije|śpi|spi|ogląda|oglad|siedzi)$/i;
 
 function trimPlace(p='') {
-  const toksAll = String(p).trim().split(/\s+/).filter(Boolean);
-
-  // 1) utnij przy pierwszym czasowniku (np. "w bibliotece szukamy nowej..." -> "w bibliotece")
-  let cut = toksAll.length;
-  for (let i = 0; i < toksAll.length; i++) {
-    const tok = toksAll[i];
-    if (PLACE_VERBS.test(tok) || VERB_RE.test(tok)) { cut = i; break; }
-  }
-  let toks = toksAll.slice(0, cut);
-
-  // 2) usuń spójnik końcowy typu "i", "oraz", "a", "potem"
-  while (toks.length && /^(i|oraz|ale|a|potem)$/i.test(toks[toks.length-1])) toks.pop();
-
-  // 3) ogranicz do 4 tokenów
-  toks = toks.slice(0, 4);
-
-  // 4) jeśli nadal ostatni to czasownik – usuń
+  let toks = String(p).trim().split(/\s+/)
+    .filter(w => !/^(i|oraz|ale|a|potem)$/i.test(w))
+    .slice(0, 4);
   while (toks.length && PLACE_VERBS.test(toks[toks.length-1])) toks.pop();
-
   return toks.join(' ');
 }
 
-/** Detekcja osoby */
+/** Detekcja osoby — DODANO wykrycie 1. os. liczby mnogiej („-my”) */
 function detectPerson(text='') {
   const t = String(text).toLowerCase();
-  if (/\b(ja|jestem|robię|ide|idę|mam|czytam|siedzę|będę|zrobiłem|poszedłem|jadę|jem)\b/.test(t) || /\b\w+ę\b/.test(t)) return 1;
-  if (/\b(ty|robisz|idziesz|masz|czytasz|siedzisz|będziesz|zrobiłeś|jesz)\b/.test(t)) return 2;
-  return 3;
+  if (/\b(ja|jestem|robię|ide|idę|mam|czytam|siedzę|będę|zrobiłem|poszedłem|jadę|jem)\b/.test(t) || /\b\w+ę\b/.test(t)) return 1; // 1. poj.
+  if (/\b(ty|robisz|idziesz|masz|czytasz|siedzisz|będziesz|zrobiłeś|jesz)\b/.test(t)) return 2; // 2. poj.
+  if (/\b\w+my\b/.test(t)) return 4; // <= 1. mnoga (my: „wracamy”, „szukamy”)
+  return 3; // 3. os.
 }
 
 // === helpers do formatu odpowiedzi/pytania ===
@@ -1455,15 +1438,22 @@ function cleanShortAnswer(a, srcSentence = '') {
   // Jeżeli odpowiedź zaczyna się od przyimka miejsca/czasu – zostaw małą literę
   const PREP_START = /^(w|we|na|do|u|o|po|za|nad|pod|między|miedzy|przy)\b/i;
   const TIME_START = /^(wczoraj|dzisiaj|dziś|jutro|pojutrze|rano|wieczorem|w\s+południe|po\s+południu|w\s+(poniedziałek|wtorek|środę|srodę|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele|weekend)|po\s+(śniadaniu|sniadaniu|obiedzie|kolacji)|o\s+\d{1,2}[:.]\d{2})\b/i;
+
   const looksPlaceTime = PREP_START.test(s) || TIME_START.test(s);
-  if (looksPlaceTime) return s[0].toLowerCase() + s.slice(1);
+
+  if (looksPlaceTime) {
+    return s[0].toLowerCase() + s.slice(1);
+  }
 
   // Inne (np. imię/nazwa własna): zachowaj wielką, jeśli występuje w zdaniu źródłowym
   if (s[0] === s[0].toLowerCase()) {
     const words = s.split(' ');
     const first = words[0];
     const properInSrc = (srcSentence || '').match(new RegExp(`\\b${first[0].toUpperCase()}${first.slice(1)}\\b`));
-    if (properInSrc) { words[0] = first[0].toUpperCase() + first.slice(1); return words.join(' '); }
+    if (properInSrc) {
+      words[0] = first[0].toUpperCase() + first.slice(1);
+      return words.join(' ');
+    }
   }
   return s;
 }
@@ -1473,6 +1463,8 @@ function dedupeVerbInQuestion(q){
   let s = String(q).replace(/\s+/g,' ').trim();
   s = s.replace(/\b(czyta|pije|je|gra|idzie|biegnie|stoi|siedzi|leży|lezy|ogląda|oglad|pisze|rysuje|maluje|śpi|spi)\s+\1\b/gi, '$1');
   s = s.replace(/\b(ksiazke|książkę|kakao|zup[eęa]|komiks|piłk[ae]|muzyke|muzykę)\s+(czyta|pije|je|gra)\?/gi, '$2?');
+  // AUTOKOREKTA: On/Ona + (wracamy|szukamy) -> usuń „On/Ona”
+  s = s.replace(/\bOn\/Ona\s+(wracamy|szukamy)\b/gi, '$1');
   return s;
 }
 
@@ -1487,6 +1479,9 @@ function cleanQuestion(q) {
   s = s.replace(/^Gdzie\s+jest\s+Potem\b.*$/iu, 'Gdzie to było?');
   s = s.replace(/^Gdzie\s+jest\s+(Na|Po|W|We)\b.*$/iu, 'Gdzie to było?');
   s = s.replace(/^Gdzie\b.*\bPotem\b.*$/iu, 'Kiedy to było?');
+
+  // AUTOKOREKTA #1: „On/Ona wracamy/szukamy” -> bez podmiotu
+  s = s.replace(/\bGdzie\s+On\/Ona\s+(wracamy|szukamy)\?/iu, 'Gdzie $1?');
 
   if (/[.,;:].*\?$/u.test(s)) {
     s = /^(?=.*\bGdzie\b)/iu.test(s) ? 'Gdzie to było?' :
@@ -1655,8 +1650,21 @@ async function llmQuestionsRace(text, countHint){
   }
 }
 
+/** WYCIĄGANIE CELU do odpowiedzi przy „Żeby/aby/po to…” */
+function extractPurposeAnswer(text=''){
+  const m = text.match(/\b(żeby|zeby|aby|by|po to|w celu)\s+([^.,;!?]+)/iu);
+  if (!m) return '';
+  // max 6 słów, zostaw małe „żeby/aby…”
+  return (m[0] || '').trim().split(/\s+/).slice(0, 6).join(' ');
+}
+
 function heuristicQA(sentence){
   const text = String(sentence||'').trim();
+
+  // 1) Najpierw cel: „Żeby…/Aby…/po to…”
+  if (RE_PURPOSE.test(text)) {
+    return { question: 'Po co?', answer: extractPurposeAnswer(text) };
+  }
 
   const TIME_TOKENS = [
     'wczoraj','dzisiaj','dziś','jutro','pojutrze','rano','wieczorem','w południe','po południu',
@@ -1670,10 +1678,9 @@ function heuristicQA(sentence){
 
   let subjToken = (text.match(/^([A-ZŁŚŻŹĆŃÓ][\p{L}\p{M}\-']+)/iu)||[])[1] || '';
   if (isTimeToken(subjToken)) subjToken = ''; // „Jutro” nie jest imieniem
-  if (subjToken && PREP_TOKENS.test(subjToken)) subjToken = ''; // <-- NOWE: nie traktuj „Po/W/Na/Do/…” jako podmiotu
 
   const subjNoun = (text.toLowerCase().match(/^(piesek|pies|kot|mama|tata|kolega|koleżanka|chłopiec|dziewczynka)/)||[])[1] || '';
-  const person = detectPerson(text);
+  const person = detectPerson(text);  // 1,2,3 lub 4 (=my)
   const subject = person === 1 ? 'Ty' : (subjToken || subjNoun || 'On/Ona');
 
   const placeRaw = (text.match(RE_PLACE)||[])[0];
@@ -1683,15 +1690,38 @@ function heuristicQA(sentence){
   const mVerb = (text.match(VERB_RE)||[])[0];
   const verbLow = mVerb ? mVerb.toLowerCase() : '';
 
-  // najpierw czas (poprawna forma dla 1. os.)
-  if (time && subject && verbLow)  return { question: person===1?`Kiedy to się dzieje?`:`Kiedy ${subject} ${verbLow}?`, answer: time };
-  if (time)                        return { question: 'Kiedy to się dzieje?', answer: time };
+  // 2) czas
+  if (time) {
+    return { question: 'Kiedy to się dzieje?', answer: time };
+  }
 
-  if (place && subject && verbLow) return { question: person===1?`Gdzie jesteś?`:`Gdzie ${subject} ${verbLow}?`, answer: place };
-  if (place && subject)            return { question: person===1?`Gdzie jesteś?`:`Gdzie jest ${subject}?`,         answer: place };
+  // 3) miejsce + czasownik
+  if (place && verbLow) {
+    // 1. os. mnoga — poprawne formy „Gdzie/Dokąd …?”
+    if (person === 4) {
+      const isGoal = /^do\b|^na\b|^ku\b/i.test(place);
+      return { question: (isGoal ? `Dokąd ${verbLow}?` : `Gdzie ${verbLow}?`), answer: place };
+    }
+    // 1. os. poj. (Ty)
+    if (person === 1) return { question: 'Gdzie jesteś?', answer: place };
+    // 3. os. / brak pewności — klasyczne
+    return { question: `Gdzie ${subject} ${verbLow}?`, answer: place };
+  }
 
-  if (verbLow && subject)          return { question: person===1? 'Co robisz?' : `Co robi ${subject}?`, answer: verbLow };
-  if (verbLow)                     return { question: 'Co się dzieje w zdaniu?', answer: verbLow };
+  // 4) samo miejsce
+  if (place) {
+    if (person === 1) return { question: 'Gdzie jesteś?', answer: place };
+    return { question: `Gdzie jest ${subject}?`, answer: place };
+  }
+
+  // 5) sam czasownik
+  if (verbLow) {
+    if (person === 4) return { question: 'Co robimy?', answer: verbLow };
+    if (person === 1) return { question: 'Co robisz?', answer: verbLow };
+    return { question: `Co robi ${subject}?`, answer: verbLow };
+  }
+
+  // 6) fallback
   return { question: 'O co chodzi w zdaniu?', answer: '' };
 }
 
@@ -1741,14 +1771,15 @@ app.post('/agent/comprehend-multi', async (req, res) => {
       llm_provider: provider || (x.fallback ? 'fallback' : null)
     }));
 
-    // WYMUSZENIE: jeśli dana fraza ma miejsce/czas, nadpisz pytaniem heurystycznym (preferuj czas nad miejsce)
+    // WYMUSZENIE: jeśli dana fraza ma miejsce/czas, nadpisz pytaniem heurystycznym
     out = out.map((item, i) => {
       const sent = sents[i] || sents[0] || src;
       const hasPlace = RE_PLACE.test(sent);
       const hasTime  = RE_TIME.test(sent);
+
       if (hasPlace || hasTime) {
         const h = heuristicQA(sent);
-        if (h && h.answer) {
+        if (h && h.answer !== undefined) {
           return {
             ...item,
             question: dedupeVerbInQuestion(h.question),
@@ -1786,7 +1817,7 @@ app.post('/agent/comprehend', async (req, res) => {
     const hasPlace = RE_PLACE.test(bestSent);
     const hasTime  = RE_TIME.test(bestSent);
     const hasVerb  = VERB_RE.test(bestSent);
-    if ((hasPlace || hasTime || hasVerb) && h0.answer) {
+    if ((hasPlace || hasTime || hasVerb) && h0.answer !== undefined) {
       const qa = {
         question: dedupeVerbInQuestion(h0.question),
         answer: cleanShortAnswer(h0.answer, bestSent),
@@ -1828,6 +1859,7 @@ app.post('/agent/comprehend', async (req, res) => {
   }
 });
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
