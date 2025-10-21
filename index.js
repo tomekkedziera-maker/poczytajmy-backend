@@ -1361,7 +1361,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
   }
 
-  const text = String(textRaw).normalize('NFC').trim();
+  const text = String(textRaw).normalize("NFC").trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   const VERBS = [
@@ -1388,7 +1388,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
-    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","garazu","garażu"
+    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","domem","bramie","oknie","dywanie","kartonie","garazu","garażu","kuchni"
   ];
 
   const SPECIFIC_HINTS = [
@@ -1403,14 +1403,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
 
-  // Rehydratacja: przywraca polskie znaki na podstawie oryginalnego zdania (diakrytyczno-niezależnie)
+  // Deakcentyzacja kompatybilna (bez \p{M})
+  const deaccent = (s) => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  // Rehydratacja: przywraca polskie znaki z oryginału (diakrytyczno-i-case-niezależnie)
   function rehydrateFromOriginal(orig, frag){
     if (!orig || !frag) return frag || "";
-    const deaccent = (s) => s.normalize("NFD").replace(/\p{M}+/gu, "");
-    const o = String(orig), f = String(frag);
-    const i = deaccent(o).toLowerCase().indexOf(deaccent(f).toLowerCase());
-    return i >= 0 ? o.substring(i, i + f.length) : frag;
+    const oDA = deaccent(orig);
+    const fDA = deaccent(frag);
+    const i = oDA.toLowerCase().indexOf(fDA.toLowerCase());
+    if (i < 0) return frag;
+    return orig.substring(i, i + frag.length);
   }
 
   const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
@@ -1444,7 +1449,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
-    // mocniej premiuj „w/na …” nad „pod/przy/za…”
+    // jeszcze mocniej premiuj „w/na …” i karz „pod/przy/za/przed/obok/u …”
     if (/^\s*(w|we|na)\b/i.test(low)) s += 3.0;
     if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 1.0;
     s += Math.min(2, Math.floor(low.length/12));
@@ -1454,8 +1459,11 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function pickPlaceFromSentence(sentence){
     const pps = splitPPs(sentence);
     if (!pps.length) return null;
-    const filtered = pps.filter(pp => !isActivityPP(pp));
-    const candidates = filtered.length ? filtered : pps;
+    // twarda preferencja: jeśli są frazy z „w/na …”, rozważaj tylko je
+    const inside = pps.filter(pp => /^\s*(w|we|na)\b/i.test(pp));
+    const pool = inside.length ? inside : pps;
+    const filtered = pool.filter(pp => !isActivityPP(pp));
+    const candidates = filtered.length ? filtered : pool;
     let best = null, bestScore = -1;
     for (let i=0;i<candidates.length;i++){
       const sc = scorePlace(candidates[i]) + i*0.01;
@@ -1464,13 +1472,12 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(best);
   }
 
-  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
-
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
     a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
-    return stripPunct(normalizeSpaces(a));
+    a = stripPunct(normalizeSpaces(a));
+    return a || ans; // nie pozwól wyczyścić do pustego
   }
 
   function stripTrailingTimeWords(arr){
@@ -1485,15 +1492,14 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    // znajdź OSTATNI cel, nie przekraczaj kolejnego „do|na”
+    // OSTATNI cel, nie przekraczaj kolejnego „do|na”
     const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+(?!\b(?:do|na)\b)[\p{L}0-9:\-]+){0,4})\b/giu;
     let m, last=null; while ((m = re.exec(s)) !== null) last = m;
     if (!last) return null;
     let dest = `${last[1]} ${last[2]}`.trim();
     dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
+    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, ""); // „po kolacji / po południu / po sok”
     dest = stripPunct(normalizeSpaces(dest));
-    dest = rehydrateFromOriginal(text, dest);
     return dest;
   }
 
@@ -1521,21 +1527,27 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return m ? stripPunct(m[1].trim()) : null;
   }
 
+  // Rehydratacja token-po-tokenie (dla całej odpowiedzi)
+  function rehydrateAnswerFromOriginal(orig, answer){
+    if (!answer) return answer;
+    const tokens = answer.split(/\s+/).map(tok => rehydrateFromOriginal(orig, tok));
+    return normalizeSpaces(tokens.join(" "));
+  }
+
   // --- Kolejność decyzji ---
   if (hasMoveVerb && hasToPhrase) {
-    const dest = extractDestination(t);
+    let dest = extractDestination(t);
     if (dest) {
-      const a = rehydrateFromOriginal(text, dest);
-      return { ok: true, question: "Dokąd?", answer: a, source_path: "rule-teacher-strict-v4" };
+      dest = rehydrateAnswerFromOriginal(text, dest);
+      return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
     }
   }
 
   if (hasLoc) {
     let loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
-    loc = rehydrateFromOriginal(text, loc);
     if (loc) {
-      const a = rehydrateFromOriginal(text, loc);
-      return { ok: true, question: "Gdzie?", answer: a, source_path: "rule-teacher-strict-v4" };
+      loc = rehydrateAnswerFromOriginal(text, loc);
+      return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
     }
   }
 
