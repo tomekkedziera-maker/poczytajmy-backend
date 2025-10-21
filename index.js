@@ -1374,6 +1374,17 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "Zosia","Ala","Lena","Julek","Ola","Chłopiec","Chlopiec","Dziewczynka"
   ];
 
+  // ——— DODANE: proste rozpoznawanie „w + aktywność” (do odfiltrowania przy Gdzie?)
+  const ACTIVITY_W_ACC = [
+    "piłkę","pilke","berka","chowanego","grę","gre","gry","karty","planszówki","planszowki",
+    "klasy","siatkówkę","siatkowke","koszykówkę","koszykowke","zabawy","minecrafta","robloxa"
+  ];
+  const PLACE_HINTS = [
+    "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
+    "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
+    "stole","stołem","stołem","stolem"
+  ];
+
   // szybkie testy cech
   const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|jad[eę]|jedziesz|jedziemy|wracam|wracamy|biegnie|biegne|biegniemy)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+(?:\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+){0,3}\b/.test(t); // do sklepu / na boisko
@@ -1408,6 +1419,49 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       }, [])
       .join(" ");
     return cut || raw;
+  }
+
+  // ——— DODANE: pełniejsze zbieranie PP i wybór najlepszej lokalizacji
+  function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
+
+  function splitPPs(sentence){
+    const re = /\b(we|w|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9\- ]{1,40}\b/giu;
+    const out = [];
+    let m;
+    while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
+    return out;
+  }
+
+  function isActivityPP(pp){
+    const m = pp.toLowerCase().match(/^\bwe?\s+([a-ząćęłńóśźż\-]+)/i);
+    if(!m) return false;
+    const head = m[1];
+    return ACTIVITY_W_ACC.includes(head);
+  }
+
+  function scorePlace(pp){
+    let s = 0;
+    const low = pp.toLowerCase();
+    for (const hint of PLACE_HINTS){
+      if (low.includes(hint)) s += 2;
+    }
+    s += Math.min(2, Math.floor(low.length / 12)); // trochę faworyzuj dłuższe, np. „w koszyku pod stołem”
+    s += 1; // lekki bias, by nie przegrało z bardzo krótkim PP
+    return s;
+  }
+
+  function pickPlaceFromSentence(sentence){
+    const pps = splitPPs(sentence);
+    if (!pps.length) return null;
+    const filtered = pps.filter(pp => !isActivityPP(pp));
+    const candidates = (filtered.length ? filtered : pps);
+    // wybierz najlepiej punktowaną; przy remisie preferuj późniejsze (bliżej końca)
+    let best = null, bestScore = -1;
+    for (let i=0;i<candidates.length;i++){
+      const sc = scorePlace(candidates[i]) + i*0.01;
+      if (sc > bestScore){ best = candidates[i]; bestScore = sc; }
+    }
+    return normalizeSpaces(best);
   }
 
   // 2) fraza celu ruchu (Dokąd?)
@@ -1453,7 +1507,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // --- Kolejność decyzji (priorytety pytań) ---
   // Gdzie?
   if (hasLoc) {
-    const loc = extractLocationPhrase(t);
+    // ZAMIANA: zamiast prostej extractLocationPhrase – wybór najlepszego PP z filtrem aktywności
+    const loc = pickPlaceFromSentence(t) || extractLocationPhrase(t);
     if (loc) {
       return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
     }
@@ -1546,6 +1601,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 // module.exports = { generateQuestionAndAnswerTeacher };
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
