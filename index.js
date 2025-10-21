@@ -1381,7 +1381,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "piłkę","pilke","berka","chowanego","grę","gre","gry","karty","planszówki","planszowki",
     "klasy","siatkówkę","siatkowke","koszykówkę","koszykowke","zabawy","minecrafta","robloxa"
   ];
-  // „na + obiekt obserwacji/celu” (nie miejsce): patrzy na ptaki, ogląda na film
+  // „na + obiekt obserwacji/celu” (np. patrzy na ptaki)
   const ACTIVITY_NA = [
     "ptaki","ptaka","ptaków","ptakow","bajkę","bajke","bajki","film","filmy","bajeczkę","bajeczke","gwiazdy"
   ];
@@ -1401,7 +1401,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // szybkie testy cech (rozszerzone formy ruchu)
   const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
-  const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/u.test(t);
+  const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
   const hasTime =
     /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
     /\b(wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie)\b/i.test(t) ||
@@ -1414,13 +1414,14 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // --- Helpery: miejsca ---
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
 
-  // PREP (przyimek) i wersja, która nie połyka kolejnego PP
- const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
+  // Przyimki (jako fragment wzorca)
+  const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
+
   function splitPPs(sentence){
     // PP = PRZYIMEK + token; do 4 kolejnych tokenów, ale KAŻDY kolejny nie może być przyimkiem.
-    // Używamy \\S+ (nie-białe), by nie ucinać na polskich znakach (np. „podwórku”).
+    // Używamy \S+ (nie-białe), by nie ucinać na polskich znakach (np. „podwórku”).
     const re = new RegExp(
-      String.raw`\\b(${PREP})\\s+\\S+(?:\\s+(?!${PREP}\\b)\\S+){0,4}`,
+      String.raw`\b(${PREP})\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,
       "gi"
     );
     const out = []; let m;
@@ -1490,7 +1491,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    // DOPUSZCZAMY „:” w tokenach, żeby całe „o 16:30” dało się później wyciąć
+    // Dopuszczamy „:” w tokenach, by potem wyciąć cały ogon czasu „o 16:30”
     const m = s.match(/\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/iu);
     if (!m) return null;
     let dest = `${m[1]} ${m[2]}`.trim();
@@ -1614,6 +1615,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 });
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
