@@ -1607,6 +1607,8 @@ app.listen(PORT, () => {
   console.log(`🎧 Groq ${groq ? 'podłączony' : 'OFF'} (chat=${GROQ_CHAT_MODEL}, asr=${GROQ_ASR_MODEL})`);
   console.log(`🤖 OpenAI ${openai ? 'podłączony' : 'OFF'}`);
   console.log(`🧠 LLM_PREF=${LLM_PREF}`);
+  console.log("Build tag: 2025-10-21 rehydrate+placefix");
+
 
   // mały delay, żeby połączenia mogły się ustawić
   setTimeout(prewarmOnce, 500);
