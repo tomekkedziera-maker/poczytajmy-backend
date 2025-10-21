@@ -1352,7 +1352,7 @@ app.get('/tts-voices', async (_req, res) => {
 // Wyjście: { ok, question, answer, source_path }
 
 // (opcjonalnie) skracanie złożonych lokalizacji „w koszyku pod stołem” → „w koszyku”
-const SHORTEN_PLACE = false;
+const SHORTEN_PLACE = true;
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
