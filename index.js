@@ -1355,14 +1355,14 @@ app.get('/tts-voices', async (_req, res) => {
 
 const SHORTEN_PLACE = false;               // true = np. „w legowisku” zamiast „w legowisku pod biurkiem”
 const PREFER_SPECIFIC_PLACE = true;        // true = preferuj „na kanapie” zamiast „w salonie”
-const PREFER_INSIDE_OVER_NEAR = true;      // true = preferuj „w/na …” ponad „za/przy/pod/przed/obok/u …”
+const PREFER_INSIDE_OVER_NEAR = true;      // true = „w salonie” ważniejsze niż „pod stołem”
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
     return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
   }
 
-  const text = String(textRaw).normalize("NFC").trim();
+  const text = textRaw.trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   const VERBS = [
@@ -1394,7 +1394,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   const SPECIFIC_HINTS = [
     "kanapie","krześle","krzesle","fotelu","łóżku","lozku","biurku","stole","stołem","stolem",
-    "ławce","lawce","dywanie","chodniku","kartonie","balkonie","fotelu"
+    "ławce","lawce","dywanie","chodniku","kartonie","balkonie"
   ];
 
   const TIME_TOKENS = [
@@ -1403,7 +1403,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "sobote","niedzielę","niedziele","o"
   ];
 
-  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|wracaja|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
   const hasTime =
     /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
@@ -1414,20 +1414,22 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const hasLoc = /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[\p{L}0-9\-]+/iu.test(t);
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
-  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
 
-  // 🔁 Rehydratacja — przywraca oryginalne ogonki z 'text'
+  // Rehydratacja diakrytyczno-niezależna (przywraca polskie znaki z oryginału)
   function rehydrateFromOriginal(orig, frag){
     if (!orig || !frag) return frag || "";
-    const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const m = orig.match(new RegExp(esc, "iu"));
-    return m ? m[0] : frag;
+    const deaccent = (s) => s.normalize("NFD").replace(/\p{M}+/gu, "");
+    const o = String(orig);
+    const f = String(frag);
+    const oDA = deaccent(o);
+    const fDA = deaccent(f);
+    const i = oDA.toLowerCase().indexOf(fDA.toLowerCase());
+    if (i < 0) return frag;
+    return o.substring(i, i + f.length);
   }
 
-  // --- PP (frazy przyimkowe) ---
   const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
   function splitPPs(sentence){
-    // Uwaga: tu MUSZĄ być JEDNE backslashe w String.raw!
     const re = new RegExp(String.raw`\b(${PREP})\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,"gi");
     const out = []; let m;
     while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
@@ -1436,7 +1438,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   function isActivityPP(pp){
     const low = pp.toLowerCase();
-    const mW  = low.match(/^\bwe?\s+([\p{L}\-]+)/u);
+    const mW = low.match(/^\bwe?\s+([\p{L}\-]+)/u);
     if (mW && ACTIVITY_W_ACC.includes(mW[1])) return true;
     const mNa = low.match(/^\bna\s+([\p{L}\-]+)/u);
     if (mNa && ACTIVITY_NA.includes(mNa[1])) return true;
@@ -1448,8 +1450,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
     if (PREFER_INSIDE_OVER_NEAR){
-      if (/^\s*(w|we|na)\b/i.test(low)) s += 1.2;
-      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.8;
+      if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
+      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.5;
     }
     s += Math.min(2, Math.floor(low.length/12));
     return s;
@@ -1472,6 +1474,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(best);
   }
 
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
+
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
@@ -1491,36 +1495,38 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    const m = s.match(/\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/iu);
-    if (!m) return null;
+    const matches = [...s.matchAll(/\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/iu)];
+    if (!matches.length) return null;
+    const m = matches[matches.length - 1];
     let dest = `${m[1]} ${m[2]}`.trim();
     dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
+    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, ""); // usuń końcówkę typu "po kolacji"
     dest = stripPunct(normalizeSpaces(dest));
     return rehydrateFromOriginal(text, dest);
   }
 
   function extractTime(s) {
     const m = s.match(/\b(o\s+\d{1,2}:\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\b/i);
-    return m ? rehydrateFromOriginal(text, stripPunct(m[0].trim())) : null;
+    return m ? stripPunct(m[0].trim()) : null;
   }
 
   function extractWho(s) {
     const whoRe = /\b([A-ZŁŚŻŹĆŃÓĄĘ][a-ząćęłńóśźż]+|Dzieci|Pies|Kot|Dziadek|Tata|Mama)\b/;
     const m = s.match(whoRe);
-    if (m) return rehydrateFromOriginal(text, stripPunct(m[1]));
-    for (const w of WHO_LIST) { if (s.includes(w)) return rehydrateFromOriginal(text, stripPunct(w)); }
+    if (m) return stripPunct(m[1]);
+    for (const w of WHO_LIST) { if (s.includes(w)) return stripPunct(w); }
     return null;
   }
 
   function extractAction(s) {
     const re = new RegExp(`\\b(${VERBS.join("|")})\\b`, "i");
     const m = s.match(re);
-    return m ? rehydrateFromOriginal(text, stripPunct(m[1])) : null;
+    return m ? stripPunct(m[1]) : null;
   }
 
   function extractWhat(s) {
     const m = s.match(/\bmam\s+([^,.;!?]+)$/i);
-    return m ? rehydrateFromOriginal(text, stripPunct(m[1].trim())) : null;
+    return m ? stripPunct(m[1].trim()) : null;
   }
 
   // --- Kolejność decyzji ---
@@ -1530,8 +1536,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   if (hasLoc) {
-    let loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
-    loc = rehydrateFromOriginal(text, loc);
+    const loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
     if (loc) return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
   }
 
@@ -1540,7 +1545,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     if (time) return { ok: true, question: "Kiedy?", answer: time, source_path: "rule-teacher-strict-v4" };
   }
 
-  // Kto? — unikamy w 1.os. l.poj. (tam lepiej „Co robi?”)
   if (!/\b(ide|oglądam|ogladam|czytam|piszę|pisze|patrzę|patrze|zakładam|zakladam|wracam)\b/i.test(t)) {
     const who = extractWho(t);
     if (who) return { ok: true, question: "Kto?", answer: who, source_path: "rule-teacher-strict-v4" };
@@ -1558,7 +1562,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 // --------------------- ENDPOINT: /agent/comprehend -----------------------
 app.post("/agent/comprehend", async (req, res) => {
   try {
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
     const { text } = req.body || {};
     const result = generateQuestionAndAnswerTeacher(text);
     return res.json(result);
@@ -1570,7 +1573,6 @@ app.post("/agent/comprehend", async (req, res) => {
 // ------------------ ENDPOINT: /agent/comprehend-multi --------------------
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
     const { text, count = 1 } = req.body || {};
     if (!text || !text.trim()) {
       return res.json({ ok: true, count: 0, items: [] });
@@ -1594,6 +1596,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 });
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
