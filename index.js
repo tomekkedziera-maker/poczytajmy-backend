@@ -1403,17 +1403,18 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
 
   // Rehydratacja: przywraca polskie znaki na podstawie oryginalnego zdania (diakrytyczno-niezależnie)
   function rehydrateFromOriginal(orig, frag){
     if (!orig || !frag) return frag || "";
-   const deaccent = (s) => s.normalize("NFD").replace(/\p{M}+/gu, "");
+    const deaccent = (s) => s.normalize("NFD").replace(/\p{M}+/gu, "");
     const o = String(orig), f = String(frag);
-   const i = deaccent(o).toLowerCase().indexOf(deaccent(f).toLowerCase());
+    const i = deaccent(o).toLowerCase().indexOf(deaccent(f).toLowerCase());
     return i >= 0 ? o.substring(i, i + f.length) : frag;
   }
 
-  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegne|biegnie|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
   const hasTime =
     /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
@@ -1422,17 +1423,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     /\bpo\s+(lekcjach|obiedzie|śniadaniu|sniadaniu)\b/i.test(t);
 
   const hasLoc = /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[\p{L}0-9\-]+/iu.test(t);
-
-  // Przywraca ogonki na podstawie oryginalnego zdania
-  function rehydrateFromOriginal(original, fragment) {
-    if (!fragment) return fragment;
-    const pattern = fragment
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(pattern, "i");
-    const m = original.match(re);
-    return m ? m[0] : fragment;
-  }
 
   const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
   function splitPPs(sentence){
@@ -1455,7 +1445,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
-// mocniej premiuj „w/na …” nad „pod/przy/za…”
+    // mocniej premiuj „w/na …” nad „pod/przy/za…”
     if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
     if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.5;
     s += Math.min(2, Math.floor(low.length/12));
@@ -1475,8 +1465,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(best);
   }
 
-  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
-
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
@@ -1495,16 +1483,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return arr;
   }
 
-   function extractDestination(s) {
+  function extractDestination(s) {
     // znajdź OSTATNI cel (np. „do zoo” zamiast „na wycieczkę”)
     const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/giu;
-    let m, last=null; while ((m = re.exec(s)) !== null) last = m;
+    let m, last = null;
+    while ((m = re.exec(s)) !== null) last = m;
     if (!last) return null;
-    let dest = `${last[1]} ${last[2]}`.trim();dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-         // utnij „po X” z końca (po kolacji / po południu / po sok)
-+    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
-+    dest = stripPunct(normalizeSpaces(dest));
-+    return rehydrateFromOriginal(text, dest);
+
+    let dest = `${last[1]} ${last[2]}`.trim();
+    dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
+    // utnij „po X” z końca (po kolacji / po południu / po sok)
+    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
+    dest = stripPunct(normalizeSpaces(dest));
+    return rehydrateFromOriginal(text, dest);
   }
 
   function extractTime(s) {
@@ -1561,6 +1552,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v4-fallback" };
 }
+
 
 // --------------------- ENDPOINT: /agent/comprehend -----------------------
 app.post("/agent/comprehend", async (req, res) => {
