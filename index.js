@@ -1361,7 +1361,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
   }
 
-  const text = textRaw.trim();
+  const text = String(textRaw).normalize('NFC').trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   const VERBS = [
@@ -1403,6 +1403,15 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
+
+  // Rehydratacja: przywraca polskie znaki na podstawie oryginalnego zdania (diakrytyczno-niezależnie)
+  function rehydrateFromOriginal(orig, frag){
+    if (!orig || !frag) return frag || "";
+   const deaccent = (s) => s.normalize("NFD").replace(/\p{M}+/gu, "");
+    const o = String(orig), f = String(frag);
+   const i = deaccent(o).toLowerCase().indexOf(deaccent(f).toLowerCase());
+    return i >= 0 ? o.substring(i, i + f.length) : frag;
+  }
 
   const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
@@ -1446,6 +1455,9 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
+// mocniej premiuj „w/na …” nad „pod/przy/za…”
+    if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
+    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.5;
     s += Math.min(2, Math.floor(low.length/12));
     return s;
   }
@@ -1483,16 +1495,16 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return arr;
   }
 
-  function extractDestination(s) {
+   function extractDestination(s) {
+    // znajdź OSTATNI cel (np. „do zoo” zamiast „na wycieczkę”)
     const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/giu;
-    let m, last = null;
-    while ((m = re.exec(s)) !== null) { last = m; }
+    let m, last=null; while ((m = re.exec(s)) !== null) last = m;
     if (!last) return null;
-    let dest = `${last[1]} ${last[2]}`.trim();
-    dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
-    dest = stripPunct(normalizeSpaces(dest));
-    return rehydrateFromOriginal(text, dest);
+    let dest = `${last[1]} ${last[2]}`.trim();dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
+         // utnij „po X” z końca (po kolacji / po południu / po sok)
++    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
++    dest = stripPunct(normalizeSpaces(dest));
++    return rehydrateFromOriginal(text, dest);
   }
 
   function extractTime(s) {
