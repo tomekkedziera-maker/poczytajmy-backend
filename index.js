@@ -1355,13 +1355,14 @@ app.get('/tts-voices', async (_req, res) => {
 
 const SHORTEN_PLACE = false;               // true = np. „w legowisku” zamiast „w legowisku pod biurkiem”
 const PREFER_SPECIFIC_PLACE = true;        // true = preferuj „na kanapie” zamiast „w salonie”
+const PREFER_INSIDE_OVER_NEAR = true;      // true = preferuj „w/na …” ponad „za/przy/pod/przed/obok/u …”
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
     return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
   }
 
-  const text = String(textRaw).normalize('NFC').trim();
+  const text = String(textRaw).normalize("NFC").trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   const VERBS = [
@@ -1402,7 +1403,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "sobote","niedzielę","niedziele","o"
   ];
 
-  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|wracaja|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
   const hasTime =
     /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
@@ -1413,10 +1414,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const hasLoc = /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[\p{L}0-9\-]+/iu.test(t);
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
+
+  // 🔁 Rehydratacja — przywraca oryginalne ogonki z 'text'
+  function rehydrateFromOriginal(orig, frag){
+    if (!orig || !frag) return frag || "";
+    const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = orig.match(new RegExp(esc, "iu"));
+    return m ? m[0] : frag;
+  }
 
   const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
   function splitPPs(sentence){
-    const re = new RegExp(String.raw`\b(${PREP})\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,"gi");
+    const re = new RegExp(String.raw`\\b(${PREP})\\s+\\S+(?:\\s+(?!${PREP}\\b)\\S+){0,4}`,"gi");
     const out = []; let m;
     while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
     return out;
@@ -1424,9 +1434,9 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   function isActivityPP(pp){
     const low = pp.toLowerCase();
-    const mW = low.match(/^\bwe?\s+([\p{L}\-]+)/u);
+    const mW = low.match(/^\\bwe?\\s+([\\p{L}\\-]+)/u);
     if (mW && ACTIVITY_W_ACC.includes(mW[1])) return true;
-    const mNa = low.match(/^\bna\s+([\p{L}\-]+)/u);
+    const mNa = low.match(/^\\bna\\s+([\\p{L}\\-]+)/u);
     if (mNa && ACTIVITY_NA.includes(mNa[1])) return true;
     return false;
   }
@@ -1435,6 +1445,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
+    if (PREFER_INSIDE_OVER_NEAR){
+      if (/^\\s*(w|we|na)\\b/i.test(low)) s += 1.2;
+      if (/^\\s*(przy|pod|za|przed|obok|u)\\b/i.test(low)) s -= 0.8;
+    }
     s += Math.min(2, Math.floor(low.length/12));
     return s;
   }
@@ -1444,7 +1458,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     if (!pps.length) return null;
     if (SHORTEN_PLACE) {
       const first = pps[0];
-      if (first) return first.replace(/\s+(pod|nad|przy|za|przed|obok)\b[\s\S]*$/i, "");
+      if (first) return first.replace(/\\s+(pod|nad|przy|za|przed|obok)\\b[\\s\\S]*$/i, "");
     }
     const filtered = pps.filter(pp => !isActivityPP(pp));
     const candidates = filtered.length ? filtered : pps;
@@ -1456,19 +1470,17 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(best);
   }
 
-  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
-
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
-    a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
-    a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
+    a = a.replace(/\\swe?\\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\\s+(?=(na|do)\\s)/i, " ");
+    a = a.replace(/\\b(we?|na|pod|nad|przy|za|przed|obok|u)\\s+(we?|na|pod|nad|przy|za|przed|obok|u)\\b/gi, "$2");
     return stripPunct(normalizeSpaces(a));
   }
 
   function stripTrailingTimeWords(arr){
     while (arr.length > 0) {
       const last = arr[arr.length - 1].toLowerCase();
-      if (/^\d{1,2}:\d{2}$/.test(last)) { arr.pop(); continue; }
+      if (/^\\d{1,2}:\\d{2}$/.test(last)) { arr.pop(); continue; }
       if (TIME_TOKENS.includes(last)) { arr.pop(); continue; }
       if (/(poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)/i.test(last)) { arr.pop(); continue; }
       break;
@@ -1477,35 +1489,36 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    const m = s.match(/\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/iu);
+    const m = s.match(/\\b(do|na)\\s+([\\p{L}0-9:\\-]+(?:\\s+[\\p{L}0-9:\\-]+){0,4})\\b/iu);
     if (!m) return null;
     let dest = `${m[1]} ${m[2]}`.trim();
-    dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-    return stripPunct(normalizeSpaces(dest));
+    dest = stripTrailingTimeWords(dest.split(/\\s+/)).join(" ");
+    dest = stripPunct(normalizeSpaces(dest));
+    return rehydrateFromOriginal(text, dest);
   }
 
   function extractTime(s) {
-    const m = s.match(/\b(o\s+\d{1,2}:\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\b/i);
-    return m ? stripPunct(m[0].trim()) : null;
+    const m = s.match(/\\b(o\\s+\\d{1,2}:\\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\\b/i);
+    return m ? rehydrateFromOriginal(text, stripPunct(m[0].trim())) : null;
   }
 
   function extractWho(s) {
-    const whoRe = /\b([A-ZŁŚŻŹĆŃÓĄĘ][a-ząćęłńóśźż]+|Dzieci|Pies|Kot|Dziadek|Tata|Mama)\b/;
+    const whoRe = /\\b([A-ZŁŚŻŹĆŃÓĄĘ][a-ząćęłńóśźż]+|Dzieci|Pies|Kot|Dziadek|Tata|Mama)\\b/;
     const m = s.match(whoRe);
-    if (m) return stripPunct(m[1]);
-    for (const w of WHO_LIST) { if (s.includes(w)) return stripPunct(w); }
+    if (m) return rehydrateFromOriginal(text, stripPunct(m[1]));
+    for (const w of WHO_LIST) { if (s.includes(w)) return rehydrateFromOriginal(text, stripPunct(w)); }
     return null;
   }
 
   function extractAction(s) {
     const re = new RegExp(`\\b(${VERBS.join("|")})\\b`, "i");
     const m = s.match(re);
-    return m ? stripPunct(m[1]) : null;
+    return m ? rehydrateFromOriginal(text, stripPunct(m[1])) : null;
   }
 
   function extractWhat(s) {
-    const m = s.match(/\bmam\s+([^,.;!?]+)$/i);
-    return m ? stripPunct(m[1].trim()) : null;
+    const m = s.match(/\\bmam\\s+([^,.;!?]+)$/i);
+    return m ? rehydrateFromOriginal(text, stripPunct(m[1].trim())) : null;
   }
 
   // --- Kolejność decyzji ---
@@ -1515,7 +1528,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   if (hasLoc) {
-    const loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
+    let loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
+    loc = rehydrateFromOriginal(text, loc);
     if (loc) return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
   }
 
@@ -1524,7 +1538,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     if (time) return { ok: true, question: "Kiedy?", answer: time, source_path: "rule-teacher-strict-v4" };
   }
 
-  if (!/\b(ide|oglądam|ogladam|czytam|piszę|pisze|patrzę|patrze|zakładam|zakladam|wracam)\b/i.test(t)) {
+  if (!/\\b(ide|oglądam|ogladam|czytam|piszę|pisze|patrzę|patrze|zakładam|zakladam|wracam)\\b/i.test(t)) {
     const who = extractWho(t);
     if (who) return { ok: true, question: "Kto?", answer: who, source_path: "rule-teacher-strict-v4" };
   }
@@ -1541,7 +1555,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 // --------------------- ENDPOINT: /agent/comprehend -----------------------
 app.post("/agent/comprehend", async (req, res) => {
   try {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     const { text } = req.body || {};
     const result = generateQuestionAndAnswerTeacher(text);
     return res.json(result);
@@ -1553,6 +1567,7 @@ app.post("/agent/comprehend", async (req, res) => {
 // ------------------ ENDPOINT: /agent/comprehend-multi --------------------
 app.post("/agent/comprehend-multi", async (req, res) => {
   try {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     const { text, count = 1 } = req.body || {};
     if (!text || !text.trim()) {
       return res.json({ ok: true, count: 0, items: [] });
@@ -1576,7 +1591,6 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 });
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
-
 
 
 
