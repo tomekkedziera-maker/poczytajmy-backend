@@ -1388,7 +1388,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
-    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","kuchni","garazu","garażu"
+    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","garazu","garażu"
   ];
 
   const SPECIFIC_HINTS = [
@@ -1403,7 +1403,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
-  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
 
   // Rehydratacja: przywraca polskie znaki na podstawie oryginalnego zdania (diakrytyczno-niezależnie)
   function rehydrateFromOriginal(orig, frag){
@@ -1414,7 +1413,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return i >= 0 ? o.substring(i, i + f.length) : frag;
   }
 
-  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegne|biegnie|biegniemy|biegną|biegna)\b/i.test(t);
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
   const hasTime =
     /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
@@ -1446,8 +1445,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
     // mocniej premiuj „w/na …” nad „pod/przy/za…”
-    if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
-    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.5;
+    if (/^\s*(w|we|na)\b/i.test(low)) s += 3.0;
+    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 1.0;
     s += Math.min(2, Math.floor(low.length/12));
     return s;
   }
@@ -1464,6 +1463,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
     return normalizeSpaces(best);
   }
+
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
 
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
@@ -1484,18 +1485,16 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    // znajdź OSTATNI cel (np. „do zoo” zamiast „na wycieczkę”)
-    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/giu;
-    let m, last = null;
-    while ((m = re.exec(s)) !== null) last = m;
+    // znajdź OSTATNI cel, nie przekraczaj kolejnego „do|na”
+    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+(?!\b(?:do|na)\b)[\p{L}0-9:\-]+){0,4})\b/giu;
+    let m, last=null; while ((m = re.exec(s)) !== null) last = m;
     if (!last) return null;
-
     let dest = `${last[1]} ${last[2]}`.trim();
     dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-    // utnij „po X” z końca (po kolacji / po południu / po sok)
     dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
     dest = stripPunct(normalizeSpaces(dest));
-    return rehydrateFromOriginal(text, dest);
+    dest = rehydrateFromOriginal(text, dest);
+    return dest;
   }
 
   function extractTime(s) {
@@ -1525,13 +1524,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // --- Kolejność decyzji ---
   if (hasMoveVerb && hasToPhrase) {
     const dest = extractDestination(t);
-    if (dest) return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
+    if (dest) {
+      const a = rehydrateFromOriginal(text, dest);
+      return { ok: true, question: "Dokąd?", answer: a, source_path: "rule-teacher-strict-v4" };
+    }
   }
 
   if (hasLoc) {
     let loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
     loc = rehydrateFromOriginal(text, loc);
-    if (loc) return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
+    if (loc) {
+      const a = rehydrateFromOriginal(text, loc);
+      return { ok: true, question: "Gdzie?", answer: a, source_path: "rule-teacher-strict-v4" };
+    }
   }
 
   if (hasTime) {
@@ -1552,6 +1557,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v4-fallback" };
 }
+
 
 
 // --------------------- ENDPOINT: /agent/comprehend -----------------------
