@@ -1361,7 +1361,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
   }
 
-  const text = textRaw.trim();
+  const text = String(textRaw).normalize('NFC').trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   const VERBS = [
@@ -1541,6 +1541,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 // --------------------- ENDPOINT: /agent/comprehend -----------------------
 app.post("/agent/comprehend", async (req, res) => {
   try {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const { text } = req.body || {};
     const result = generateQuestionAndAnswerTeacher(text);
     return res.json(result);
