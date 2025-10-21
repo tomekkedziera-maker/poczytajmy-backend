@@ -1381,14 +1381,22 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       .replace(/ż/g, "z").replace(/Ż/g, "Z");
   };
 
-  // Rehydratacja substringu (przywraca ogonki z oryginału)
-  function rehydrateFromOriginal(orig, frag) {
-    if (!orig || !frag) return frag || "";
-    const oDA = deaccent(String(orig));
-    const fDA = deaccent(String(frag));
-    const i = oDA.toLowerCase().indexOf(fDA.toLowerCase());
-    return i >= 0 ? String(orig).substring(i, i + String(frag).length) : frag;
+  // Rehydratacja substringu (bezpieczna: okno przesuwne po oryginale)
+function rehydrateFromOriginal(orig, frag) {
+  if (!orig || !frag) return frag || "";
+  const O = String(orig);
+  const F = String(frag);
+  const Fda = deaccent(F).toLowerCase();
+
+  // przesuwamy okno po ORYGINALE, żeby indeksy się zgadzały
+  for (let j = 0; j <= O.length - F.length; j++) {
+    const win = O.substring(j, j + F.length);
+    if (deaccent(win).toLowerCase() === Fda) {
+      return win; // trafiony fragment z ogonkami z oryginału
+    }
   }
+  return frag; // fallback, gdyby nie znalazło
+}
 
   // Rehydratacja token-po-tokenie (NAJWAŻNIEJSZE dla „szkoły / garażu / łazience”)
   function rehydrateAnswerFromOriginal(orig, answer) {
