@@ -1347,9 +1347,12 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 // ===================== QUIZ: rule-teacher-strict-v4 =====================
-// Cel: bardzo proste pytania i krótkie odpowiedzi (wyłącznie słowa ze zdania)
+// Cel: proste pytania i krótkie odpowiedzi (wyłącznie słowa ze zdania)
 // Priorytet: Gdzie? > Dokąd? > Kiedy? > Kto? > Co robi? > Co?
 // Wyjście: { ok, question, answer, source_path }
+
+// (opcjonalnie) skracanie złożonych lokalizacji „w koszyku pod stołem” → „w koszyku”
+const SHORTEN_PLACE = false;
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
@@ -1365,7 +1368,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "rysuje","idzie","jadę","jade","jemy","bawię","bawie","leży","lezy","czyta",
     "piszą","pisza","skaczą","skacza","padał","padal","biegnie","oglądam","ogladam",
     "stoi","idziemy","śpi","spi","rosną","rosna","myje","zakładam","zakladam",
-    "czytamy","mam","patrzę","patrze","wracam","wracamy"
+    "czytamy","mam","patrzę","patrze","wracam","wracamy","bawi","bawią","bawia"
   ];
 
   const WHO_LIST = [
@@ -1373,7 +1376,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "Zosia","Ala","Lena","Julek","Ola","Chłopiec","Chlopiec","Dziewczynka"
   ];
 
-  // --- DODANE: proste rozpoznawanie „w + aktywność” i lepsze lokalizacje ---
+  // „w + aktywność” (odfiltrować przy Gdzie?)
   const ACTIVITY_W_ACC = [
     "piłkę","pilke","berka","chowanego","grę","gre","gry","karty","planszówki","planszowki",
     "klasy","siatkówkę","siatkowke","koszykówkę","koszykowke","zabawy","minecrafta","robloxa"
@@ -1385,7 +1388,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   // szybkie testy cech
-  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|jad[eę]|jedziesz|jedziemy|wracam|wracamy|biegnie|biegne|biegniemy)\b/i.test(t);
+  // ✅ UZUPEŁNIONE: formy „jedzie/jedziemy/jadą”, „idą”, „biegną”
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wracam|wracamy|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+(?:\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+){0,3}\b/.test(t);
   const hasTime =
     /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
@@ -1414,15 +1418,25 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function scorePlace(pp){
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
-    s += Math.min(2, Math.floor(low.length/12));
+    s += Math.min(2, Math.floor(low.length/12)); // preferuj naturalne, trochę dłuższe PP
     return s;
   }
 
   function pickPlaceFromSentence(sentence){
     const pps = splitPPs(sentence);
     if (!pps.length) return null;
+
+    // opcjonalne skracanie złożonych PP do pierwszego
+    if (SHORTEN_PLACE) {
+      // znajdź pierwszy PP i utnij przed kolejnym przyimkiem, np. "w koszyku pod stołem" → "w koszyku"
+      const first = pps[0];
+      if (first) return first.replace(/\s+(pod|nad|przy|za|przed|obok)\b[\s\S]*$/i, "");
+    }
+
     const filtered = pps.filter(pp => !isActivityPP(pp));
     const candidates = filtered.length ? filtered : pps;
+
+    // wybierz najlepiej punktowaną; przy remisie preferuj późniejsze (bliżej końca zdania)
     let best = null, bestScore = -1;
     for (let i=0;i<candidates.length;i++){
       const sc = scorePlace(candidates[i]) + i*0.01;
@@ -1433,7 +1447,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
-    // usuń „w + aktywność” jeśli przed „na|do ...”
+    // usuń „w + aktywność” jeśli tuż przed „na|do ...”
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
     // sklej podwójny przyimek: "w w salonie" -> "w salonie"
     a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
@@ -1476,6 +1490,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   // --- Kolejność decyzji ---
+  // Gdzie?
   if (hasLoc) {
     const loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
     if (loc) {
@@ -1483,6 +1498,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
+  // Dokąd?
   if (hasMoveVerb && hasToPhrase) {
     const dest = extractDestination(t);
     if (dest) {
@@ -1490,6 +1506,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
+  // Kiedy?
   if (hasTime) {
     const time = extractTime(t);
     if (time) {
@@ -1497,6 +1514,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
+  // Kto? (w 1. os. l.poj. lepiej „Co robi?”)
   if (!/\b(ide|oglądam|ogladam|czytam|piszę|pisze|patrzę|patrze|zakładam|zakladam|wracam)\b/i.test(t)) {
     const who = extractWho(t);
     if (who) {
@@ -1504,16 +1522,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
+  // Co robi?
   const act = extractAction(t);
   if (act) {
     return { ok: true, question: "Co robi?", answer: act, source_path: "rule-teacher-strict-v4" };
   }
 
+  // Co?
   const what = extractWhat(t);
   if (what) {
     return { ok: true, question: "Co?", answer: what, source_path: "rule-teacher-strict-v4" };
   }
 
+  // Fallback
   return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v4-fallback" };
 }
 
@@ -1559,6 +1580,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 });
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
