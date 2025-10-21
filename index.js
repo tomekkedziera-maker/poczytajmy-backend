@@ -1415,19 +1415,18 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
 
   // PREP (przyimek) i wersja, która nie połyka kolejnego PP
-  const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
-  const NOT_PREP_NEXT = String.raw`(?!\s+(?:${PREP})\b)`;
-
-  function splitPPs(sentence){
-    const re = new RegExp(
-      // prepozycja + 1 słowo (Unicode litery/cyfry/myślnik) + do 4 słów; każde następne słowo nie może zaczynać nowego PP
-      String.raw`\b(${PREP})\s+[\p{L}0-9\-]+(?:\s+${NOT_PREP_NEXT}[\p{L}0-9\-]+){0,4}`,
-      "giu"
-    );
-    const out = []; let m;
-    while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
-    return out;
-  }
+ const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
++  function splitPPs(sentence){
++    // PP = PRZYIMEK + token; do 4 kolejnych tokenów, ale KAŻDY kolejny nie może być przyimkiem.
++    // Używamy \\S+ (nie-białe), by nie ucinać na polskich znakach (np. „podwórku”).
++    const re = new RegExp(
++      String.raw`\\b(${PREP})\\s+\\S+(?:\\s+(?!${PREP}\\b)\\S+){0,4}`,
++      "gi"
++    );
++    const out = []; let m;
++    while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
++    return out;
++  }
 
   function isActivityPP(pp){
     const low = pp.toLowerCase();
