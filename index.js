@@ -1350,11 +1350,11 @@ app.get('/tts-voices', async (_req, res) => {
 
 // ===================== QUIZ: rule-teacher-strict-v4 =====================
 // Cel: proste pytania i krótkie odpowiedzi (wyłącznie słowa ze zdania)
-// Priorytet: (dla ruchu) Dokąd? > Gdzie? > Kiedy? > Kto? > Co robi? > Co?
+// Priorytet: Dokąd? > Gdzie? > Kiedy? > Kto? > Co robi? > Co?
 // Wyjście: { ok, question, answer, source_path }
 
-const SHORTEN_PLACE = false;               // true = np. „w legowisku” zamiast „w legowisku pod biurkiem”
-const PREFER_SPECIFIC_PLACE = true;        // true = preferuj „na kanapie” zamiast „w salonie”
+const SHORTEN_PLACE = false;
+const PREFER_SPECIFIC_PLACE = true;
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
@@ -1388,7 +1388,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
-    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","domem","bramie","oknie","dywanie","kartonie","garazu","garażu","kuchni"
+    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","garazu","garażu"
   ];
 
   const SPECIFIC_HINTS = [
@@ -1403,19 +1403,29 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
-  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
 
-  // Deakcentyzacja kompatybilna (bez \p{M})
-  const deaccent = (s) => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // 🔤 Deakcentyzacja + polskie litery
+  const deaccent = (s) => {
+    const base = String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return base
+      .replace(/ł/g, "l").replace(/Ł/g, "L")
+      .replace(/ą/g, "a").replace(/Ą/g, "A")
+      .replace(/ć/g, "c").replace(/Ć/g, "C")
+      .replace(/ę/g, "e").replace(/Ę/g, "E")
+      .replace(/ń/g, "n").replace(/Ń/g, "N")
+      .replace(/ó/g, "o").replace(/Ó/g, "O")
+      .replace(/ś/g, "s").replace(/Ś/g, "S")
+      .replace(/ź/g, "z").replace(/Ź/g, "Z")
+      .replace(/ż/g, "z").replace(/Ż/g, "Z");
+  };
 
-  // Rehydratacja: przywraca polskie znaki z oryginału (diakrytyczno-i-case-niezależnie)
-  function rehydrateFromOriginal(orig, frag){
+  // Rehydratacja: przywraca oryginalne znaki z tekstu
+  function rehydrateFromOriginal(orig, frag) {
     if (!orig || !frag) return frag || "";
-    const oDA = deaccent(orig);
-    const fDA = deaccent(frag);
-    const i = oDA.toLowerCase().indexOf(fDA.toLowerCase());
-    if (i < 0) return frag;
-    return orig.substring(i, i + frag.length);
+    const o = String(orig);
+    const f = String(frag);
+    const i = deaccent(o).toLowerCase().indexOf(deaccent(f).toLowerCase());
+    return i >= 0 ? o.substring(i, i + f.length) : frag;
   }
 
   const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
@@ -1449,9 +1459,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
     if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
-    // jeszcze mocniej premiuj „w/na …” i karz „pod/przy/za/przed/obok/u …”
-    if (/^\s*(w|we|na)\b/i.test(low)) s += 3.0;
-    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 1.0;
+    if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
+    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.5;
     s += Math.min(2, Math.floor(low.length/12));
     return s;
   }
@@ -1459,10 +1468,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function pickPlaceFromSentence(sentence){
     const pps = splitPPs(sentence);
     if (!pps.length) return null;
-    // twarda preferencja: jeśli są frazy z „w/na …”, rozważaj tylko je
     const inside = pps.filter(pp => /^\s*(w|we|na)\b/i.test(pp));
-    const pool = inside.length ? inside : pps;
-    const filtered = pool.filter(pp => !isActivityPP(pp));
+    let pool = inside.length ? inside : pps;
+    let filtered = pool.filter(pp => !isActivityPP(pp));
+    if (!filtered.length) {
+      filtered = pps.filter(pp => !isActivityPP(pp));
+      pool = filtered.length ? filtered : pps;
+    }
     const candidates = filtered.length ? filtered : pool;
     let best = null, bestScore = -1;
     for (let i=0;i<candidates.length;i++){
@@ -1472,12 +1484,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(best);
   }
 
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
+
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
     a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
-    a = stripPunct(normalizeSpaces(a));
-    return a || ans; // nie pozwól wyczyścić do pustego
+    return stripPunct(normalizeSpaces(a));
   }
 
   function stripTrailingTimeWords(arr){
@@ -1492,15 +1505,14 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    // OSTATNI cel, nie przekraczaj kolejnego „do|na”
-    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+(?!\b(?:do|na)\b)[\p{L}0-9:\-]+){0,4})\b/giu;
+    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/giu;
     let m, last=null; while ((m = re.exec(s)) !== null) last = m;
     if (!last) return null;
     let dest = `${last[1]} ${last[2]}`.trim();
     dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, ""); // „po kolacji / po południu / po sok”
+    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
     dest = stripPunct(normalizeSpaces(dest));
-    return dest;
+    return rehydrateFromOriginal(text, dest);
   }
 
   function extractTime(s) {
@@ -1527,28 +1539,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return m ? stripPunct(m[1].trim()) : null;
   }
 
-  // Rehydratacja token-po-tokenie (dla całej odpowiedzi)
-  function rehydrateAnswerFromOriginal(orig, answer){
-    if (!answer) return answer;
-    const tokens = answer.split(/\s+/).map(tok => rehydrateFromOriginal(orig, tok));
-    return normalizeSpaces(tokens.join(" "));
-  }
-
-  // --- Kolejność decyzji ---
+  // === Kolejność priorytetów ===
   if (hasMoveVerb && hasToPhrase) {
     let dest = extractDestination(t);
     if (dest) {
-      dest = rehydrateAnswerFromOriginal(text, dest);
+      dest = rehydrateFromOriginal(text, dest);
       return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
     }
   }
 
   if (hasLoc) {
     let loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
-    if (loc) {
-      loc = rehydrateAnswerFromOriginal(text, loc);
-      return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
-    }
+    loc = rehydrateFromOriginal(text, loc);
+    if (loc) return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
   }
 
   if (hasTime) {
