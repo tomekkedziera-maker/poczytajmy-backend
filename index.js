@@ -1355,7 +1355,149 @@ app.get('/tts-voices', async (_req, res) => {
 
 const SHORTEN_PLACE = false;
 const PREFER_SPECIFIC_PLACE = true;
-function generateQuestionAndAnswerTeacher(textRaw)
+function generateQuestionAndAnswerTeacher(textRaw) {
+  if (!textRaw || typeof textRaw !== "string") {
+    return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
+  }
+
+  const text = String(textRaw).normalize("NFC").trim();
+  const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
+
+  const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
+  const stripPunct = (s = "") => String(s).trim().replace(/[.,!?]+$/, "");
+
+  // Deakcentyzacja + polskie litery (bez \p{M})
+  const deaccent = (s) => {
+    const base = String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return base
+      .replace(/ł/g, "l").replace(/Ł/g, "L")
+      .replace(/ą/g, "a").replace(/Ą/g, "A")
+      .replace(/ć/g, "c").replace(/Ć/g, "C")
+      .replace(/ę/g, "e").replace(/Ę/g, "E")
+      .replace(/ń/g, "n").replace(/Ń/g, "N")
+      .replace(/ó/g, "o").replace(/Ó/g, "O")
+      .replace(/ś/g, "s").replace(/Ś/g, "S")
+      .replace(/ź/g, "z").replace(/Ź/g, "Z")
+      .replace(/ż/g, "z").replace(/Ż/g, "Z");
+  };
+
+  // Rehydratacja substringu (przywraca ogonki z oryginału)
+  function rehydrateFromOriginal(orig, frag) {
+    if (!orig || !frag) return frag || "";
+    const oDA = deaccent(String(orig));
+    const fDA = deaccent(String(frag));
+    const i = oDA.toLowerCase().indexOf(fDA.toLowerCase());
+    return i >= 0 ? String(orig).substring(i, i + String(frag).length) : frag;
+  }
+
+  // Rehydratacja token-po-tokenie (NAJWAŻNIEJSZE dla „szkoły / garażu / łazience”)
+  function rehydrateAnswerFromOriginal(orig, answer) {
+    if (!answer) return answer;
+    return answer
+      .split(/\s+/)
+      .map(tok => rehydrateFromOriginal(orig, tok))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Słowniki
+  const VERBS = [
+    "rysuje","idzie","jadę","jade","jemy","bawię","bawie","leży","lezy","czyta",
+    "piszą","pisza","skaczą","skacza","padał","padal","biegnie","oglądam","ogladam",
+    "stoi","idziemy","śpi","spi","rosną","rosna","myje","zakładam","zakladam",
+    "czytamy","mam","patrzę","patrze","wracam","wracamy","bawi","bawią","bawia"
+  ];
+
+  const ACTIVITY_W_ACC = [
+    "piłkę","pilke","berka","chowanego","grę","gre","gry","karty","planszówki","planszowki",
+    "klasy","siatkówkę","siatkowke","koszykówkę","koszykowke","zabawy","minecrafta","robloxa"
+  ];
+  const ACTIVITY_NA = [
+    "ptaki","ptaka","ptaków","ptakow","bajkę","bajke","bajki","film","filmy","bajeczkę","bajeczke","gwiazdy"
+  ];
+
+  const PLACE_HINTS = [
+    "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
+    "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
+    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","garazu","garażu"
+  ];
+
+  // Flagi
+  const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
+  const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
+  const hasTime =
+    /\bo\s+\d{1,2}:\d{2}\b/i.test(t) ||
+    /\b(wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie)\b/i.test(t) ||
+    /\bw\s+(poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)\b/i.test(t) ||
+    /\bpo\s+(lekcjach|obiedzie|śniadaniu|sniadaniu)\b/i.test(t);
+  const hasLoc = /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[\p{L}0-9\-]+/iu.test(t);
+
+  // Ekstrakcje
+  function stripTrailingTimeWords(arr){
+    const TOK = ["wczoraj","dziś","dzis","jutro","rano","wieczorem","po","lekcjach","obiedzie","śniadaniu","sniadaniu","na","przerwie","o"];
+    while (arr.length > 0) {
+      const last = arr[arr.length - 1].toLowerCase();
+      if (/^\d{1,2}:\d{2}$/.test(last)) { arr.pop(); continue; }
+      if (TOK.includes(last)) { arr.pop(); continue; }
+      break;
+    }
+    return arr;
+  }
+
+  function extractDestination(s) {
+    // Ostatni cel; potem odcinamy „po …”
+    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/giu;
+    let m, last=null; while ((m = re.exec(s)) !== null) last = m;
+    if (!last) return null;
+    let dest = `${last[1]} ${last[2]}`.trim();
+    dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
+    dest = dest.replace(/\s+po\s+[\p{L}0-9\-]+$/iu, "");
+    return stripPunct(normalizeSpaces(dest));
+  }
+
+  function extractLocation(s) {
+    // Prosta, stabilna fraza miejsca (we/na/pod/…)
+    const re = /\b(w|we|na|pod|nad|przy|za|przed|obok|u)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,3})\b/iu;
+    const m = s.match(re);
+    if (!m) return null;
+    return stripPunct(normalizeSpaces(`${m[1]} ${m[2]}`));
+  }
+
+  function extractTime(s) {
+    const m = s.match(/\b(o\s+\d{1,2}:\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\b/i);
+    return m ? stripPunct(m[0]) : null;
+  }
+
+  // Priorytety
+  if (hasMoveVerb && hasToPhrase) {
+    let dest = extractDestination(t);
+    if (dest) {
+      // >>> przywróć ogonki na całej odpowiedzi:
+      dest = rehydrateAnswerFromOriginal(text, dest);
+      return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
+    }
+  }
+
+  if (hasLoc) {
+    let loc = extractLocation(t);
+    if (loc) {
+      // >>> przywróć ogonki na całej odpowiedzi:
+      loc = rehydrateAnswerFromOriginal(text, loc);
+      return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
+    }
+  }
+
+  if (hasTime) {
+    let time = extractTime(t);
+    if (time) {
+      time = rehydrateAnswerFromOriginal(text, time);
+      return { ok: true, question: "Kiedy?", answer: time, source_path: "rule-teacher-strict-v4" };
+    }
+  }
+
+  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v4-fallback" };
+}
 
 
 // --------------------- ENDPOINT: /agent/comprehend -----------------------
