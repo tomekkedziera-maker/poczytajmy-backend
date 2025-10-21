@@ -1416,17 +1416,17 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // PREP (przyimek) i wersja, która nie połyka kolejnego PP
  const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
-+  function splitPPs(sentence){
-+    // PP = PRZYIMEK + token; do 4 kolejnych tokenów, ale KAŻDY kolejny nie może być przyimkiem.
-+    // Używamy \\S+ (nie-białe), by nie ucinać na polskich znakach (np. „podwórku”).
-+    const re = new RegExp(
-+      String.raw`\\b(${PREP})\\s+\\S+(?:\\s+(?!${PREP}\\b)\\S+){0,4}`,
-+      "gi"
-+    );
-+    const out = []; let m;
-+    while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
-+    return out;
-+  }
+  function splitPPs(sentence){
+    // PP = PRZYIMEK + token; do 4 kolejnych tokenów, ale KAŻDY kolejny nie może być przyimkiem.
+    // Używamy \\S+ (nie-białe), by nie ucinać na polskich znakach (np. „podwórku”).
+    const re = new RegExp(
+      String.raw`\\b(${PREP})\\s+\\S+(?:\\s+(?!${PREP}\\b)\\S+){0,4}`,
+      "gi"
+    );
+    const out = []; let m;
+    while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
+    return out;
+  }
 
   function isActivityPP(pp){
     const low = pp.toLowerCase();
