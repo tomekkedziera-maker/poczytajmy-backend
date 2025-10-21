@@ -1451,15 +1451,41 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return false;
   }
   // scoring miejsca
-  function scorePlace(pp){
-    let s = 0; const low = pp.toLowerCase();
-    for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
-    if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
-    if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
-    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.3;
-    s += Math.min(2, Math.floor(low.length/12));
-    return s;
-  }
+function scorePlace(pp){
+  let s = 0;
+  const low = pp.toLowerCase();
+
+  // Miejsca bardzo konkretne – mocny bonus
+  const SPECIFIC_HINTS_STRONG = [
+    "łóżku","lozku","kanapie","krześle","krzesle","fotelu","biurku",
+    "stole","stołem","stolem","ławce","lawce","dywanie","chodniku",
+    "kartonie","balkonie","akwarium","oknie","bramie"
+  ];
+  for (const sh of SPECIFIC_HINTS_STRONG){ if (low.includes(sh)) s += 3.0; } // było 1.5 → 3.0
+
+  // Miejsca ogólne – lekka kara
+  const GENERIC_HINTS = ["pokoju","klasie","salonie","kuchni","parku","boisku","domu"];
+  for (const gh of GENERIC_HINTS){ if (low.includes(gh)) s -= 0.8; }
+
+  // Standardowe podpowiedzi miejsca (trochę słabiej niż wcześniej)
+  const PLACE_HINTS_LOCAL = [
+    "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
+    "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
+    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie",
+    "garazu","garażu","akwarium","ławce","lawce","fotelu","krześle","krzesle","klasie","chodniku"
+  ];
+  for (const hint of PLACE_HINTS_LOCAL){ if (low.includes(hint)) s += 1.5; } // było 2.0 → 1.5
+
+  // Preferuj w/we/na nad przy/pod/za/przed/obok/u
+  if (/^\s*(w|we|na)\b/i.test(low)) s += 2.0;
+  if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(low)) s -= 0.3;
+
+  // Delikatny bonus za długość
+  s += Math.min(2, Math.floor(low.length/12));
+
+  return s;
+}
+
   function pickPlaceFromSentence(sentence){
     const pps = splitPPs(sentence);
     if (!pps.length) return null;
@@ -1638,7 +1664,7 @@ app.listen(PORT, () => {
   console.log(`🎧 Groq ${groq ? 'podłączony' : 'OFF'} (chat=${GROQ_CHAT_MODEL}, asr=${GROQ_ASR_MODEL})`);
   console.log(`🤖 OpenAI ${openai ? 'podłączony' : 'OFF'}`);
   console.log(`🧠 LLM_PREF=${LLM_PREF}`);
-  console.log("Build tag: 2025-10-21 rehydrate+placefix+nowy");
+  console.log("Build tag: 2025-10-21 rehydrate+placefix+nowy1");
 
 
   // mały delay, żeby połączenia mogły się ustawić
