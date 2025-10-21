@@ -1474,6 +1474,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
     // sklej podwójny przyimek: "w w salonie" -> "w salonie"
     a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
+    a = a.replace(/[.,!?]+$/,"");  // ⬅️ usuń kropki/znaki na końcu
     return normalizeSpaces(a);
   }
 
