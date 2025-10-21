@@ -1346,24 +1346,24 @@ app.get('/tts-voices', async (_req, res) => {
   }
 });
 
+
+
 // ===================== QUIZ: rule-teacher-strict-v4 =====================
 // Cel: proste pytania i krótkie odpowiedzi (wyłącznie słowa ze zdania)
 // Priorytet: (dla ruchu) Dokąd? > Gdzie? > Kiedy? > Kto? > Co robi? > Co?
 // Wyjście: { ok, question, answer, source_path }
 
-// (opcjonalnie) skracanie złożonych lokalizacji „w koszyku pod stołem” → „w koszyku”
-const SHORTEN_PLACE = false;
+const SHORTEN_PLACE = false;               // true = np. „w legowisku” zamiast „w legowisku pod biurkiem”
+const PREFER_SPECIFIC_PLACE = true;        // true = preferuj „na kanapie” zamiast „w salonie”
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
     return { ok: false, question: "Co się dzieje?", answer: "", source_path: "error-empty" };
   }
 
-  // --- Normalizacja (zachowujemy polskie znaki) ---
   const text = textRaw.trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
-  // --- Słowniki/pomoc ---
   const VERBS = [
     "rysuje","idzie","jadę","jade","jemy","bawię","bawie","leży","lezy","czyta",
     "piszą","pisza","skaczą","skacza","padał","padal","biegnie","oglądam","ogladam",
@@ -1372,34 +1372,36 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   ];
 
   const WHO_LIST = [
-    "Dzieci","Pies","Kot","Dziadek","Tata","Mama","Basia","Kuba",
-    "Zosia","Ala","Lena","Julek","Ola","Chłopiec","Chlopiec","Dziewczynka"
+    "Dzieci","Pies","Kot","Dziadek","Tata","Mama","Basia","Kuba","Zosia",
+    "Ala","Lena","Julek","Ola","Chłopiec","Chlopiec","Dziewczynka"
   ];
 
-  // Aktywności do odfiltrowania przy Gdzie?
   const ACTIVITY_W_ACC = [
     "piłkę","pilke","berka","chowanego","grę","gre","gry","karty","planszówki","planszowki",
     "klasy","siatkówkę","siatkowke","koszykówkę","koszykowke","zabawy","minecrafta","robloxa"
   ];
-  // „na + obiekt obserwacji/celu” (np. patrzy na ptaki)
+
   const ACTIVITY_NA = [
     "ptaki","ptaka","ptaków","ptakow","bajkę","bajke","bajki","film","filmy","bajeczkę","bajeczke","gwiazdy"
   ];
 
-  // Hinty miejsc
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
     "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","kuchni"
   ];
 
-  // Słowa czasu (do odcinania ogonków)
-  const TIME_TOKENS = [
-    "wczoraj","dziś","dzis","jutro","rano","wieczorem","po","lekcjach","obiedzie","śniadaniu","sniadaniu",
-    "na","przerwie","w","poniedziałek","wtorek","środę","srode","czwartek","piątek","piatek","sobotę","sobote","niedzielę","niedziele","o"
+  const SPECIFIC_HINTS = [
+    "kanapie","krześle","krzesle","fotelu","łóżku","lozku","biurku","stole","stołem","stolem",
+    "ławce","lawce","dywanie","chodniku","kartonie","balkonie"
   ];
 
-  // szybkie testy cech (rozszerzone formy ruchu)
+  const TIME_TOKENS = [
+    "wczoraj","dziś","dzis","jutro","rano","wieczorem","po","lekcjach","obiedzie","śniadaniu","sniadaniu",
+    "na","przerwie","w","poniedziałek","wtorek","środę","srode","czwartek","piątek","piatek","sobotę",
+    "sobote","niedzielę","niedziele","o"
+  ];
+
   const hasMoveVerb = /\b(idzie|ide|idziesz|idziemy|idziecie|idą|ida|jedzie|jedziemy|jadą|jada|jad[eę]|jedziesz|wraca|wracam|wracamy|wracają|biegnie|biegne|biegniemy|biegną|biegna)\b/i.test(t);
   const hasToPhrase = /\b(do|na)\s+[\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4}\b/iu.test(t);
   const hasTime =
@@ -1408,22 +1410,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     /\bw\s+(poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)\b/i.test(t) ||
     /\bpo\s+(lekcjach|obiedzie|śniadaniu|sniadaniu)\b/i.test(t);
 
-  const hasLoc =
-    /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[\p{L}0-9\-]+/iu.test(t);
+  const hasLoc = /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[\p{L}0-9\-]+/iu.test(t);
 
-  // --- Helpery: miejsca ---
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
 
-  // Przyimki (jako fragment wzorca)
   const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
-
   function splitPPs(sentence){
-    // PP = PRZYIMEK + token; do 4 kolejnych tokenów, ale KAŻDY kolejny nie może być przyimkiem.
-    // Używamy \S+ (nie-białe), by nie ucinać na polskich znakach (np. „podwórku”).
-    const re = new RegExp(
-      String.raw`\b(${PREP})\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,
-      "gi"
-    );
+    const re = new RegExp(String.raw`\b(${PREP})\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,"gi");
     const out = []; let m;
     while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
     return out;
@@ -1431,10 +1424,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   function isActivityPP(pp){
     const low = pp.toLowerCase();
-    // „w + aktywność”
     const mW = low.match(/^\bwe?\s+([\p{L}\-]+)/u);
     if (mW && ACTIVITY_W_ACC.includes(mW[1])) return true;
-    // „na + cel obserwacji” (np. „na ptaki”)
     const mNa = low.match(/^\bna\s+([\p{L}\-]+)/u);
     if (mNa && ACTIVITY_NA.includes(mNa[1])) return true;
     return false;
@@ -1443,23 +1434,20 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function scorePlace(pp){
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
-    s += Math.min(2, Math.floor(low.length/12)); // preferuj naturalnie dłuższe PP
+    if (PREFER_SPECIFIC_PLACE){ for (const sh of SPECIFIC_HINTS){ if (low.includes(sh)) s += 1.5; } }
+    s += Math.min(2, Math.floor(low.length/12));
     return s;
   }
 
   function pickPlaceFromSentence(sentence){
     const pps = splitPPs(sentence);
     if (!pps.length) return null;
-
-    if ( SHORTEN_PLACE ) {
+    if (SHORTEN_PLACE) {
       const first = pps[0];
       if (first) return first.replace(/\s+(pod|nad|przy|za|przed|obok)\b[\s\S]*$/i, "");
     }
-
-    const filtered = pps.filter(pp => !isActivityPP(pp)); // usuń „w berka”, „w karty”, „na ptaki”, ...
+    const filtered = pps.filter(pp => !isActivityPP(pp));
     const candidates = filtered.length ? filtered : pps;
-
-    // wybierz najlepiej punktowaną; przy remisie preferuj późniejsze (bliżej końca zdania)
     let best = null, bestScore = -1;
     for (let i=0;i<candidates.length;i++){
       const sc = scorePlace(candidates[i]) + i*0.01;
@@ -1468,19 +1456,16 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(best);
   }
 
+  function stripPunct(s=""){ return String(s).trim().replace(/[.,!?]+$/,""); }
+
   function cleanPlaceAnswer(ans=""){
     let a = " " + String(ans).trim() + " ";
-    // usuń „w + aktywność” jeśli tuż przed „na|do ...”
     a = a.replace(/\swe?\s+(piłkę|pilke|berka|chowanego|grę|gre|gry|karty|planszówki|planszowki|klasy|siatkówkę|siatkowke|koszykówkę|koszykowke|zabawy|minecrafta|robloxa)\s+(?=(na|do)\s)/i, " ");
-    // sklej podwójny przyimek: "w w salonie" -> "w salonie"
     a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
-    a = a.replace(/[.,!?]+$/,"");  // ⬅️ usuń kropki/znaki na końcu
-    return normalizeSpaces(a);
+    return stripPunct(normalizeSpaces(a));
   }
 
-  // --- Helpery: cel ruchu + czas ---
   function stripTrailingTimeWords(arr){
-    // z końca usuń: godziny, dni tyg., „w/po/o ...”, samo „w/po/o”
     while (arr.length > 0) {
       const last = arr[arr.length - 1].toLowerCase();
       if (/^\d{1,2}:\d{2}$/.test(last)) { arr.pop(); continue; }
@@ -1492,85 +1477,64 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function extractDestination(s) {
-    // Dopuszczamy „:” w tokenach, by potem wyciąć cały ogon czasu „o 16:30”
     const m = s.match(/\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,4})\b/iu);
     if (!m) return null;
     let dest = `${m[1]} ${m[2]}`.trim();
     dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
-    return normalizeSpaces(dest);
+    return stripPunct(normalizeSpaces(dest));
   }
 
   function extractTime(s) {
-    const m =
-      s.match(/\b(o\s+\d{1,2}:\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\b/i);
-    return m ? m[0].trim() : null;
+    const m = s.match(/\b(o\s+\d{1,2}:\d{2}|wczoraj|dziś|dzis|jutro|rano|wieczorem|po południu|po poludniu|na przerwie|w\s+(?:poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)|po\s+(?:lekcjach|obiedzie|śniadaniu|sniadaniu))\b/i);
+    return m ? stripPunct(m[0].trim()) : null;
   }
 
   function extractWho(s) {
     const whoRe = /\b([A-ZŁŚŻŹĆŃÓĄĘ][a-ząćęłńóśźż]+|Dzieci|Pies|Kot|Dziadek|Tata|Mama)\b/;
     const m = s.match(whoRe);
-    if (m) return m[1];
-    for (const w of WHO_LIST) { if (s.includes(w)) return w; }
+    if (m) return stripPunct(m[1]);
+    for (const w of WHO_LIST) { if (s.includes(w)) return stripPunct(w); }
     return null;
   }
 
   function extractAction(s) {
     const re = new RegExp(`\\b(${VERBS.join("|")})\\b`, "i");
     const m = s.match(re);
-    return m ? m[1] : null;
+    return m ? stripPunct(m[1]) : null;
   }
 
   function extractWhat(s) {
     const m = s.match(/\bmam\s+([^,.;!?]+)$/i);
-    return m ? m[1].trim() : null;
+    return m ? stripPunct(m[1].trim()) : null;
   }
 
   // --- Kolejność decyzji ---
-  // 1) RUCH: Dokąd? (wyżej niż Gdzie? / Kiedy?)
   if (hasMoveVerb && hasToPhrase) {
     const dest = extractDestination(t);
-    if (dest) {
-      return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
-    }
+    if (dest) return { ok: true, question: "Dokąd?", answer: dest, source_path: "rule-teacher-strict-v4" };
   }
 
-  // 2) Gdzie?
   if (hasLoc) {
     const loc = cleanPlaceAnswer(pickPlaceFromSentence(t));
-    if (loc) {
-      return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
-    }
+    if (loc) return { ok: true, question: "Gdzie?", answer: loc, source_path: "rule-teacher-strict-v4" };
   }
 
-  // 3) Kiedy?
   if (hasTime) {
     const time = extractTime(t);
-    if (time) {
-      return { ok: true, question: "Kiedy?", answer: time, source_path: "rule-teacher-strict-v4" };
-    }
+    if (time) return { ok: true, question: "Kiedy?", answer: time, source_path: "rule-teacher-strict-v4" };
   }
 
-  // 4) Kto? (w 1. os. l.poj. lepiej „Co robi?”)
   if (!/\b(ide|oglądam|ogladam|czytam|piszę|pisze|patrzę|patrze|zakładam|zakladam|wracam)\b/i.test(t)) {
     const who = extractWho(t);
-    if (who) {
-      return { ok: true, question: "Kto?", answer: who, source_path: "rule-teacher-strict-v4" };
-    }
+    if (who) return { ok: true, question: "Kto?", answer: who, source_path: "rule-teacher-strict-v4" };
   }
 
-  // 5) Co robi?
   const act = extractAction(t);
-  if (act) {
-    return { ok: true, question: "Co robi?", answer: act, source_path: "rule-teacher-strict-v4" };
-  }
+  if (act) return { ok: true, question: "Co robi?", answer: act, source_path: "rule-teacher-strict-v4" };
 
-  // 6) Co?
   const what = extractWhat(t);
-  if (what) {
-    return { ok: true, question: "Co?", answer: what, source_path: "rule-teacher-strict-v4" };
-  }
+  if (what) return { ok: true, question: "Co?", answer: what, source_path: "rule-teacher-strict-v4" };
 
-  // Fallback
   return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v4-fallback" };
 }
 
@@ -1601,12 +1565,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 
     const items = sentences.map((s) => {
       const r = generateQuestionAndAnswerTeacher(s);
-      return {
-        ...r,
-        sentence: s,
-        llm_provider: "",
-        source_path: r.source_path
-      };
+      return { ...r, sentence: s, llm_provider: "", source_path: r.source_path };
     });
 
     return res.json({ ok: true, count: items.length, items });
