@@ -1376,23 +1376,23 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "Zosia","Ala","Lena","Julek","Ola","Chłopiec","Chlopiec","Dziewczynka"
   ];
 
-  // aktywności do odfiltrowania przy Gdzie?
+  // Aktywności (do odfiltrowania przy Gdzie?)
   const ACTIVITY_W_ACC = [
     "piłkę","pilke","berka","chowanego","grę","gre","gry","karty","planszówki","planszowki",
     "klasy","siatkówkę","siatkowke","koszykówkę","koszykowke","zabawy","minecrafta","robloxa"
   ];
 
-  // hinty miejsc
+  // Hinty miejsc
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","koszyku","łóżku","lozku","kanapie","tablecie","komputerze",
-    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie","kuchni"
+    "stole","stołem","stolem","przystanku","przedszkolu","kinie","domu","bramie","oknie","dywanie","kartonie"
   ];
 
-  // słowa czasu (przydadzą się do cięć)
+  // Słowa czasu (do odcinania ogonków)
   const TIME_TOKENS = [
     "wczoraj","dziś","dzis","jutro","rano","wieczorem","po","lekcjach","obiedzie","śniadaniu","sniadaniu",
-    "na","przerwie","w","poniedziałek","wtorek","środę","srode","czwartek","piątek","piatek","sobotę","sobote","niedzielę","niedziele"
+    "na","przerwie","w","poniedziałek","wtorek","środę","srode","czwartek","piątek","piatek","sobotę","sobote","niedzielę","niedziele","o"
   ];
 
   // szybkie testy cech (rozszerzone formy ruchu)
@@ -1407,32 +1407,21 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const hasLoc =
     /\b(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+/i.test(t);
 
-  // --- Helpery lokalizacji ---
+  // --- Helpery: miejsca ---
   function normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
 
-  // czy token wygląda na „czas” (np. „w sobotę”, „po lekcjach”, „rano”…)
-  function isTimeyWord(w){
-    const low = String(w||"").toLowerCase();
-    return (
-      TIME_TOKENS.includes(low) ||
-      /^o\s+\d{1,2}:\d{2}$/.test(low)
-    );
-  }
-
-  // utnie w PP wszystko od następnego PRZYIMKA (jako osobnego słowa) — NIE rusza „podwórku”
-  function cutAtNextPrep(pp){
-    return pp.replace(
-      /\s+(?=(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\b).*/i,
-      ""
-    );
-  }
+  // Regex na PP, który NIE połyka kolejnego PP: kolejne słowo nie może być nowym przyimkiem.
+  const PREP = "(?:we?|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)";
+  const NOT_PREP_NEXT = String.raw`(?!\s+(?:${PREP})\b)`;
 
   function splitPPs(sentence){
-    const re = /\b(we|w|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9\- ]{1,40}\b/giu;
+    const re = new RegExp(
+      // prep + 1 słowo + do 4 słów, ale każde następne NIE może zaczynać się od nowego przyimka
+      String.raw`\b(${PREP})\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9\-]+(?:\s+${NOT_PREP_NEXT}[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9\-]+){0,4}`,
+      "giu"
+    );
     const out = []; let m;
-    while ((m = re.exec(sentence))){
-      out.push(normalizeSpaces(cutAtNextPrep(m[0])));
-    }
+    while ((m = re.exec(sentence))){ out.push(normalizeSpaces(m[0])); }
     return out;
   }
 
@@ -1444,7 +1433,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function scorePlace(pp){
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
-    s += Math.min(2, Math.floor(low.length/12));
+    s += Math.min(2, Math.floor(low.length/12)); // preferuj naturalnie dłuższe PP
     return s;
   }
 
@@ -1453,17 +1442,18 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     if (!pps.length) return null;
 
     // opcjonalne skrócenie pierwszego PP (np. „w koszyku pod stołem” → „w koszyku”)
-    if (SHORTEN_PLACE) {
+    if ( SHORTEN_PLACE ) {
       const first = pps[0];
       if (first) return first.replace(/\s+(pod|nad|przy|za|przed|obok)\b[\s\S]*$/i, "");
     }
 
-    const filtered = pps.filter(pp => !isActivityPP(pp));              // usuń „w piłkę…”
+    const filtered = pps.filter(pp => !isActivityPP(pp)); // usuń „w berka”, „w karty”, ...
     const candidates = filtered.length ? filtered : pps;
 
+    // wybierz najlepiej punktowaną; przy remisie preferuj późniejsze (bliżej końca zdania)
     let best = null, bestScore = -1;
     for (let i=0;i<candidates.length;i++){
-      const sc = scorePlace(candidates[i]) + i*0.01; // lekki bias w prawo
+      const sc = scorePlace(candidates[i]) + i*0.01;
       if (sc > bestScore){ best = candidates[i]; bestScore = sc; }
     }
     return normalizeSpaces(best);
@@ -1478,17 +1468,26 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(a);
   }
 
-  // --- Inne helpery ---
-  // cel ruchu (obcinamy czas na końcu: „do szkoły rano” → „do szkoły”)
+  // --- Helpery: cel ruchu + czas ---
+  function stripTrailingTimeWords(arr){
+    // usuwa z KOŃCA sekwencję: [czas] lub [prep czasu + czas] (np. "... do kina w sobotę" → "... do kina")
+    // usuwa też samotne "w/po/o" jeśli zostało na końcu
+    while (arr.length > 0) {
+      const last = arr[arr.length - 1].toLowerCase();
+      if (/^\d{1,2}:\d{2}$/.test(last) || TIME_TOKENS.includes(last)) { arr.pop(); continue; }
+      // jeśli ostatnie to "sobotę/srode/piątek..." (z polskimi ogonkami i bez)
+      if (/(poniedziałek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)/i.test(last)) { arr.pop(); continue; }
+      break;
+    }
+    return arr;
+  }
+
   function extractDestination(s) {
     const m = s.match(/\b(do|na)\s+([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+(?:\s+[A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9-]+){0,4})\b/i);
     if (!m) return null;
     let dest = `${m[1]} ${m[2]}`.trim();
-    // utnij końcowe tokeny czasu
-    dest = dest.split(/\s+/).filter((tok, idx, arr) => {
-      if (idx === arr.length - 1 && isTimeyWord(tok)) return false;
-      return true;
-    }).join(" ");
+    // utnij końcowe tokeny czasu (łącznie z samotnym "w/po/o")
+    dest = stripTrailingTimeWords(dest.split(/\s+/)).join(" ");
     return normalizeSpaces(dest);
   }
 
@@ -1502,9 +1501,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     const whoRe = /\b([A-ZŁŚŻŹĆŃÓĄĘ][a-ząćęłńóśźż]+|Dzieci|Pies|Kot|Dziadek|Tata|Mama)\b/;
     const m = s.match(whoRe);
     if (m) return m[1];
-    for (const w of WHO_LIST) {
-      if (s.includes(w)) return w;
-    }
+    for (const w of WHO_LIST) { if (s.includes(w)) return w; }
     return null;
   }
 
@@ -1610,6 +1607,7 @@ app.post("/agent/comprehend-multi", async (req, res) => {
 });
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
