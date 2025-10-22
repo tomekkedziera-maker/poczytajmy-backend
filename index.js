@@ -1347,7 +1347,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.1 =====================
+// ===================== QUIZ: rule-teacher-strict-v7.2 =====================
 // Cel: proste pytania i krótkie odpowiedzi (ze słów w zdaniu)
 // Priorytet: Dokąd? > Kiedy? > Gdzie?
 
@@ -1378,7 +1378,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       const win = O.substring(j, j + F.length);
       if (deaccent(win).toLowerCase() === Fda) return win;
     }
-    return F; // fallback: zwróć bez zmian (i tak mamy ogonki w oryginale)
+    return F;
   }
   function rehydrateAnswerFromOriginal(orig, a) {
     if (!a) return a;
@@ -1397,25 +1397,30 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nast[eę]pnie|wtedy)\b/iu;
   function removeDiscourseMarkers(s = "") {
     let out = String(s);
-    // na początku zdania:
     out = out.replace(/^\s*(na\s+koniec|potem|zanim|po\s+chwili|najpierw|nast[eę]pnie|wtedy)\b[, ]*/iu, " ");
-    // wszędzie:
     out = out.replace(DISCOURSE_MARKERS_RE, " ");
     return normalizeSpaces(out);
   }
   const isDiscoursePP = (pp="") => /^\s*na\s+koniec\b/i.test(pp);
 
-  // ogony celu i czasu – odcinamy z końców fraz
+  // --- ogony celu, czasu i długości ---
   const PURPOSE_TAIL = new RegExp(
-    String.raw`(?:\s+(?:po\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,3}))|(?:\s+(?:na\s+(?:spacer|spacerze|obiad|kolacj[ęe]|lody|zakupy|posiłek|posilek|przerw[ęe])))$`,
+    String.raw`(?:\s+(?:po\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,3}))|(?:\s+(?:na\s+(?:spacer|spacerze|lekcj[ęeai]|obiad|kolacj[ęe]|lody|zakupy|posiłek|posilek|przerw[ęe])))$`,
     "iu"
   );
   const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
+  const DURATION_TAIL = /\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment|przez\s+dłużs?zą?\s+chwil[ęe]|przez\s+dluzsza?\s+chwile)\b$/iu;
 
   function stripPurposeTail(s = "") { let p; do { p = s; s = s.replace(PURPOSE_TAIL, ""); } while (p !== s); return normalizeSpaces(s); }
   const stripTimeTail = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
-  // twarde wycięcie „na spacerze” gdziekolwiek w końcówce
-  const STRIP_ANY_SPACER = s => normalizeSpaces(String(s).replace(/\s+na\s+spacerze?\b/iu, ""));
+  const stripDurationTail = s => normalizeSpaces(String(s).replace(DURATION_TAIL, ""));
+  // twarde wycięcie „na spacer(ze)” oraz „na lekcję/lekcje/lekcji” gdziekolwiek w końcówce
+  const STRIP_ANY_PURPOSE = s => normalizeSpaces(
+    String(s)
+      .replace(/\s+na\s+spacerze?\b/iu, "")
+      .replace(/\s+na\s+lekcj[ęeai]\b/iu, "")
+      .replace(/\s+na\s+(lody|zakupy|obiad|kolacj[ęe]|posiłek|posilek)\b/iu, "")
+  );
   // tnij odpowiedź na pierwszym przecinku lub spójniku „i/oraz/a”
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
 
@@ -1423,22 +1428,29 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   function isTemporalPP(pp = "") {
     const low = pp.toLowerCase();
     return /^(o|przed)\s+\d{1,2}[:.]\d{2}/.test(low)
-      || /\b(rano|wieczorem|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe]))\b/.test(low);
+      || /\b(rano|wieczorem|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe]))\b/.test(low)
+      || /\b(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b/.test(low);
   }
 
-  // --- extractDestination ---
+  // --- extractDestination (preferuj 'do ...' jeśli istnieje) ---
   function extractDestination(s) {
     const cleaned = removeDiscourseMarkers(s);
     const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,6})\b/giu;
-    let m, last = null;
-    while ((m = re.exec(cleaned)) !== null) last = m; // bierz OSTATNI cel (często bardziej specyficzny)
-    if (!last) return null;
-    let dest = `${last[1]} ${last[2]}`.trim();
-    dest = stripOnConjunctionOrComma(dest); // tnij na „i/oraz/a” oraz przecinku
-    dest = STRIP_ANY_SPACER(dest);          // usuń „na spacer(ze)”
-    dest = stripPurposeTail(dest);          // usuń ogony celu
-    dest = stripTimeTail(dest);             // usuń ogony czasu
-    dest = trimAtVerb(dest);                // utnij przy czasowniku
+    const matches = [];
+    let m;
+    while ((m = re.exec(cleaned)) !== null) matches.push({ prep: m[1].toLowerCase(), body: m[2], idx: m.index });
+
+    if (!matches.length) return null;
+    // jeśli jest jakiekolwiek 'do', bierz ostatnie 'do', w przeciwnym razie ostatnie z listy
+    const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
+
+    let dest = `${pick.prep} ${pick.body}`.trim();
+    dest = stripOnConjunctionOrComma(dest);
+    dest = STRIP_ANY_PURPOSE(dest);
+    dest = stripPurposeTail(dest);
+    dest = stripTimeTail(dest);
+    dest = stripDurationTail(dest);
+    dest = trimAtVerb(dest);
     return stripPunct(normalizeSpaces(dest));
   }
 
@@ -1454,7 +1466,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","domu","ławce","lawce","fotelu","krześle","krzesle",
-    "dywanie","stole","stołem","stolem","zoo","przystanku","fontannie","klasie","oknie","placu"
+    "dywanie","stole","stołem","stolem","zoo","przystanku","fontannie","klasie","oknie","placu","salonie"
   ];
 
   function pickPlaceFromSentence(s) {
@@ -1467,11 +1479,12 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
     let best = pps[0], bestScore = -1;
     for (const p of pps) {
-      let cand = stripOnConjunctionOrComma(p); // tnij „i/oraz/a” oraz przecinki
-      cand = STRIP_ANY_SPACER(cand);           // usuń „na spacer(ze)”
-      cand = stripPurposeTail(cand);           // ogon celu
-      cand = stripTimeTail(cand);              // ogon czasu
-      cand = trimAtVerb(cand);                 // czasownik
+      let cand = stripOnConjunctionOrComma(p);
+      cand = STRIP_ANY_PURPOSE(cand);
+      cand = stripPurposeTail(cand);
+      cand = stripTimeTail(cand);
+      cand = stripDurationTail(cand);
+      cand = trimAtVerb(cand);
       let sc = 0, low = cand.toLowerCase();
       for (const h of PLACE_HINTS) if (low.includes(h)) sc += 2;
       if (/^\s*(w|we|na)\b/i.test(cand)) sc += 1.5;
@@ -1490,18 +1503,18 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // === PRIORYTETY ===
   if (hasMoveVerb && hasToPhrase) {
     const dest = extractDestination(t);
-    if (dest) return { ok: true, question: "Dokąd?", answer: rehydrateAnswerFromOriginal(text, dest), source_path: "rule-teacher-strict-v7.1" };
+    if (dest) return { ok: true, question: "Dokąd?", answer: rehydrateAnswerFromOriginal(text, dest), source_path: "rule-teacher-strict-v7.2" };
   }
   if (hasTime) {
     const time = extractTime(t);
-    if (time) return { ok: true, question: "Kiedy?", answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.1" };
+    if (time) return { ok: true, question: "Kiedy?", answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.2" };
   }
   if (hasLoc) {
     const loc = pickPlaceFromSentence(t);
-    if (loc) return { ok: true, question: "Gdzie?", answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.1" };
+    if (loc) return { ok: true, question: "Gdzie?", answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.2" };
   }
 
-  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v7.1-fallback" };
+  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v7.2-fallback" };
 }
 
 // --------------------- ENDPOINTS ---------------------
@@ -1516,7 +1529,7 @@ app.post("/agent/comprehend", (req, res) => {
 
 app.post("/agent/comprehend-aggregate", (req, res) => {
   try {
-    const { text, max_questions = 8 } = req.body || {};
+    const { text, max_questions = 10 } = req.body || {};
     if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
     const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 20);
@@ -1549,8 +1562,9 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
   }
 });
 
-app.get("/version", (req, res) => res.json({ build: "2025-10-22 rule-teacher-strict-v7.1" }));
+app.get("/version", (req, res) => res.json({ build: "2025-10-22 rule-teacher-strict-v7.2" }));
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
