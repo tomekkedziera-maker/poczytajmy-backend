@@ -1347,7 +1347,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.3 =====================
+// ===================== QUIZ: rule-teacher-strict-v7.4 =====================
 // Cel: proste pytania i krótkie odpowiedzi (ze słów w zdaniu)
 // Priorytet: Dokąd? > Kiedy? > Gdzie?
 
@@ -1392,7 +1392,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // ===== heurystyki czasowników =====
   function isVerbishToken(tok="") {
     const x = deaccent(tok.toLowerCase());
-    return /\b(ide|idzie|idziemy|ida|idziecie|jedzie|jada|jade|jedziemy|wraca|wracaja|wracam|wracacie|wracamy|biegne|biegniesz|biegnie|biegniemy|biegniecie|biegna|plyne|plyniesz|plynie|plyniemy|plyniecie|plyna|lece|lecisz|leci|lecimy|lecicie|leca|wchodze|wchodzisz|wchodzi|wchodzimy|wchodzicie|wchodza|wyszli|poszli|poszedl|poszla|poszla|skrecili|skrecil|wsiedli|podeszli|wrocili|wrocil)\b/i.test(x)
+    return /\b(ide|idzie|idziemy|ida|idziecie|jedzie|jada|jade|jedziemy|wraca|wracaja|wracam|wracacie|wracamy|biegne|biegniesz|biegnie|biegniemy|biegniecie|biegna|plyne|plyniesz|plynie|plyniemy|plyniecie|plyna|lece|lecisz|leci|lecimy|lecicie|leca|wchodze|wchodzisz|wchodzi|wchodzimy|wchodzicie|wchodza|wyszli|poszli|poszedl|poszla|skrecili|wsiedli|podeszli|wrocil|wrocili)\b/i.test(x)
       || /[aaeeioouy]?(li|la|lo|lem|lam|uja|owal|owala|owali)$/.test(x);
   }
   const trimAtVerb = p => p.split(/\s+/).filter(x => !isVerbishToken(x)).slice(0, 6).join(" ").trim();
@@ -1467,12 +1467,17 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","domu","ławce","lawce","fotelu","krześle","krzesle",
-    "dywanie","stole","stołem","stolem","zoo","przystanku","fontannie","klasie","oknie","placu","salonie","kiosku","kinie"
+    "dywanie","stole","stołem","stolem","zoo","przystanku","fontannie","klasie","oknie","placu",
+    "salonie","kiosku","kinie","kina"
   ];
 
   function pickPlaceFromSentence(s) {
     const base = removeDiscourseMarkers(s);
-    const pps = (base.match(/\b(we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|koło|kolo|u)\s+\S+(?:\s+\S+){0,4}/giu) || [])
+    // PREP lista z ujednoliconymi wariantami (bez ogonków też)
+    const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|koło|kolo|u|w)";
+    // kluczowe: nie przechodzimy przez KOLEJNY przyimek (negative lookahead)
+    const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,"giu");
+    const pps = (base.match(re) || [])
       .map(x => normalizeSpaces(x))
       .filter(x => !isDiscoursePP(x))
       .filter(x => !isTemporalPP(x));
@@ -1504,18 +1509,18 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // === PRIORYTETY ===
   if (hasMoveVerb && hasToPhrase) {
     const dest = extractDestination(t);
-    if (dest) return { ok: true, question: "Dokąd?", answer: rehydrateAnswerFromOriginal(text, dest), source_path: "rule-teacher-strict-v7.3" };
+    if (dest) return { ok: true, question: "Dokąd?", answer: rehydrateAnswerFromOriginal(text, dest), source_path: "rule-teacher-strict-v7.4" };
   }
   if (hasTime) {
     const time = extractTime(t);
-    if (time) return { ok: true, question: "Kiedy?", answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.3" };
+    if (time) return { ok: true, question: "Kiedy?", answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.4" };
   }
   if (hasLoc) {
     const loc = pickPlaceFromSentence(t);
-    if (loc) return { ok: true, question: "Gdzie?", answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.3" };
+    if (loc) return { ok: true, question: "Gdzie?", answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.4" };
   }
 
-  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v7.3-fallback" };
+  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v7.4-fallback" };
 }
 
 // --------------------- ENDPOINTS ---------------------
@@ -1533,7 +1538,16 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     const { text, max_questions = 10 } = req.body || {};
     if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
-    const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 20);
+    // Sanityzacja wejścia z prefiksów typu ">> " i łamań linii
+    const cleaned = String(text)
+      .split(/\r?\n/)
+      .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const sentences = cleaned.split(/(?<=[.!?])\s+|[\r\n]+/).filter(Boolean).slice(0, 20);
+
     const scored = sentences
       .map(s => {
         const r = generateQuestionAndAnswerTeacher(s);
@@ -1557,14 +1571,23 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
       top.push(r);
     }
 
+    // Fallback: jeśli nic nie przeszło (np. wszystkie się zdeduplikowały lub puste), weź najlepsze niepuste do limitu
+    if (top.length === 0) {
+      for (const r of scored) {
+        if (top.length >= max_questions) break;
+        if (r.answer) top.push(r);
+      }
+    }
+
     res.json({ ok: true, count: top.length, items: top });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
   }
 });
 
-app.get("/version", (req, res) => res.json({ build: "2025-10-22 rule-teacher-strict-v7.3" }));
+app.get("/version", (req, res) => res.json({ build: "2025-10-22 rule-teacher-strict-v7.4" }));
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
