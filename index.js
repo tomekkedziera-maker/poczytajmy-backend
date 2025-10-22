@@ -1387,12 +1387,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     const O = String(orig);
     const Fn = normalizeSpaces(frag);
     const Fda = deaccent(Fn).toLowerCase();
-    // szukaj fragmentu oknem przesuwanym
     for (let j = 0; j <= O.length - Fn.length; j++) {
       const win = O.substring(j, j + Fn.length);
       if (deaccent(win).toLowerCase() === Fda) return win;
     }
-    // fallback: token po tokenie
     return Fn.split(/\s+/).map(tok => {
       const Tda = deaccent(tok).toLowerCase();
       for (let k = 0; k <= O.length - tok.length; k++) {
@@ -1411,7 +1409,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // wykrywanie czasowników i przycinanie fraz miejsca
   function isVerbishToken(tok = "") {
     const t = tok.toLowerCase();
-    if (/\b(ide|idzie|idziemy|idziecie|ida|idą|jedzie|wraca|wracam|wracaja|wracają|biegnie|usial|usialo|usiad|usiedli|siedzi|siedza|siedzą|pobiegla|pobiegł|pobiegli|wyszli|wyszla|wyszła|skrecili|skręcili|wsiedli|wrocili|wrócili)\b/.test(t)) return true;
+    if (/\b(ide|idzie|idziemy|idziecie|ida|idą|jedzie|wraca|wracam|wracaja|wracają|biegnie|usial|usialo|usiad|usiedli|siedzi|siedza|siedzą|pobiegla|pobiegł|pobiegli|wyszli|wyszla|wyszła|skrecili|skręcili|wsiedli|wrocili|wrócili|podeszli|poszli|poszedl|poszedł)\b/iu.test(t)) return true;
     if (/[aąeęioóuy]?(li|ły|la|ła|lo|ło|łem|łam|łeś|łaś|amy|acie|ają|aja|uje|ujesz|ują|ował|owała|owali)$/.test(t)) return true;
     return false;
   }
@@ -1421,7 +1419,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     for (const tok of toks) {
       if (isVerbishToken(tok)) break;
       kept.push(tok);
-      if (kept.length >= 5) break; // pozwól na trochę dłuższy deskryptor miejsca
+      if (kept.length >= 5) break; // pozwól na nieco dłuższy deskryptor miejsca
     }
     return kept.join(" ").trim();
   }
@@ -1436,17 +1434,21 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(out);
   }
 
-  // ogony celu, które obcinamy z końca fraz miejsca/dokąd
-  // np. "po świeże bułki", "na spacer", "na obiad", "po zakupy"
+  // ogony celu i czasu – odcinamy z końców fraz
   const PURPOSE_TAIL = new RegExp(
     String.raw`(?:\s+(?:po\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,3}))|(?:\s+(?:na\s+(?:spacer|obiad|kolacj[ęe]|lody|zakupy|posilek|posiłek|przerwe|przerwę)))$`,
     "iu"
   );
+  const TIME_TAIL = /\s+(?:rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
+
   function stripPurposeTail(span = "") {
     let s = String(span);
     let prev;
     do { prev = s; s = s.replace(PURPOSE_TAIL, ""); } while (s !== prev);
     return normalizeSpaces(s);
+  }
+  function stripTimeTail(span = "") {
+    return normalizeSpaces(String(span).replace(TIME_TAIL, ""));
   }
 
   // słowniki wspomagające scoring miejsca
@@ -1490,6 +1492,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     if (mNa && ACTIVITY_NA.includes(mNa[1])) return true;
     return false;
   }
+  function isTemporalPP(pp = "") {
+    const low = pp.toLowerCase();
+    if (/^\s*o\s+\d{1,2}[:.]\d{2}\b/.test(low)) return true;
+    if (/^\s*przed\s+\d{1,2}[:.]\d{2}\b/.test(low)) return true;
+    if (/(?:\brano\b|\bwieczorem\b|\bpo\s+południu\b|\bpo\s+poludniu\b|\bdzisiaj\b|\bdziś\b|\bjutro\b|\bwczoraj\b)/.test(low)) return true;
+    return false;
+  }
   function scorePlace(pp){
     let s = 0; const low = pp.toLowerCase();
     for (const hint of PLACE_HINTS){ if (low.includes(hint)) s += 2; }
@@ -1500,15 +1509,15 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return s;
   }
   function pickPlaceFromSentence(sentence){
-    // usuń markery dyskursywne, ale NIE ruszaj czasu (czas rozpoznamy wcześniej)
     const cleaned = removeDiscourseMarkers(sentence);
     const pps = splitPPs(cleaned);
     if (!pps.length) return null;
-    let filtered = pps.filter(pp => !isActivityPP(pp));
+    let filtered = pps
+      .filter(pp => !isActivityPP(pp))
+      .filter(pp => !isTemporalPP(pp));
     let pool = filtered.length ? filtered : pps;
     let best = null, bestScore = -1;
     for (let i=0;i<pool.length;i++){
-      // odcinamy ogon celu (po…, na spacer)
       const candidate = stripPurposeTail(pool[i]);
       const sc = scorePlace(candidate) + i*0.01;
       if (sc > bestScore){ best = candidate; bestScore = sc; }
@@ -1520,6 +1529,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let a = String(ans).trim();
     a = a.replace(/\b(we?|na|pod|nad|przy|za|przed|obok|u)\s+(we?|na|pod|nad|przy|za|przed|obok|u)\b/gi, "$2");
     a = stripPurposeTail(a);
+    a = stripTimeTail(a);
     a = trimAtVerb(a);
     return stripPunct(normalizeSpaces(a));
   }
@@ -1530,12 +1540,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let m, last=null; while ((m = re.exec(cleaned)) !== null) last = m;
     if (!last) return null;
     let dest = `${last[1]} ${last[2]}`.trim();
-    dest = stripPurposeTail(dest); // utnij cel z końca
+    dest = stripPurposeTail(dest);
+    dest = stripTimeTail(dest);
+    dest = trimAtVerb(dest);
     return stripPunct(normalizeSpaces(dest));
   }
 
   function extractTime(s) {
-    // najpierw próba początku zdania – np. "W sobotni poranek ..."
     const startMatch = s.match(/^\s*(w\s+(?:sobotni|niedzielny)\s+poranek)\b/iu);
     if (startMatch) return stripPunct(startMatch[1]);
     const m = s.match(/\b(o\s+\d{1,2}[:.]\d{2}|wczoraj|dzisiaj|dziś|jutro|rano|wieczorem|po\s+południu|po\s+poludniu|w\s+(?:poniedziałek|wtorek|środ[ęe]|czwartek|piątek|piatek|sobot[ęe]|niedziel[ęe])|na\s+przerwie|po\s+(?:lekcjach|obiedzie|śniadaniu))\b/iu);
@@ -1543,7 +1554,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   // === PRIORYTETY: Dokąd? > Kiedy? > Gdzie? ===
-  // 1) Dokąd? – tylko gdy wyraźny czasownik ruchu i fraza "do/na ..."
   if (hasMoveVerb && hasToPhrase) {
     let dest = extractDestination(t);
     if (dest) {
@@ -1552,7 +1562,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // 2) Kiedy? – jeśli mamy jednoznaczny czas, zgłaszamy wcześniej niż Gdzie?
   if (hasTime) {
     let time = extractTime(t);
     if (time) {
@@ -1561,7 +1570,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // 3) Gdzie?
   if (hasLoc) {
     let loc = pickPlaceFromSentence(t);
     if (loc) {
@@ -1619,11 +1627,11 @@ app.post("/agent/comprehend-aggregate", async (req, res) => {
     const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 20);
 
     // wygeneruj wyniki i posortuj po score
-    const scored = sentences.map((s, i) => {
+    const scored = sentences.map((s) => {
       const r = generateQuestionAndAnswerTeacher(s);
       let score = 0;
       if (r.question === "Dokąd?") score = 100;
-      else if (r.question === "Kiedy?") score = 90;  // podbij czas (godziny/daty)
+      else if (r.question === "Kiedy?") score = 90;  // czas ważniejszy niż miejsce
       else if (r.question === "Gdzie?") score = 80;
       else score = 40;
       return { ...r, sentence: s, score };
@@ -1637,8 +1645,8 @@ app.post("/agent/comprehend-aggregate", async (req, res) => {
     for (const r of scored) {
       if (top.length >= max_questions) break;
       const key = `${r.question}|${r.answer}`;
-      if (!r.answer) continue; // pomiń puste odpowiedzi
-      if (seen.has(key)) continue;
+      if (!r.answer) continue;      // pomiń puste odpowiedzi
+      if (seen.has(key)) continue;  // bez duplikatów
       seen.add(key);
       top.push(r);
     }
@@ -1655,6 +1663,7 @@ app.get("/version", (req, res) => {
 });
 
 /* ===================== /QUIZ / COMPREHEND ===================== */
+
 
 
 
