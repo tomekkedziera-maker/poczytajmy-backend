@@ -1427,12 +1427,20 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
 
   // ===== czasowe PP =====
-  function isTemporalPP(pp = "") {
-    const low = deaccent(pp.toLowerCase());
-    return /^(o|przed)\s+\d{1,2}[:.]\d{2}/.test(low)
-      || /\b(rano|wieczorem|po\s+poludniu|dzisiaj|dzis|jutro|wczoraj|w\s+(poniedzialek|wtorek|srode|czwartek|piatek|sobote|niedziele))\b/.test(low)
-      || /\b(przez\s+chwile|na\s+chwile|przez\s+moment)\b/.test(low);
-  }
+ // Uwaga: jeśli PP zaczyna się przyimkiem przestrzennym, to sama końcówka "przez chwilę" NIE kwalifikuje PP jako temporalnego.
+function isTemporalPP(pp = "") {
+  const low = pp.toLowerCase();
+  const spatialStart = /^\s*(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\b/.test(low);
+  // najpierw utnij długość, jeśli jest:
+  const noDur = low.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, "");
+  // jeśli zaczyna się przestrzennie i po ucięciu długości zostało coś sensownego → traktuj jako przestrzenne
+  if (spatialStart && noDur.trim() !== "") return false;
+
+  // prawdziwe frazy czasowe:
+  return /^(o|przed)\s+\d{1,2}[:.]\d{2}/.test(low)
+      || /\b(rano|wieczorem|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe]))\b/i.test(low)
+      || /\b(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b/i.test(low);
+}
 
   // ===== extractDestination (prefer 'do …' jeśli jest) =====
   function extractDestination(s) {
@@ -1471,34 +1479,43 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     "salonie","kiosku","kinie","kina"
   ];
 
-  function pickPlaceFromSentence(s) {
-    const base = removeDiscourseMarkers(s);
-    // PREP lista z ujednoliconymi wariantami (bez ogonków też)
-    const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|koło|kolo|u|w)";
-    // kluczowe: nie przechodzimy przez KOLEJNY przyimek (negative lookahead)
-    const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,"giu");
-    const pps = (base.match(re) || [])
-      .map(x => normalizeSpaces(x))
-      .filter(x => !isDiscoursePP(x))
-      .filter(x => !isTemporalPP(x));
-    if (!pps.length) return null;
+  // --- pickPlaceFromSentence (PODMIEŃ TYLKO CIAŁO PĘTLI i FILTRY PRZED NIĄ) ---
+function pickPlaceFromSentence(s) {
+  const base = removeDiscourseMarkers(s);
+  const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|koło|kolo|u|w)";
+  const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b)\S+){0,4}`,"giu");
 
-    let best = pps[0], bestScore = -1;
-    for (const p of pps) {
-      let cand = stripOnConjunctionOrComma(p);
-      cand = STRIP_ANY_PURPOSE(cand);
-      cand = stripPurposeTail(cand);
-      cand = stripTimeTail(cand);
-      cand = stripDurationTail(cand);
-      cand = trimAtVerb(cand);
-      let sc = 0, low = deaccent(cand.toLowerCase());
-      for (const h of PLACE_HINTS) if (low.includes(deaccent(h))) sc += 2;
-      if (/^\s*(w|we|na)\b/i.test(cand)) sc += 1.5;
-      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 0.8;
-      if (sc > bestScore) { best = cand; bestScore = sc; }
+  let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
+
+  // 1) najpierw zetnij ogony czasu trwania i czasu
+  pps = pps.map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
+           .map(x => x.replace(/\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu, ""))
+           .map(x => normalizeSpaces(x));
+
+  // 2) dopiero teraz filtry
+  pps = pps.filter(x => !isDiscoursePP(x)).filter(x => !isTemporalPP(x));
+  if (!pps.length) return null;
+
+  let best = pps[0], bestScore = -1;
+  for (let p of pps) {
+    let cand = stripOnConjunctionOrComma(p);
+    cand = STRIP_ANY_PURPOSE(cand);
+    cand = stripPurposeTail(cand);
+    cand = stripTimeTail(cand);
+    cand = stripDurationTail(cand);
+    cand = trimAtVerb(cand);
+
+    let sc = 0, low = deaccent(cand.toLowerCase());
+    for (const h of ["boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie","balkonie","podwórku","podworku","sklepie","domu","ławce","lawce","fotelu","krześle","krzesle","dywanie","stole","stołem","stolem","zoo","przystanku","fontannie","klasie","oknie","placu","salonie","kiosku","kinie","kina"]) {
+      if (low.includes(deaccent(h))) sc += 2;
     }
-    return stripPunct(normalizeSpaces(best));
+    if (/^\s*(w|we|na)\b/i.test(cand)) sc += 1.5;
+    if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 0.8;
+    if (sc > bestScore) { best = cand; bestScore = sc; }
   }
+  return stripPunct(normalizeSpaces(best));
+}
+
 
   // ===== flagi (na tDA — bez ogonków) =====
   const hasMoveVerb = /\b(ide|idzie|idziemy|ida|idziecie|jedzie|jada|jade|jedziemy|wraca|wracaja|wracam|wracacie|wracamy|biegne|biegniesz|biegnie|biegniemy|biegniecie|biegna|plyne|plyniesz|plynie|plyniemy|plyniecie|plyna|lece|lecisz|leci|lecimy|lecicie|leca|wchodze|wchodzisz|wchodzi|wchodzimy|wchodzicie|wchodza|wyszli|poszli|poszedl|poszla|skrecili|wsiedli|podeszli|wrocil|wrocili)\b/i.test(tDA);
