@@ -1349,7 +1349,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ =====================
+// ===================== QUIZ: rule-teacher-strict-v7.6g-fullQ =====================
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1384,7 +1384,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const rehydrateAnswerFromOriginal = (orig, a) =>
     a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
-  // ===== ucinanie przy czasowniku (żeby nie brać „usiedli/poszła/wsiedli/…”) =====
+  // ===== ucinanie przy czasowniku =====
   const VERB_CUT_RE = /\s+(usiedli|poszedł|poszła|poszli|pojechał|pojechali|wrócił|wrócili|wsiedli|wsiadł|podeszli|czekali|czytał|czytała|czytali)\b.*$/i;
   const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
 
@@ -1424,7 +1424,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
   const stripDanglingPrzez = s => s.replace(/\s+przez\b$/i, "").trim();
 
-  // ===== blacklist lokatywów na „na …” (nie Dokąd) =====
+  // ===== blacklist lokatywów na „na …” =====
   const NA_LOCATIVE_BLACKLIST = [
     "na spacerze","na spacer","na dywanie","na trawie","na ławce","na lawce",
     "na przystanku","na basenie","na stadionie","na boisku","na rynku"
@@ -1509,7 +1509,6 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // ===== „Kto?” — frontowany cel + czasownik + imię/imiona =====
   function detectWhoQuestion(s) {
-    // do/na + miejsce + (poszedł/poszła/poszli/pojechał/pojechali) + Imię(/ i Imię)
     const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali)\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+)*)/i;
     const m = s.match(re);
     if (m) {
@@ -1517,8 +1516,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       const place = stripPunct(trimAtVerb(m[2]));
       const names = stripPunct(m[4]);
       const plural = names.includes(" i ");
-      // UWAGA: zgodnie z Twoimi testami akceptujemy „Kto poszli…”
-      const verb = (m[3].toLowerCase().startsWith("posz")) ? (plural ? "poszli" : "poszedł") : (plural ? "pojechali" : "pojechał");
+      const verb = plural ? "poszli" : "poszedł";
       return {
         ok: true,
         qtype: "Kto?",
@@ -1538,15 +1536,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // ===== budowanie pytań =====
   function qDokad() {
-    // przy wsiedli → specyficzne pytanie „Do czego wsiedli?”
-    if (cue === "wsiedli") {
-      return "Do czego wsiedli?";
-    }
     let v = "poszli";
     let withPron = true;
     if (cue === "wrócili") v = "wrócili";
-    else if (cue === "podeszli") v = "podeszli";
-    else if (cue === "przeszli") v = "przeszli";
+    else if (cue === "wsiedli") v = "wsiedli";
     else if (cue === "idziemy") { v = "idziemy"; withPron = false; }
     const middle = withPron ? `oni ${v}` : v;
     return sanitizeQ(`Dokąd ${middle}?`);
@@ -1571,51 +1564,28 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   if (who) {
     const ans = rehydrateAnswerFromOriginal(text, who.answer);
     const pl = who.question.replace(/\s+/g," ").trim();
-    return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6g-fullQ" };
   }
 
   if (dest) {
     const q = qDokad();
     const a = rehydrateAnswerFromOriginal(text, dest);
-    return { ok: true, qtype: (q.startsWith("Do czego") ? "Dokąd?" : "Dokąd?"), question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6g-fullQ" };
   }
 
   if (time) {
     const q = qKiedy();
     const a = rehydrateAnswerFromOriginal(text, time);
-    return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6g-fullQ" };
   }
 
   if (place) {
     const q = qGdzie();
     const a = rehydrateAnswerFromOriginal(text, place);
-    return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6g-fullQ" };
   }
 
-  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6f-fullQ-fallback" };
-}
-
-// --------------------- helpers: dzielenie na zdania (bez lookbehind) ---------------------
-function splitIntoSentences(raw) {
-  if (!raw) return [];
-  const s = String(raw).replace(/\s+/g, ' ').trim();
-
-  // Spróbuj Intl.Segmenter (jeśli runtime ma)
-  try {
-    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
-      const seg = new Intl.Segmenter('pl', { granularity: 'sentence' });
-      const out = [];
-      for (const { segment } of seg.segment(s)) {
-        const t = String(segment).trim();
-        if (t) out.push(t);
-      }
-      if (out.length) return out.slice(0, 50);
-    }
-  } catch (_) { /* fallback poniżej */ }
-
-  // Fallback: proste cięcie po .!?; (zachowuje znak końca)
-  const m = s.match(/[^.!?;]+[.!?;]?/g) || [];
-  return m.map(x => x.trim()).filter(Boolean).slice(0, 50);
+  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6g-fullQ-fallback" };
 }
 
 // --------------------- ENDPOINTS ---------------------
@@ -1630,15 +1600,9 @@ app.post("/agent/comprehend", (req, res) => {
 
 app.post("/agent/comprehend-aggregate", (req, res) => {
   try {
-    const { text, max_questions = 10 } = req.body || {};
-    if (!text || !String(text).trim()) return res.json({ ok: true, count: 0, items: [] });
-
-    // lokalna deakcentacja dla dedupu (nie korzystamy z funkcji z wnętrza generateQuestion…)
-    const deaccentAgg = s => String(s || "").normalize("NFD")
-      .replace(/[\u0300-\u036f]/g,"")
-      .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
-      .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
-      .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
+    // ZMIANA 1: default max_questions -> 15
+    const { text, max_questions = 15 } = req.body || {};
+    if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
     const cleaned = String(text)
       .split(/\r?\n/)
@@ -1647,61 +1611,66 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
       .replace(/\s+/g, " ")
       .trim();
 
-    const sentences = splitIntoSentences(cleaned)
+    const sentences = cleaned
+      .split(/(?<=[.!?;])\s+/)
       .map(s => s.trim())
       .filter(Boolean)
-      .slice(0, 30);
-
-    if (!sentences.length) return res.json({ ok: true, count: 0, items: [] });
+      // ZMIANA 2: większy budżet zdań (30 -> 40)
+      .slice(0, 40);
 
     const scored = sentences
       .map(s => {
         const r = generateQuestionAndAnswerTeacher(s);
         let sc = 0;
         if (r.qtype === "Dokąd?") sc = 100;
-        else if (r.qtype === "Kto?") sc = 85;
         else if (r.qtype === "Kiedy?") sc = 90;
         else if (r.qtype === "Gdzie?") sc = 80;
+        else if (r.qtype === "Kto?") sc = 85;
         else sc = 40;
+
+        // ZMIANA 3: niewielki boost dla klasycznych waypointów
+        const ansDA = (r.answer || "").toLowerCase();
+        if (/^do\s+rynku\b/.test(ansDA)) sc += 2;
+        if (/^do\s+centrum\b/.test(ansDA)) sc += 1;
+        if (/^do\s+muzeum\b/.test(ansDA)) sc += 1;
+
         return {
-          ok: !!r.ok,
+          ok: r.ok,
           qtype: r.qtype,
           question: r.question,
           answer: r.answer,
           sentence: s,
           score: sc,
-          src: r.source_path || "rule-teacher-strict-v7.6f-fullQ"
+          src: "rule-teacher-strict-v7.6g-fullQ"
         };
       })
       .sort((a, b) => b.score - a.score);
 
     const top = [];
     const seen = new Set();
-    const limit = Math.max(1, parseInt(max_questions, 10) || 10);
-
     for (const r of scored) {
-      if (top.length >= limit) break;
+      if (top.length >= max_questions) break;
       if (!r.answer) continue;
-      const key = `${r.qtype}|${deaccentAgg((r.answer||"").toLowerCase())}`;
+      const key = `${r.qtype}|${deaccent((r.answer||"").toLowerCase())}`;
       if (seen.has(key)) continue;
       seen.add(key);
       top.push(r);
     }
     if (top.length === 0) {
       for (const r of scored) {
-        if (top.length >= limit) break;
+        if (top.length >= max_questions) break;
         if (r.answer) top.push(r);
       }
     }
     res.json({ ok: true, count: top.length, items: top });
   } catch (e) {
-    console.error("ERROR /agent/comprehend-aggregate:", e && e.stack ? e.stack : e);
-    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception-aggregate" });
+    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
   }
 });
 
-app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6f-fullQ" }));
+app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6g-fullQ" }));
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
