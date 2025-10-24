@@ -1349,14 +1349,13 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-
-// ===================== QUIZ: rule-teacher-strict-v7.6c-fullQ =====================
-// Zmiany vs v7.6b:
-// - PEŁNE pytania z naturalnym szykiem: "Dokąd pojechał Tomek?" (czasownik przed imieniem)
-// - qtype: "Dokąd?" | "Kiedy?" | "Gdzie?" | "Co się dzieje?"
-// - Heurystyka liczby/płci dla czasownika: poszedł/poszła/poszli, pojechał/pojechała/pojechali, itd.
-// - Lepsze wykrywanie „bohaterów” (ignoruje markery typu: Potem, Później, W, O, Przed…)
-// - Zachowuje fixy: odcinanie źródła ("do domu ~~z placu zabaw~~"), rozpoznawanie "W niedzielny poranek…"
+// ===================== QUIZ: rule-teacher-strict-v7.6d-fullQ =====================
+// Zmiany vs v7.6c:
+// - Pytania pełnym zdaniem dla dziecka; brak sztucznego „oni”.
+// - Cel: wybór ostatniego „do/na …” w łańcuszkach (…do przystanku i wsiedli do tramwaju… → „do tramwaju…”).
+// - Stabilne wykrywanie „wrócić” mimo mojibake/deakcentacji.
+// - Przy „wsiedli” preferujemy pytanie „Do czego wsiedli …?”.
+// - Przy odpowiedziach: odcinanie ogonów (czas, cel czynności, źródło „z/ze/od …”).
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1389,77 +1388,34 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const rehydrateAnswerFromOriginal = (orig, a) =>
     a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
-  // ===== wykrywanie bohaterów (imiona) =====
-  const STOP_FIRST = new Set([
-    "W","Na","Po","O","Przed","Koło","Kolo","Potem","Później","Pozniej","Następnie","Nastepnie","Zanim"
-  ]);
-  const MALE_A_EXCEPTIONS = new Set(["Kuba","Barnaba","Bonawentura"]); // najważniejsze: "Kuba"
-
-  function guessPlural(str) { return /\bi\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+/.test(str); }
-  function guessGenderSingle(name) {
-    // prosta heurystyka: imię na -a => żeńskie, chyba że w wyjątkach (np. Kuba)
-    if (!name) return "m";
-    if (MALE_A_EXCEPTIONS.has(name)) return "m";
-    return /a$/.test(name) ? "f" : "m";
-  }
-
+  // ===== aktorzy =====
   function extractActors(orig) {
     const s = orig.trim();
-    // usuń opcjonalne otwarcie czasowe typu: "W poniedziałkowy poranek ..."
-    const sNoTime = s.replace(/^\s*W\s+\p{L}+\s+\p{L}+\s+/u, "");
-    // spróbuj znaleźć schemat "Imię i Imię" albo pojedyncze Imię
-    const m = sNoTime.match(/\b([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)(?:\s+i\s+([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+))?/u);
-    if (!m) return { label: "oni", plural: true, gender: "m" };
-
-    const first = m[1];
-    if (STOP_FIRST.has(first)) return { label: "oni", plural: true, gender: "m" };
-
-    const second = m[2];
-    if (second) {
-      return { label: `${first} i ${second}`, plural: true, gender: "m" };
+    // np. "W niedzielny poranek Basia i Krzyś ...", "Basia i Krzyś ...", "Tomek ..."
+    const m = s.match(/^(?:W\s+\p{L}+\s+\p{L}+\s+)?([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)(?:\s+i\s+([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+))?/u);
+    let label = "oni", plural = true;
+    if (m) {
+      if (m[1] && m[2]) { label = `${m[1]} i ${m[2]}`; plural = true; }
+      else if (m[1])    { label = m[1]; plural = false; }
     }
-    return { label: first, plural: false, gender: guessGenderSingle(first) };
+    return { label, plural };
   }
 
-  // ===== wykrywanie "cue" dla czasownika ruchu =====
+  // ===== wykrycie czasownikowego „cue” =====
   function detectVerbCue(sDA) {
     const L = sDA.toLowerCase();
-    if (/\bwr\w*c\w*/.test(L)) return "wrócić"; // łapie "wrocili", "wrcili" itd.
-    if (/\bpojech\w*|\bjad\w*/.test(L)) return "pojechać";
-    if (/\bwsied\w*|\bwsiad\w*/.test(L)) return "wsiąść";
-    if (/\bpodesz\w*/.test(L)) return "podejść";
-    if (/\bprzeszl\w*|\bprzejdz\w*/.test(L)) return "przejść";
-    if (/\bweszl\w*|\bwchodz\w*/.test(L)) return "wejść";
-    if (/\bbieg\w*/.test(L)) return "pobiec";
-    if (/\bid\w*|\bposzl\w*/.test(L)) return "pójść";
-    return "pójść";
+    if (/\bwr\w*c\w*/.test(L)) return "wrócili";     // toleruje „wrocili”, „wrcili” itd.
+    if (/\bpojech\w*|\bjad\w*/.test(L)) return "pojechali";
+    if (/\bwsied\w*|\bwsiad\w*/.test(L)) return "wsiedli";
+    if (/\bpodesz\w*/.test(L)) return "podeszli";
+    if (/\bprzeszl\w*|\bprzejdz\w*/.test(L)) return "przeszli";
+    if (/\bweszl\w*|\bwchodz\w*/.test(L)) return "weszli";
+    if (/\bid\w*|\bposzl\w*/.test(L)) return "poszli";
+    if (/\bbieg\w*/.test(L)) return "pobiegli";
+    return "poszli";
   }
 
-  // ===== odmiana czasownika do pytania (czas przeszły) =====
-  function conjPast(inf, gender, plural) {
-    if (plural) {
-      if (inf === "wrócić") return "wrócili";
-      if (inf === "pojechać") return "pojechali";
-      if (inf === "wsiąść") return "wsiedli";
-      if (inf === "podejść") return "podeszli";
-      if (inf === "przejść") return "przeszli";
-      if (inf === "wejść") return "weszli";
-      if (inf === "pobiec") return "pobiegli";
-      return "poszli"; // pójść
-    } else {
-      const g = gender === "f" ? "f" : "m";
-      if (inf === "wrócić") return g === "f" ? "wróciła" : "wrócił";
-      if (inf === "pojechać") return g === "f" ? "pojechała" : "pojechał";
-      if (inf === "wsiąść")   return g === "f" ? "wsiadła"   : "wsiadł";
-      if (inf === "podejść")  return g === "f" ? "podszedła" : "podszedł"; // uwaga: formy niereg.
-      if (inf === "przejść")  return g === "f" ? "przeszła"  : "przeszedł";
-      if (inf === "wejść")    return g === "f" ? "weszła"    : "wszedł";
-      if (inf === "pobiec")   return g === "f" ? "pobiegła"  : "pobiegł";
-      return g === "f" ? "poszła" : "poszedł"; // pójść
-    }
-  }
-
-  // ===== markery dyskursywne =====
+  // ===== dyskurs =====
   const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nastepnie|nast[eę]pnie|wtedy|za chwil[eę])\b/iu;
   function removeDiscourseMarkers(s = "") {
     let out = String(s);
@@ -1477,8 +1433,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
   const DURATION_TAIL = /\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/iu;
 
-  const stripPurposeTail = s => normalizeSpaces(String(s).replace(PURPOSE_TAIL, ""));
-  const stripTimeTail = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
+  const stripPurposeTail  = s => normalizeSpaces(String(s).replace(PURPOSE_TAIL, ""));
+  const stripTimeTail     = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
   const stripDurationTail = s => normalizeSpaces(String(s).replace(DURATION_TAIL, ""));
   const STRIP_ANY_PURPOSE = s => normalizeSpaces(
     String(s)
@@ -1489,7 +1445,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
   const stripDanglingPrzez = s => s.replace(/\s+przez\b$/i, "").trim();
 
-  // ===== blacklist 'na …' lokatywy (nie Dokąd) =====
+  // ===== blacklist 'na …' lokatywy =====
   const NA_LOCATIVE_BLACKLIST = [
     "na spacerze","na spacer","na dywanie","na trawie","na ławce","na lawce",
     "na rynku","na przystanku","na basenie","na stadionie","na boisku"
@@ -1511,17 +1467,17 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   // ===== extractDestination =====
-  function trimAtVerb(p) {
-    const tokens = p.split(/\s+/);
-    const out = [];
-    for (const tok of tokens) {
-      const x = deaccent(tok.toLowerCase());
-      const STEMS = ["id","chodz","pojd","jedz","jad","wrac","wroc","bieg","pobieg","lec","plyn","wchodz","wejsc","wyszl","poszl","skrec","wsied","wsiad","podesz","dojech","przeszl","przejdz","czyt","rys","zatrzym","kup","zjed","zagr"];
-      if (STEMS.some(s => x.startsWith(s))) break;
-      out.push(tok);
-    }
-    return out.slice(0, 8).join(" ").trim();
+  function isVerbishToken(tok="") {
+    const x = deaccent(tok.toLowerCase());
+    const STEMS = [
+      "id","chodz","pojd","jedz","jad","wrac","wroc","bieg","pobieg",
+      "lec","plyn","wchodz","wejsc","wyszl","poszl","skrec","wsied","wsiad",
+      "podesz","dojech","przeszl","przejdz"
+    ];
+    if (STEMS.some(s => x.startsWith(s))) return true;
+    return /(?:li|la|lo|lem|lam|emy|imy|asz|esz|amy|acie|uja|uje|ujesz|ujemy)$/i.test(x);
   }
+  const trimAtVerb = p => p.split(/\s+/).filter(x => !isVerbishToken(x)).slice(0, 8).join(" ").trim();
 
   function extractDestination(s) {
     const cleaned = removeDiscourseMarkers(s);
@@ -1540,23 +1496,24 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     dest = stripTimeTail(dest);
     dest = stripDurationTail(dest);
     dest = trimAtVerb(dest);
+
+    // Jeśli w środku zostały wielokrotne "do/na …", wybierz OSTATNI cel.
+    {
+      const multi = Array.from(
+        dest.matchAll(/\b(?:do|na)\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6}/giu),
+        mm => mm[0]
+      );
+      if (multi.length > 1) dest = multi[multi.length - 1];
+    }
+
     // odetnij źródło: "z/ze/od/znad/spod/sprzed ...".
     dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
     dest = normalizeSpaces(dest);
     dest = stripPunct(dest);
-// Jeśli w uciętym fragmencie są jeszcze wielokrotne "do/na ...",
-// wybierz ostatni cel (np. "do tramwaju numer 8").
-{
-  const multi = Array.from(
-    dest.matchAll(/\b(?:do|na)\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6}/giu),
-    m => m[0]
-  );
-  if (multi.length > 1) dest = multi[multi.length - 1];
-}
-
 
     const low = deaccent(dest.toLowerCase());
     if (dest.toLowerCase().startsWith("na ") && NA_LOCATIVE_BLACKLIST.includes(low)) return null;
+
     return dest || null;
   }
 
@@ -1568,7 +1525,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return m ? stripPunct(m[0]) : null;
   }
 
-  // ===== miejsca =====
+  // ===== miejsce =====
   const PLACE_HINTS = [
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","domu","ławce","lawce","fotelu","krześle","krzesle",
@@ -1625,51 +1582,102 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const time = hasTime ? extractTime(t) : null;
   const loc = hasLoc ? pickPlaceFromSentence(t) : null;
 
-  // ===== aktorzy & czasownik do pytania =====
+  // ===== budowanie pełnego pytania =====
   const actorInfo = extractActors(text);
-  const inf = detectVerbCue(tDA);
-  const qverb = conjPast(inf, actorInfo.gender, actorInfo.plural);
+  const cue = detectVerbCue(tDA);
 
-  // ===== budowanie PEŁNYCH pytań (z naturalnym szykiem) =====
   function fullQ_Dokad() {
-    // "Dokąd poszła Ola?" | "Dokąd pojechał Tomek?" | "Dokąd wrócili Basia i Krzyś?"
+    // dopasuj czasownik pytania
+    let qverb = "poszli";
+    if (/wr\w*c/i.test(cue)) qverb = "wrócili";
+    else if (/wsied/i.test(cue)) qverb = "wsiedli";
+    else if (/podesz/i.test(cue)) qverb = "podeszli";
+    else if (/przesz/i.test(cue)) qverb = "przeszli";
+    else if (/pojech/i.test(cue)) qverb = "pojechali";
+
+    // specjalny szablon dla „wsiedli” → „Do czego wsiedli …?”
+    if (qverb === "wsiedli") {
+      return actorInfo.label === "oni"
+        ? `Do czego wsiedli?`
+        : `Do czego wsiedli ${actorInfo.label}?`;
+    }
+
     return actorInfo.label === "oni"
-    ? `Dokąd ${qverb}?`
-    : `Dokąd ${qverb} ${actorInfo.label}?`;
+      ? `Dokąd ${qverb}?`
+      : `Dokąd ${qverb} ${actorInfo.label}?`;
   }
 
   function fullQ_Kiedy() {
     if (time && /^o\s+\d{1,2}[:.]\d{2}/i.test(time)) {
-      // bardziej sprecyzowane, jeśli da się zgadnąć czynność
-      if (/podesz/i.test(tDA)) return `O której godzinie ${actorInfo.label} ${conjPast("podejść", actorInfo.gender, actorInfo.plural)} do przystanku?`;
-      if (/wsied/i.test(tDA))   return `O której godzinie ${actorInfo.label} ${conjPast("wsiąść", actorInfo.gender, actorInfo.plural)} do tramwaju?`;
-      if (/wr[ao]c/i.test(tDA)) return `O której godzinie ${actorInfo.label} ${conjPast("wrócić", actorInfo.gender, actorInfo.plural)} do domu?`;
-      if (/pojech/i.test(tDA))  return `O której godzinie ${actorInfo.label} ${conjPast("pojechać", actorInfo.gender, actorInfo.plural)}?`;
+      // spróbuj lekko spersonalizować
+      if (/wsied/i.test(tDA)) {
+        return actorInfo.label === "oni"
+          ? `O której godzinie wsiedli do tramwaju?`
+          : `O której godzinie wsiedli ${actorInfo.label} do tramwaju?`;
+      }
+      if (/podesz/i.test(tDA)) {
+        return actorInfo.label === "oni"
+          ? `O której godzinie podeszli do przystanku?`
+          : `O której godzinie podeszli ${actorInfo.label} do przystanku?`;
+      }
+      if (/\bwr\w*c\w*/i.test(tDA)) {
+        return actorInfo.label === "oni"
+          ? `O której godzinie wrócili do domu?`
+          : `O której godzinie wrócili ${actorInfo.label} do domu?`;
+      }
       return `O której godzinie to się wydarzyło?`;
     }
     return `Kiedy to się działo?`;
   }
 
   function fullQ_Gdzie() {
-    if (/spotkal|spotkali/i.test(tDA)) return `Gdzie spotkali się ${actorInfo.label}?`;
-    if (/usiedl|usiedli/i.test(tDA))   return `Gdzie usiedli ${actorInfo.label}?`;
-    if (/czekal|czekali/i.test(tDA))   return `Gdzie czekali ${actorInfo.label}?`;
-    if (/czytal|czytala|czytali/i.test(tDA)) return `Gdzie czytali ${actorInfo.label}?`;
-    return `Gdzie byli ${actorInfo.label}?`;
+    if (/spotkal|spotkali/i.test(tDA))
+      return `Gdzie spotkali się ${actorInfo.label}?`;
+    if (/usiedl|usiedli/i.test(tDA))
+      return actorInfo.label === "oni" ? `Gdzie usiedli?` : `Gdzie usiedli ${actorInfo.label}?`;
+    if (/czekal|czekali/i.test(tDA))
+      return actorInfo.label === "oni" ? `Gdzie czekali?` : `Gdzie czekali ${actorInfo.label}?`;
+    if (/czytal|czytala|czytali/i.test(tDA))
+      return actorInfo.label === "oni" ? `Gdzie czytali?` : `Gdzie czytał/czytała ${actorInfo.label}?`;
+    return actorInfo.label === "oni" ? `Gdzie byli?` : `Gdzie byli ${actorInfo.label}?`;
   }
 
   // === PRIORYTETY ===
   if (destFirst && (destFirst.toLowerCase().startsWith("do ") || hasMoveVerb)) {
-    return { ok: true, qtype: "Dokąd?", question: fullQ_Dokad(), answer: rehydrateAnswerFromOriginal(text, destFirst), source_path: "rule-teacher-strict-v7.6c-fullQ" };
+    return {
+      ok: true,
+      qtype: "Dokąd?",
+      question: fullQ_Dokad(),
+      answer: rehydrateAnswerFromOriginal(text, destFirst),
+      source_path: "rule-teacher-strict-v7.6d-fullQ"
+    };
   }
   if (time) {
-    return { ok: true, qtype: "Kiedy?", question: fullQ_Kiedy(), answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.6c-fullQ" };
+    return {
+      ok: true,
+      qtype: "Kiedy?",
+      question: fullQ_Kiedy(),
+      answer: rehydrateAnswerFromOriginal(text, time),
+      source_path: "rule-teacher-strict-v7.6d-fullQ"
+    };
   }
   if (loc) {
-    return { ok: true, qtype: "Gdzie?", question: fullQ_Gdzie(), answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.6c-fullQ" };
+    return {
+      ok: true,
+      qtype: "Gdzie?",
+      question: fullQ_Gdzie(),
+      answer: rehydrateAnswerFromOriginal(text, loc),
+      source_path: "rule-teacher-strict-v7.6d-fullQ"
+    };
   }
 
-  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6c-fullQ-fallback" };
+  return {
+    ok: true,
+    qtype: "Co się dzieje?",
+    question: "Co się dzieje w tej historii?",
+    answer: "",
+    source_path: "rule-teacher-strict-v7.6d-fullQ-fallback"
+  };
 }
 
 // --------------------- ENDPOINTS ---------------------
@@ -1734,7 +1742,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
   }
 });
 
-app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6c-fullQ" }));
+app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6d-fullQ" }));
 // ===================== /QUIZ / COMPREHEND =====================
 
 
