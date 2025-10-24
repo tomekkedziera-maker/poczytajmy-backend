@@ -1455,6 +1455,9 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return /^(o|przed)\s+\d{1,2}[:.]\d{2}/.test(low)
         || /\b(rano|wieczorem|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe]))\b/i.test(low)
         || /\b(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b/i.test(low);
+const TEMPORAL_NOUNS_RE = /\b(poranek|rano|południe|poludnie|wiecz[oó]r|noc|dzie[nń]|sobota|niedziela|poniedzia[łl]ek|wtorek|[śs]roda|czwartek|piątek|piatek)\b/i;
+if (/^\s*w\b/i.test(low) && TEMPORAL_NOUNS_RE.test(low)) return true;
+
   }
 
   // ===== extractDestination =====
@@ -1478,6 +1481,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     dest = stripTransportTail(dest);
     dest = trimAtVerb(dest);
     dest = stripPunct(normalizeSpaces(dest));
+    // OD-TUTAJ: odetnij dopełnienie źródła typu "z/ze/od/znad/spod/sprzed ..."
+dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
+dest = normalizeSpaces(dest);
+
 
     // 'na ...' lokatyw? -> nie kierunek
     const low = deaccent(dest.toLowerCase());
