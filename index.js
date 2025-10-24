@@ -1352,10 +1352,10 @@ app.get('/tts-voices', async (_req, res) => {
 
 // ===================== QUIZ: rule-teacher-strict-v7.6-fullQ =====================
 // Zmiany:
-// - question = PEŁNE pytanie dla dziecka (np. "Dokąd poszli Basia i Krzyś?")
-// - qtype = krótka etykieta: "Dokąd?" | "Kiedy?" | "Gdzie?" | "Co się dzieje?"
-// - bazuje na v7.5g: odcinanie źródła ("do domu ~~z placu zabaw~~"), poprawne czasy typu
-//   "W niedzielny poranek...", stabilne cele i miejsca
+// - question = PEŁNE pytanie (np. "Dokąd poszli Basia i Krzyś?")
+// - qtype = "Dokąd?" | "Kiedy?" | "Gdzie?" | "Co się dzieje?"
+// - bazuje na v7.5g, z: odcinaniem źródła, stabilnymi celami/miejscami, pełnymi pytaniami
+// - DODANE: isVerbishToken + trimAtVerb, bez lookbehind w dzieleniu zdań
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1388,12 +1388,24 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const rehydrateAnswerFromOriginal = (orig, a) =>
     a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
+  // ===== czasowniki ruchu (stemy) + trymer po czasowniku =====
+  function isVerbishToken(tok="") {
+    const x = deaccent(tok.toLowerCase());
+    const STEMS = [
+      "id","chodz","pojd","jedz","jad","wrac","wroc","bieg","pobieg",
+      "lec","plyn","wchodz","wejsc","wyszl","poszl","skrec","wsied","wsiad",
+      "podesz","dojech","przeszl","przejdz"
+    ];
+    if (STEMS.some(s => x.startsWith(s))) return true;
+    return /(?:li|la|lo|lem|lam|emy|imy|asz|esz|amy|acie|uja|uje|ujesz|ujemy)$/i.test(x);
+  }
+  const trimAtVerb = p => p.split(/\s+/).filter(x => !isVerbishToken(x)).slice(0, 8).join(" ").trim();
+
   // ===== wyłuskanie „bohaterów” =====
-  // prosto: szukamy "Imię (i Imię)" na początku zdania; fallback: "oni"
   function extractActors(orig) {
     const s = orig.trim();
-    // np. "W niedzielny poranek Basia i Krzyś ...", "Basia i Krzyś ..."
-    const m1 = s.match(/^(?:W\s+\p{L}+\s+\p{L}+\s+)?([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)(?:\s+i\s+([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+))?/u);
+    // np. "W niedzielny poranek Basia i Krzyś …" albo "Basia i Krzyś …"
+    const m1 = s.match(/^(?:W\s+\p{L}+(?:\s+\p{L}+){0,2}\s+)?([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)(?:\s+i\s+([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+))?/u);
     if (m1) {
       const a = m1[1];
       const b = m1[2];
@@ -1435,10 +1447,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
   const DURATION_TAIL = /\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/iu;
 
-  const stripPurposeTail = s => normalizeSpaces(String(s).replace(PURPOSE_TAIL, ""));
-  const stripTimeTail = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
-  const stripDurationTail = s => normalizeSpaces(String(s).replace(DURATION_TAIL, ""));
-  const STRIP_ANY_PURPOSE = s => normalizeSpaces(
+  const stripPurposeTail   = s => normalizeSpaces(String(s).replace(PURPOSE_TAIL, ""));
+  const stripTimeTail      = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
+  const stripDurationTail  = s => normalizeSpaces(String(s).replace(DURATION_TAIL, ""));
+  const STRIP_ANY_PURPOSE  = s => normalizeSpaces(
     String(s)
       .replace(/\s+na\s+spacerze?\b/iu, "")
       .replace(/\s+na\s+lekcj[ęeai]\b/iu, "")
@@ -1486,7 +1498,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     dest = stripTimeTail(dest);
     dest = stripDurationTail(dest);
     dest = trimAtVerb(dest);
-    // odetnij źródło: "z/ze/od/znad/spod/sprzed ..."
+    // odetnij źródło: "z/ze/od/znad/spod/sprzed …"
     dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
     dest = normalizeSpaces(dest);
     dest = stripPunct(dest);
@@ -1562,28 +1574,23 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const time = hasTime ? extractTime(t) : null;
   const loc = hasLoc ? pickPlaceFromSentence(t) : null;
 
-  // ===== budowanie PEŁNEGO pytania =====
+  // ===== pełne pytania =====
   const actors = extractActors(text);
   const cue = detectVerbCue(tDA);
 
   function fullQ_Dokad() {
-    // spróbuj dostosować cue: przy "wrócili" trzymaj "wrócili", przy "wsiedli" użyj "wsiedli"
-    const qverb = (() => {
-      if (/wr[ao]c/i.test(cue)) return "wrócili";
-      if (/wsied/i.test(cue)) return "wsiedli";
-      if (/podesz/i.test(cue)) return "podeszli";
-      if (/przesz/i.test(cue)) return "przeszli";
-      if (/pojech/i.test(cue)) return "pojechali";
-      if (/poszl|id/i.test(cue)) return "poszli";
-      return "poszli";
-    })();
+    const qverb =
+      /wr[ao]c/i.test(cue) ? "wrócili" :
+      /wsied/i.test(cue)   ? "wsiedli" :
+      /podesz/i.test(cue)  ? "podeszli" :
+      /przesz/i.test(cue)  ? "przeszli" :
+      /pojech/i.test(cue)  ? "pojechali" : "poszli";
     return `Dokąd ${actors} ${qverb}?`;
+    // np. „Dokąd Basia i Krzyś poszli?”
   }
 
   function fullQ_Kiedy() {
-    // jeśli mamy godzinę → "O której godzinie …?"
     if (time && /^o\s+\d{1,2}[:.]\d{2}/i.test(time)) {
-      // postaraj się znaleźć sensowny czasownik z tekstu
       if (/podesz/i.test(tDA)) return `O której godzinie ${actors} podeszli do przystanku?`;
       if (/wsied/i.test(tDA))   return `O której godzinie ${actors} wsiedli do tramwaju?`;
       if (/wr[ao]c/i.test(tDA)) return `O której godzinie ${actors} wrócili do domu?`;
@@ -1593,11 +1600,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   }
 
   function fullQ_Gdzie() {
-    // podmień czasownik, jeśli go rozpoznajemy
     if (/spotkal|spotkali/i.test(tDA)) return `Gdzie spotkali się ${actors}?`;
     if (/usiedl|usiedli/i.test(tDA))   return `Gdzie usiedli ${actors}?`;
     if (/czekal|czekali/i.test(tDA))   return `Gdzie czekali ${actors}?`;
-    if (/czytal|czytala|czytali/i.test(tDA)) return `Gdzie czytali/czytała?`;
+    if (/czytal|czytala|czytali/i.test(tDA)) return `Gdzie czytali ${actors}?`;
     return `Gdzie byli ${actors}?`;
   }
 
@@ -1629,6 +1635,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
   try {
     const { text, max_questions = 10 } = req.body || {};
     if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
+    const MX = Number.isFinite(+max_questions) ? +max_questions : 10;
 
     const cleaned = String(text)
       .split(/\r?\n/)
@@ -1637,8 +1644,10 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
       .replace(/\s+/g, " ")
       .trim();
 
+    // Bez lookbehind (szersza kompatybilność)
     const sentences = cleaned
-      .split(/(?<=[.!?;])\s+/)
+      .replace(/([.!?;])\s+/g, "$1|")
+      .split("|")
       .map(s => s.trim())
       .filter(Boolean)
       .slice(0, 30);
@@ -1658,7 +1667,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     const top = [];
     const seen = new Set();
     for (const r of scored) {
-      if (top.length >= max_questions) break;
+      if (top.length >= MX) break;
       if (!r.answer) continue;
       const key = `${r.qtype}|${r.answer}`;
       if (seen.has(key)) continue;
@@ -1667,18 +1676,20 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     }
     if (top.length === 0) {
       for (const r of scored) {
-        if (top.length >= max_questions) break;
+        if (top.length >= MX) break;
         if (r.answer) top.push(r);
       }
     }
     res.json({ ok: true, count: top.length, items: top });
   } catch (e) {
+    console.error("[/agent/comprehend-aggregate] ERR:", e && e.stack || e);
     res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
   }
 });
 
 app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6-fullQ" }));
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
