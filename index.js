@@ -1349,7 +1349,16 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.6h-fullQ (hotfix for /aggregate 500) =====================
+// server.js
+// ============================================================================
+// QUIZ backend — rule-teacher-strict-v7.6f-fullQ  (Express + JSON)
+// ============================================================================
+
+const express = require("express");
+const app = express();
+app.use(express.json({ limit: "1mb" }));
+
+// ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ =====================
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1359,8 +1368,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   // ===== utils =====
-  const normalizeSpaces = (s="") => String(s).replace(/\s+/g," ").trim();
-  const stripPunct = (s="") => String(s).trim().replace(/[.,!?;:]+$/,"");
+  const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
+  const stripPunct = (s = "") => String(s).trim().replace(/[.,!?;:]+$/,"");
   const deaccent = s => String(s).normalize("NFD")
     .replace(/[\u0300-\u036f]/g,"")
     .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
@@ -1379,12 +1388,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       const win = O.substring(j, j + F.length);
       if (deaccent(win).toLowerCase() === Fda) return stripPunct(win);
     }
+    // fallback (np. gdy „ą” zostało ucięte do „a” w krokach wcześniejszych)
     return stripPunct(F);
   }
   const rehydrateAnswerFromOriginal = (orig, a) =>
     a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
-  // ===== ucinanie przy czasowniku =====
+  // ===== ucinanie przy czasowniku (żeby nie brać „usiedli/poszła/wsiedli/…”) =====
   const VERB_CUT_RE = /\s+(usiedli|poszedł|poszła|poszli|pojechał|pojechali|wrócił|wrócili|wsiedli|wsiadł|podeszli|czekali|czytał|czytała|czytali)\b.*$/i;
   const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
 
@@ -1424,7 +1434,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
   const stripDanglingPrzez = s => s.replace(/\s+przez\b$/i, "").trim();
 
-  // ===== blacklist lokatywów na „na …” =====
+  // ===== blacklist lokatywów na „na …” (nie Dokąd) =====
   const NA_LOCATIVE_BLACKLIST = [
     "na spacerze","na spacer","na dywanie","na trawie","na ławce","na lawce",
     "na przystanku","na basenie","na stadionie","na boisku","na rynku"
@@ -1447,9 +1457,16 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // ===== destination (do/na …) =====
   function extractDestination(s) {
+    // ❶ IGNORE 'na ...' po czasowniku 'czekać' (to nie kierunek, tylko obiekt oczekiwania)
+    if (/\bczek\w*/i.test(s)) {
+      s = s.replace(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5}/gi, " ");
+    }
+
+    // ❷ wsiedli/wsiadł → „do <pojazd>”
     const afterBoard = extractBoardingObject(s);
     if (afterBoard) return `do ${afterBoard}`.trim();
 
+    // ❸ ogólna ekstrakcja do/na …
     const cleaned = removeDiscourseMarkers(s);
     const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+){0,8})\b/gi;
     const matches = [];
@@ -1509,6 +1526,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // ===== „Kto?” — frontowany cel + czasownik + imię/imiona =====
   function detectWhoQuestion(s) {
+    // do/na + miejsce + (poszedł/poszła/poszli/pojechał/pojechali) + Imię(/ i Imię)
     const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali)\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+)*)/i;
     const m = s.match(re);
     if (m) {
@@ -1540,6 +1558,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     let withPron = true;
     if (cue === "wrócili") v = "wrócili";
     else if (cue === "wsiedli") v = "wsiedli";
+    else if (cue === "przeszli") v = "przeszli"; // <— DODANE: właściwy czasownik
     else if (cue === "idziemy") { v = "idziemy"; withPron = false; }
     const middle = withPron ? `oni ${v}` : v;
     return sanitizeQ(`Dokąd ${middle}?`);
@@ -1564,44 +1583,32 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   if (who) {
     const ans = rehydrateAnswerFromOriginal(text, who.answer);
     const pl = who.question.replace(/\s+/g," ").trim();
-    return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6h-fullQ" };
+    return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ" };
   }
 
   if (dest) {
     const q = qDokad();
     const a = rehydrateAnswerFromOriginal(text, dest);
-    return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6h-fullQ" };
+    return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
   }
 
   if (time) {
     const q = qKiedy();
     const a = rehydrateAnswerFromOriginal(text, time);
-    return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6h-fullQ" };
+    return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
   }
 
   if (place) {
     const q = qGdzie();
     const a = rehydrateAnswerFromOriginal(text, place);
-    return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6h-fullQ" };
+    return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
   }
 
-  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6h-fullQ-fallback" };
-}
-
-// --------------------- HELPERS: safe sentence splitter (no lookbehind) ---------------------
-function splitIntoSentencesSafe(s) {
-  const text = String(s || "").trim();
-  if (!text) return [];
-  const out = [];
-  const re = /[^.!?;]+[.!?;]+/g; // grab chunks ending with . ! ? ;
-  let m;
-  while ((m = re.exec(text)) !== null) out.push(m[0].trim());
-  const tail = text.slice(re.lastIndex).trim();
-  if (tail) out.push(tail);
-  return out;
+  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6f-fullQ-fallback" };
 }
 
 // --------------------- ENDPOINTS ---------------------
+
 app.post("/agent/comprehend", (req, res) => {
   try {
     const { text } = req.body || {};
@@ -1613,42 +1620,32 @@ app.post("/agent/comprehend", (req, res) => {
 
 app.post("/agent/comprehend-aggregate", (req, res) => {
   try {
-    const { text, max_questions = 15 } = req.body || {};
+    const { text, max_questions = 10 } = req.body || {};
     if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
     const cleaned = String(text)
       .split(/\r?\n/)
-      .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
+      // WAŻNE: zjada dowolną sekwencję '>'/’›’/’»’ + spacje (fix dla ">> >>")
+      .map(line => line.replace(/^\s*(?:[>›»]\s*)+/, ""))
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
 
-    // HOTFIX: replace lookbehind splitter with safe matcher
-    const sentences = splitIntoSentencesSafe(cleaned)
+    const sentences = cleaned
+      .split(/(?<=[.!?;])\s+/)
       .map(s => s.trim())
       .filter(Boolean)
-      .slice(0, 40);
+      .slice(0, 30);
 
     const scored = sentences
       .map(s => {
-        let r;
-        try {
-          r = generateQuestionAndAnswerTeacher(s);
-        } catch (e) {
-          r = { ok: false, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", error: String(e) };
-        }
+        const r = generateQuestionAndAnswerTeacher(s);
         let sc = 0;
         if (r.qtype === "Dokąd?") sc = 100;
         else if (r.qtype === "Kiedy?") sc = 90;
         else if (r.qtype === "Gdzie?") sc = 80;
         else if (r.qtype === "Kto?") sc = 85;
         else sc = 40;
-
-        const ansDA = (r.answer || "").toLowerCase();
-        if (/^do\s+rynku\b/.test(ansDA)) sc += 2;
-        if (/^do\s+centrum\b/.test(ansDA)) sc += 1;
-        if (/^do\s+muzeum\b/.test(ansDA)) sc += 1;
-
         return {
           ok: r.ok,
           qtype: r.qtype,
@@ -1656,7 +1653,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
           answer: r.answer,
           sentence: s,
           score: sc,
-          src: "rule-teacher-strict-v7.6h-fullQ"
+          src: "rule-teacher-strict-v7.6f-fullQ"
         };
       })
       .sort((a, b) => b.score - a.score);
@@ -1666,7 +1663,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     for (const r of scored) {
       if (top.length >= max_questions) break;
       if (!r.answer) continue;
-      const key = `${r.qtype}|${deaccent((r.answer||"").toLowerCase())}`;
+      const key = `${r.qtype}|${deaccent((r.answer || "").toLowerCase())}`;
       if (seen.has(key)) continue;
       seen.add(key);
       top.push(r);
@@ -1679,15 +1676,20 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     }
     res.json({ ok: true, count: top.length, items: top });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception-aggregate" });
+    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
   }
 });
 
-// lightweight liveness checks
-app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6h-fullQ" }));
-app.get("/health",  (req, res) => res.json({ ok: true }));
+app.get("/version", (_req, res) =>
+  res.json({ build: "2025-10-24 rule-teacher-strict-v7.6f-fullQ" })
+);
 
-// ===================== /QUIZ / COMPREHEND =====================
+// --------------------- Serwer ---------------------
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`[quiz] Listening on http://localhost:${PORT}`);
+});
+
 
 
 
