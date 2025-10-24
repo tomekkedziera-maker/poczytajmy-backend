@@ -1349,7 +1349,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.6g-fullQ =====================
+// ===================== QUIZ: rule-teacher-strict-v7.6h-fullQ (hotfix for /aggregate 500) =====================
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1564,28 +1564,41 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   if (who) {
     const ans = rehydrateAnswerFromOriginal(text, who.answer);
     const pl = who.question.replace(/\s+/g," ").trim();
-    return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6g-fullQ" };
+    return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6h-fullQ" };
   }
 
   if (dest) {
     const q = qDokad();
     const a = rehydrateAnswerFromOriginal(text, dest);
-    return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6g-fullQ" };
+    return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6h-fullQ" };
   }
 
   if (time) {
     const q = qKiedy();
     const a = rehydrateAnswerFromOriginal(text, time);
-    return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6g-fullQ" };
+    return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6h-fullQ" };
   }
 
   if (place) {
     const q = qGdzie();
     const a = rehydrateAnswerFromOriginal(text, place);
-    return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6g-fullQ" };
+    return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6h-fullQ" };
   }
 
-  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6g-fullQ-fallback" };
+  return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6h-fullQ-fallback" };
+}
+
+// --------------------- HELPERS: safe sentence splitter (no lookbehind) ---------------------
+function splitIntoSentencesSafe(s) {
+  const text = String(s || "").trim();
+  if (!text) return [];
+  const out = [];
+  const re = /[^.!?;]+[.!?;]+/g; // grab chunks ending with . ! ? ;
+  let m;
+  while ((m = re.exec(text)) !== null) out.push(m[0].trim());
+  const tail = text.slice(re.lastIndex).trim();
+  if (tail) out.push(tail);
+  return out;
 }
 
 // --------------------- ENDPOINTS ---------------------
@@ -1600,7 +1613,6 @@ app.post("/agent/comprehend", (req, res) => {
 
 app.post("/agent/comprehend-aggregate", (req, res) => {
   try {
-    // ZMIANA 1: default max_questions -> 15
     const { text, max_questions = 15 } = req.body || {};
     if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
@@ -1611,16 +1623,20 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
       .replace(/\s+/g, " ")
       .trim();
 
-    const sentences = cleaned
-      .split(/(?<=[.!?;])\s+/)
+    // HOTFIX: replace lookbehind splitter with safe matcher
+    const sentences = splitIntoSentencesSafe(cleaned)
       .map(s => s.trim())
       .filter(Boolean)
-      // ZMIANA 2: większy budżet zdań (30 -> 40)
       .slice(0, 40);
 
     const scored = sentences
       .map(s => {
-        const r = generateQuestionAndAnswerTeacher(s);
+        let r;
+        try {
+          r = generateQuestionAndAnswerTeacher(s);
+        } catch (e) {
+          r = { ok: false, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", error: String(e) };
+        }
         let sc = 0;
         if (r.qtype === "Dokąd?") sc = 100;
         else if (r.qtype === "Kiedy?") sc = 90;
@@ -1628,7 +1644,6 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
         else if (r.qtype === "Kto?") sc = 85;
         else sc = 40;
 
-        // ZMIANA 3: niewielki boost dla klasycznych waypointów
         const ansDA = (r.answer || "").toLowerCase();
         if (/^do\s+rynku\b/.test(ansDA)) sc += 2;
         if (/^do\s+centrum\b/.test(ansDA)) sc += 1;
@@ -1641,7 +1656,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
           answer: r.answer,
           sentence: s,
           score: sc,
-          src: "rule-teacher-strict-v7.6g-fullQ"
+          src: "rule-teacher-strict-v7.6h-fullQ"
         };
       })
       .sort((a, b) => b.score - a.score);
@@ -1664,12 +1679,16 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     }
     res.json({ ok: true, count: top.length, items: top });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
+    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception-aggregate" });
   }
 });
 
-app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6g-fullQ" }));
+// lightweight liveness checks
+app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6h-fullQ" }));
+app.get("/health",  (req, res) => res.json({ ok: true }));
+
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
