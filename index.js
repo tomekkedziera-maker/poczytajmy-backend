@@ -1467,7 +1467,9 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // ===== extractDestination =====
   function extractDestination(s) {
     const cleaned = removeDiscourseMarkers(s);
-    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,8})\b/giu;
+   // JEST: pozwól na dowolne tokeny bez spacji (radzi sobie z „stoł wki”, „PKP-Śródmieście”, itp.)
+const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
+
     const matches = [];
     let m;
     while ((m = re.exec(cleaned)) !== null) matches.push({ prep: m[1].toLowerCase(), body: m[2], idx: m.index });
