@@ -1352,6 +1352,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 // ===================== QUIZ: rule-teacher-strict-v7.6b-fullQ =====================
 // Pełne pytania dla dziecka + zgoda gramatyczna + lepsza detekcja imion/miejsc/czasu.
+// Patch: naturalne pytania dla wsiadania („Do czego wsiedli?” / „Do którego tramwaju wsiedli?”)
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1361,12 +1362,13 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
   // ===== utils =====
-  const normalizeSpaces = (s="") => String(s).replace(/\s+/g," ").trim();
-  const stripPunct = (s="") => String(s).trim().replace(/[.,!?]+$/,"");
+  const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
+  const stripPunct = (s = "") => String(s).trim().replace(/[.,!?]+$/,"");
   const deaccent = s => String(s).normalize("NFD")
     .replace(/[\u0300-\u036f]/g,"")
-    .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
-    .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
+    .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a")
+    .replace(/[ćĆ]/g,"c").replace(/[ęĘ]/g,"e")
+    .replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
     .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
   const tDA = deaccent(t);
 
@@ -1404,7 +1406,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       }
     } while (changed);
 
-    // rozważ tylko pierwszy człon do przecinka/kropki/„i … wsiedli”
+    // rozważ tylko pierwszy człon do przecinka/kropki/„i … wsiedli/poszli”
     s = s.split(/[,.;]|(?:\si\s+wsiedli)|(?:\si\s+poszli)/i)[0] || s;
 
     // para imion
@@ -1516,6 +1518,35 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return stripPunct(normalizeSpaces(dest));
   }
 
+  // ---- parseDestination (nowe) ----
+  function parseDestination(dest = "") {
+    // dest np. "do tramwaju numer 8", "do przystanku", "na boisko"
+    const m = dest.match(/^\s*(do|na)\s+(.+?)\s*$/i);
+    const prep = m ? m[1].toLowerCase() : "";
+    const obj  = m ? m[2].trim() : dest.trim();
+    const low  = deaccent(obj.toLowerCase());
+
+    // wykrycie środka transportu
+    let type = null;
+    if (/\btramwaj\w*/.test(low)) type = "tramwaj";
+    else if (/\bautobus\w*/.test(low)) type = "autobus";
+    else if (/\bpoci[aą]g\w*/.test(low)) type = "pociąg";
+    else if (/\bmetro\b/.test(low)) type = "metro";
+
+    const hasNumber = /\b(nr|numer)\s*\d+\b|(?:^|\s)#?\d+\b/i.test(obj);
+
+    return { prep, obj, type, hasNumber };
+  }
+  function vehicleGenitive(type) {
+    switch (type) {
+      case "tramwaj": return "tramwaju";
+      case "autobus": return "autobusu";
+      case "pociąg":  return "pociągu";
+      case "metro":   return "metra";
+      default:        return type || "";
+    }
+  }
+
   // ===== TIME =====
   function extractTime(s) {
     const start = s.match(/^\s*(w\s+(?:sobotni|niedzielny|poniedzialkowy|wtorkowy|srodowy|czwartkowy|piatkowy)\s+poranek)\b/iu);
@@ -1576,7 +1607,30 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   const { plural, gender } = actorsInfo(actors);
   const cue = detectVerbCue(tDA);
 
-  const fullQ_Dokad = () => `Dokąd${prettyActors(actors)} ${conj(cue, plural, gender)}?`;
+  // --- DOKĄD (z naturalnym wsiadaniem) ---
+  const fullQ_Dokad = () => {
+    const pd = dest ? parseDestination(dest) : { prep: "", obj: "", type: null, hasNumber: false };
+
+    // WSIADANIE → Do czego wsiedli? / Do którego tramwaju wsiedli?
+    if (cue === "wsiasc") {
+      if (pd.type) {
+        if (pd.hasNumber && (pd.type === "tramwaj" || pd.type === "autobus" || pd.type === "pociąg" || pd.type === "metro")) {
+          return `Do którego ${vehicleGenitive(pd.type)}${prettyActors(actors)} ${conj(cue, plural, gender)}?`;
+        }
+        return `Do czego${prettyActors(actors)} ${conj(cue, plural, gender)}?`;
+      }
+      return `Do czego${prettyActors(actors)} ${conj(cue, plural, gender)}?`;
+    }
+
+    // NORMALNY RUCH Z „do/na” → Dokąd poszli/zeszli/wrócili/podeszli/weszli?
+    if (pd.prep === "do" || pd.prep === "na") {
+      return `Dokąd${prettyActors(actors)} ${conj(cue, plural, gender)}?`;
+    }
+
+    // Fallback
+    return `Dokąd${prettyActors(actors)} ${conj(cue, plural, gender)}?`;
+  };
+
   const fullQ_Kiedy = () => {
     if (time && /^o\s+\d{1,2}[:.]\d{2}/i.test(time)) {
       if (/podesz/i.test(tDA)) return `O której godzinie${prettyActors(actors)} podeszli do przystanku?`;
@@ -1586,6 +1640,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     }
     return `Kiedy to się działo?`;
   };
+
   const fullQ_Gdzie = () => {
     if (/spotkal|spotkali/i.test(tDA)) return `Gdzie${prettyActors(actors)} się spotkali?`;
     if (/usiedl|usiedli/i.test(tDA))   return `Gdzie${prettyActors(actors)} usiedli?`;
@@ -1668,6 +1723,7 @@ app.get("/version", (req, res) =>
   res.json({ build: "2025-10-24 rule-teacher-strict-v7.6b-fullQ" })
 );
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
