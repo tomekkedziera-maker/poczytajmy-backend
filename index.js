@@ -1346,13 +1346,13 @@ app.get('/tts-voices', async (_req, res) => {
   }
 });
 
-// ===================== QUIZ: rule-teacher-strict-v7.5e =====================
-// Priorytet: Dokąd? (RUCH + 'do/na …' lub 'do …' samo w sobie) > Kiedy? > Gdzie?
-// Fixy v7.5e:
-// - 'przed HH:MM' i 'w niedzielny/sobotni poranek' → zawsze czas
-// - 'w środku …' skracane do 'w środku'
-// - lepsza rehydratacja (cała fraza z ogonkami zanim zrobimy tokeny)
-// - mniej agresywne przycinanie celu + usuwanie 'na krótką trasę'
+// ===================== QUIZ: rule-teacher-strict-v7.5f =====================
+// Priorytet: Dokąd? (RUCH + 'do/na …' lub samo 'do …') > Kiedy? > Gdzie?
+// Fixy względem v7.5d/e:
+// - trimAtVerb: ucinanie na pierwszym czasowniku (zamiast usuwania czasowników)
+// - TRANSPORT_TAIL: odcięcie środków transportu (“łódką”, “tramwajem”…)
+// - “do … na …” → zostaw tylko pierwszy cel po “do …” (np. “do parku linowego [na krótką trasę]”)
+// - stabilniejsze czyszczenie dyskursu/czasu/celu
 
 function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
@@ -1371,27 +1371,19 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
   const tDA = deaccent(t);
 
-  function rehydrateSpanFromOriginal(orig, frag) {
+  function rehydrateFromOriginal(orig, frag) {
     if (!orig || !frag) return frag || "";
-    const O = String(orig), F = String(frag).trim(), Fda = deaccent(F).toLowerCase();
+    const O = String(orig);
+    const F = normalizeSpaces(frag);
+    const Fda = deaccent(F).toLowerCase();
     for (let j = 0; j <= O.length - F.length; j++) {
       const win = O.substring(j, j + F.length);
       if (deaccent(win).toLowerCase() === Fda) return win;
     }
-    return "";
+    return F;
   }
-  function rehydrateAnswerFromOriginal(orig, answer) {
-    if (!answer) return answer;
-    const whole = rehydrateSpanFromOriginal(orig, answer);
-    if (whole) return whole.replace(/\s+/g," ").trim().replace(/[.,!?]+$/,"");
-    return answer
-      .split(/\s+/)
-      .map(tok => rehydrateSpanFromOriginal(orig, tok) || tok)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/[.,!?]+$/,"");
-  }
+  const rehydrateAnswerFromOriginal = (orig, a) =>
+    a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
   // ===== czasowniki ruchu (stemy) =====
   function isVerbishToken(tok="") {
@@ -1404,44 +1396,45 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     if (STEMS.some(s => x.startsWith(s))) return true;
     return /(?:li|la|lo|lem|lam|emy|imy|asz|esz|amy|acie|uja|uje|ujesz|ujemy)$/i.test(x);
   }
-  // łagodniejsze przycinanie
+  // NEW: utnij na pierwszym czasowniku
   function trimAtVerb(p=""){
-  const toks = String(p).split(/\s+/);
-  const out = [];
-  for (const tok of toks){
-    if (isVerbishToken(tok)) break;
-    out.push(tok);
+    const toks = String(p).split(/\s+/);
+    const out = [];
+    for (const tok of toks){
+      if (isVerbishToken(tok)) break;
+      out.push(tok);
+    }
+    return out.join(" ").trim();
   }
-  return out.join(" ").trim();
-}
 
   // ===== markery dyskursywne =====
-  const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nastepnie|nast[eę]pnie|wtedy|za chwil[eę])\b/iu;
+  const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nast[eę]pnie|wtedy|za chwil[eę])\b/iu;
   function removeDiscourseMarkers(s = "") {
     let out = String(s);
-    out = out.replace(/^\s*(na\s+koniec|potem|zanim|po\s+chwili|najpierw|nastepnie|nast[eę]pnie|wtedy|za\s+chwil[eę])\b[, ]*/iu, " ");
+    out = out.replace(/^\s*(na\s+koniec|potem|zanim|po\s+chwili|najpierw|nast[eę]pnie|wtedy|za\s+chwil[eę])\b[, ]*/iu, " ");
     out = out.replace(DISCOURSE_MARKERS_RE, " ");
     return normalizeSpaces(out);
   }
   const isDiscoursePP = (pp="") => /^\s*na\s+koniec\b/i.test(pp);
 
-  // ===== ogony =====
+  // ===== ogony (cel / czas / trwanie / transport) =====
   const PURPOSE_TAIL = new RegExp(
     String.raw`(?:\s+(?:po\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,3}))|(?:\s+(?:na\s+(?:spacer|spacerze|lekcj[ęeai]|obiad|kolacj[ęe]|lody|zakupy|posiłek|posilek|przerw[ęe])))$`,
     "iu"
   );
-  const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
+  const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
   const DURATION_TAIL = /\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/iu;
+  const TRANSPORT_TAIL = /\s+(tramwajem|autobusem|metrem|poci[aą]giem|samolotem|ł[oó]dk[aą]|statkiem|rowerem|hulajnog[aą]|pieszo)\b/iu;
 
   function stripPurposeTail(s = "") { let p; do { p = s; s = s.replace(PURPOSE_TAIL, ""); } while (p !== s); return normalizeSpaces(s); }
   const stripTimeTail = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
   const stripDurationTail = s => normalizeSpaces(String(s).replace(DURATION_TAIL, ""));
+  const stripTransportTail = s => normalizeSpaces(String(s).replace(TRANSPORT_TAIL, ""));
   const STRIP_ANY_PURPOSE = s => normalizeSpaces(
     String(s)
       .replace(/\s+na\s+spacerze?\b/iu, "")
       .replace(/\s+na\s+lekcj[ęeai]\b/iu, "")
       .replace(/\s+na\s+(lody|zakupy|obiad|kolacj[ęe]|posiłek|posilek)\b/iu, "")
-      .replace(/\s+na\s+kr[oó]tk[ąa]\s+tras[ęe]\b/iu, "")
   );
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
   const stripDanglingPrzez = s => s.replace(/\s+przez\b$/i, "").trim();
@@ -1455,18 +1448,10 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // ===== czasowe PP =====
   function isTemporalPP(pp = "") {
     const low = pp.toLowerCase().trim();
-
-    // SPEC: 'w niedzielny/sobotni poranek' → czas
-    if (/^\s*w\s+(?:niedzielny|sobotni)\s+poranek\b/i.test(pp)) return true;
-
-    // SPEC: 'przed HH:MM' → czas
-    if (/^przed\s+\d{1,2}[:.]\d{2}\b/i.test(low)) return true;
-
-    const spatialStart = /^\s*(w|we|na|pod|nad|przy|między|miedzy|za|przed|obok|koło|kolo|u)\b/.test(low);
+    if (/^przed\s+\d{1,2}[:.]\d{2}\b/i.test(low)) return true; // 'przed HH:MM' zawsze czas
+    const spatialStart = /^\s*(w|we|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|koło|kolo|u)\b/.test(low);
     const noDur = low.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, "");
-    if (spatialStart && noDur.trim() !== "") {
-      return false;
-    }
+    if (spatialStart && noDur.trim() !== "") return false;
     return /^(o|przed)\s+\d{1,2}[:.]\d{2}/.test(low)
         || /\b(rano|wieczorem|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe]))\b/i.test(low)
         || /\b(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b/i.test(low);
@@ -1475,9 +1460,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // ===== extractDestination =====
   function extractDestination(s) {
     const cleaned = removeDiscourseMarkers(s);
-   // JEST: pozwól na dowolne tokeny bez spacji (radzi sobie z „stoł wki”, „PKP-Śródmieście”, itp.)
-const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
-
+    const re = /\b(do|na)\s+([\p{L}0-9:\-]+(?:\s+[\p{L}0-9:\-]+){0,8})\b/giu;
     const matches = [];
     let m;
     while ((m = re.exec(cleaned)) !== null) matches.push({ prep: m[1].toLowerCase(), body: m[2], idx: m.index });
@@ -1486,22 +1469,27 @@ const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
     const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
     let dest = `${pick.prep} ${pick.body}`.trim();
 
+    // odcięcia i porządki
     dest = stripOnConjunctionOrComma(dest);
     dest = STRIP_ANY_PURPOSE(dest);
     dest = stripPurposeTail(dest);
     dest = stripTimeTail(dest);
     dest = stripDurationTail(dest);
-
-    // UWAGA: przycinaj przy czasowniku tylko jeśli to nie jest 'do/na' + NazwaWłasna
-    if (!/^\s*(do|na)\s+[A-ZĄĆĘŁŃÓŚŹŻ]/.test(dest)) {
-      dest = trimAtVerb(dest);
-    }
-
+    dest = stripTransportTail(dest);
+    dest = trimAtVerb(dest);
     dest = stripPunct(normalizeSpaces(dest));
 
     // 'na ...' lokatyw? -> nie kierunek
     const low = deaccent(dest.toLowerCase());
     if (dest.toLowerCase().startsWith("na ") && NA_LOCATIVE_BLACKLIST.includes(low)) return null;
+
+    // NEW: jeśli zaczyna się od "do ..." i ma dalej drugi przyimek (np. "na ..."),
+    // zachowaj tylko pierwszy segment (cel po "do ...")
+    if (/^do\s+/i.test(dest)) {
+      // potnij przy następnym przyimku (na, w, u, przy, pod, za, przed, obok, koło/kolo, między/miedzy)
+      const cut = dest.split(/\s+(?=(?:na|w|u|przy|pod|za|przed|obok|koło|kolo|mi[eę]dzy|miedzy)\s)/i)[0];
+      dest = cut || dest;
+    }
 
     return dest || null;
   }
@@ -1519,7 +1507,7 @@ const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
     "boisku","parku","pokoju","salonie","kuchni","łazience","lazience","szkole","ogrodzie",
     "balkonie","podwórku","podworku","sklepie","domu","ławce","lawce","fotelu","krześle","krzesle",
     "dywanie","stole","stołem","stolem","zoo","przystanku","fontannie","klasie","oknie","placu",
-    "salonie","kiosku","kinie","kina","rynku","stawie","pokoju","dworcu","dworzec","stołówce","stolowce","bibliotece"
+    "kiosku","kinie","kina","rynku","stawie","dworcu","dworzec","stołówce","stolowce"
   ];
 
   function pickPlaceFromSentence(s) {
@@ -1529,13 +1517,11 @@ const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
 
     let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
 
-    // odetnij ogony i samotne 'przez'
     pps = pps.map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
              .map(x => x.replace(/\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu, ""))
              .map(x => stripDanglingPrzez(x))
              .map(x => normalizeSpaces(x));
 
-    // nie bierz dyskursu/czasu
     pps = pps.filter(x => !isDiscoursePP(x)).filter(x => !isTemporalPP(x));
     if (!pps.length) return null;
 
@@ -1548,11 +1534,6 @@ const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
       cand = stripDurationTail(cand);
       cand = stripDanglingPrzez(cand);
       cand = trimAtVerb(cand);
-
-      // jeżeli zaczyna się od 'w środku' → skróć do 'w środku'
-      if (/^\s*w\s+środku\b/i.test(cand) || /^\s*w\s+srodku\b/i.test(cand)) {
-        cand = (cand.match(/^\s*w\s+środku\b/i) || ["w środku"])[0];
-      }
 
       let sc = 0, low = deaccent(cand.toLowerCase());
       for (const h of PLACE_HINTS) if (low.includes(deaccent(h))) sc += 2;
@@ -1579,19 +1560,19 @@ const re = /\b(do|na)\s+(\S+(?:\s+\S+){0,8})\b/giu;
   // === PRIORYTETY ===
   const destFirst = extractDestination(t);
   if (destFirst && (destFirst.toLowerCase().startsWith("do ") || hasMoveVerb)) {
-    return { ok: true, question: "Dokąd?", answer: rehydrateAnswerFromOriginal(text, destFirst), source_path: "rule-teacher-strict-v7.5e" };
+    return { ok: true, question: "Dokąd?", answer: rehydrateAnswerFromOriginal(text, destFirst), source_path: "rule-teacher-strict-v7.5f" };
   }
 
   if (hasTime) {
     const time = extractTime(t);
-    if (time) return { ok: true, question: "Kiedy?", answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.5e" };
+    if (time) return { ok: true, question: "Kiedy?", answer: rehydrateAnswerFromOriginal(text, time), source_path: "rule-teacher-strict-v7.5f" };
   }
   if (hasLoc) {
     const loc = pickPlaceFromSentence(t);
-    if (loc) return { ok: true, question: "Gdzie?", answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.5e" };
+    if (loc) return { ok: true, question: "Gdzie?", answer: rehydrateAnswerFromOriginal(text, loc), source_path: "rule-teacher-strict-v7.5f" };
   }
 
-  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v7.5e-fallback" };
+  return { ok: true, question: "Co się dzieje?", answer: "", source_path: "rule-teacher-strict-v7.5f-fallback" };
 }
 
 // --------------------- ENDPOINTS ---------------------
@@ -1611,7 +1592,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
 
     const cleaned = String(text)
       .split(/\r?\n/)
-      .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
+      .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, "")) // cytaty/blockquote
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
@@ -1656,8 +1637,11 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
   }
 });
 
-app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.5e" }));
+app.get("/version", (_req, res) =>
+  res.json({ build: "2025-10-24 rule-teacher-strict-v7.5f" })
+);
 // ===================== /QUIZ / COMPREHEND =====================
+
 
 
 
