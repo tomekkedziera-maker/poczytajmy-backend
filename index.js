@@ -1424,7 +1424,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // ===== wykrywanie "cue" dla czasownika ruchu =====
   function detectVerbCue(sDA) {
     const L = sDA.toLowerCase();
-    if (/\bwr[ao]c\w*/.test(L)) return "wrócić";
+    if (/\bwr\w*c\w*/.test(L)) return "wrócić"; // łapie "wrocili", "wrcili" itd.
     if (/\bpojech\w*|\bjad\w*/.test(L)) return "pojechać";
     if (/\bwsied\w*|\bwsiad\w*/.test(L)) return "wsiąść";
     if (/\bpodesz\w*/.test(L)) return "podejść";
@@ -1544,6 +1544,16 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
     dest = normalizeSpaces(dest);
     dest = stripPunct(dest);
+// Jeśli w uciętym fragmencie są jeszcze wielokrotne "do/na ...",
+// wybierz ostatni cel (np. "do tramwaju numer 8").
+{
+  const multi = Array.from(
+    dest.matchAll(/\b(?:do|na)\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6}/giu),
+    m => m[0]
+  );
+  if (multi.length > 1) dest = multi[multi.length - 1];
+}
+
 
     const low = deaccent(dest.toLowerCase());
     if (dest.toLowerCase().startsWith("na ") && NA_LOCATIVE_BLACKLIST.includes(low)) return null;
@@ -1623,7 +1633,9 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   // ===== budowanie PEŁNYCH pytań (z naturalnym szykiem) =====
   function fullQ_Dokad() {
     // "Dokąd poszła Ola?" | "Dokąd pojechał Tomek?" | "Dokąd wrócili Basia i Krzyś?"
-    return `Dokąd ${qverb} ${actorInfo.label}?`;
+    return actorInfo.label === "oni"
+    ? `Dokąd ${qverb}?`
+    : `Dokąd ${qverb} ${actorInfo.label}?`;
   }
 
   function fullQ_Kiedy() {
