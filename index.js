@@ -1517,7 +1517,8 @@ function generateQuestionAndAnswerTeacher(textRaw) {
       const place = stripPunct(trimAtVerb(m[2]));
       const names = stripPunct(m[4]);
       const plural = names.includes(" i ");
-      const verb = plural ? "poszli" : "poszedł";
+      // UWAGA: zgodnie z Twoimi testami akceptujemy „Kto poszli…”
+      const verb = (m[3].toLowerCase().startsWith("posz")) ? (plural ? "poszli" : "poszedł") : (plural ? "pojechali" : "pojechał");
       return {
         ok: true,
         qtype: "Kto?",
@@ -1537,11 +1538,15 @@ function generateQuestionAndAnswerTeacher(textRaw) {
 
   // ===== budowanie pytań =====
   function qDokad() {
-    // żeby przechodziło regex '^Dokąd .*…\?$' dodajemy "oni" dla form przeszłych
+    // przy wsiedli → specyficzne pytanie „Do czego wsiedli?”
+    if (cue === "wsiedli") {
+      return "Do czego wsiedli?";
+    }
     let v = "poszli";
     let withPron = true;
     if (cue === "wrócili") v = "wrócili";
-    else if (cue === "wsiedli") v = "wsiedli";
+    else if (cue === "podeszli") v = "podeszli";
+    else if (cue === "przeszli") v = "przeszli";
     else if (cue === "idziemy") { v = "idziemy"; withPron = false; }
     const middle = withPron ? `oni ${v}` : v;
     return sanitizeQ(`Dokąd ${middle}?`);
@@ -1572,7 +1577,7 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   if (dest) {
     const q = qDokad();
     const a = rehydrateAnswerFromOriginal(text, dest);
-    return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    return { ok: true, qtype: (q.startsWith("Do czego") ? "Dokąd?" : "Dokąd?"), question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
   }
 
   if (time) {
@@ -1590,6 +1595,29 @@ function generateQuestionAndAnswerTeacher(textRaw) {
   return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6f-fullQ-fallback" };
 }
 
+// --------------------- helpers: dzielenie na zdania (bez lookbehind) ---------------------
+function splitIntoSentences(raw) {
+  if (!raw) return [];
+  const s = String(raw).replace(/\s+/g, ' ').trim();
+
+  // Spróbuj Intl.Segmenter (jeśli runtime ma)
+  try {
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+      const seg = new Intl.Segmenter('pl', { granularity: 'sentence' });
+      const out = [];
+      for (const { segment } of seg.segment(s)) {
+        const t = String(segment).trim();
+        if (t) out.push(t);
+      }
+      if (out.length) return out.slice(0, 50);
+    }
+  } catch (_) { /* fallback poniżej */ }
+
+  // Fallback: proste cięcie po .!?; (zachowuje znak końca)
+  const m = s.match(/[^.!?;]+[.!?;]?/g) || [];
+  return m.map(x => x.trim()).filter(Boolean).slice(0, 50);
+}
+
 // --------------------- ENDPOINTS ---------------------
 app.post("/agent/comprehend", (req, res) => {
   try {
@@ -1603,7 +1631,14 @@ app.post("/agent/comprehend", (req, res) => {
 app.post("/agent/comprehend-aggregate", (req, res) => {
   try {
     const { text, max_questions = 10 } = req.body || {};
-    if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
+    if (!text || !String(text).trim()) return res.json({ ok: true, count: 0, items: [] });
+
+    // lokalna deakcentacja dla dedupu (nie korzystamy z funkcji z wnętrza generateQuestion…)
+    const deaccentAgg = s => String(s || "").normalize("NFD")
+      .replace(/[\u0300-\u036f]/g,"")
+      .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
+      .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
+      .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
 
     const cleaned = String(text)
       .split(/\r?\n/)
@@ -1612,51 +1647,61 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
       .replace(/\s+/g, " ")
       .trim();
 
-    const sentences = cleaned
-      .split(/(?<=[.!?;])\s+/)
+    const sentences = splitIntoSentences(cleaned)
       .map(s => s.trim())
       .filter(Boolean)
       .slice(0, 30);
+
+    if (!sentences.length) return res.json({ ok: true, count: 0, items: [] });
 
     const scored = sentences
       .map(s => {
         const r = generateQuestionAndAnswerTeacher(s);
         let sc = 0;
         if (r.qtype === "Dokąd?") sc = 100;
+        else if (r.qtype === "Kto?") sc = 85;
         else if (r.qtype === "Kiedy?") sc = 90;
         else if (r.qtype === "Gdzie?") sc = 80;
-        else if (r.qtype === "Kto?") sc = 85;
         else sc = 40;
-        return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.6f-fullQ" };
+        return {
+          ok: !!r.ok,
+          qtype: r.qtype,
+          question: r.question,
+          answer: r.answer,
+          sentence: s,
+          score: sc,
+          src: r.source_path || "rule-teacher-strict-v7.6f-fullQ"
+        };
       })
       .sort((a, b) => b.score - a.score);
 
     const top = [];
     const seen = new Set();
+    const limit = Math.max(1, parseInt(max_questions, 10) || 10);
+
     for (const r of scored) {
-      if (top.length >= max_questions) break;
+      if (top.length >= limit) break;
       if (!r.answer) continue;
-      const key = `${r.qtype}|${deaccent((r.answer||"").toLowerCase())}`;
+      const key = `${r.qtype}|${deaccentAgg((r.answer||"").toLowerCase())}`;
       if (seen.has(key)) continue;
       seen.add(key);
       top.push(r);
     }
     if (top.length === 0) {
       for (const r of scored) {
-        if (top.length >= max_questions) break;
+        if (top.length >= limit) break;
         if (r.answer) top.push(r);
       }
     }
     res.json({ ok: true, count: top.length, items: top });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
+    console.error("ERROR /agent/comprehend-aggregate:", e && e.stack ? e.stack : e);
+    res.status(500).json({ ok: false, error: e.message, source_path: "error-exception-aggregate" });
   }
 });
 
 app.get("/version", (req, res) => res.json({ build: "2025-10-24 rule-teacher-strict-v7.6f-fullQ" }));
 // ===================== /QUIZ / COMPREHEND =====================
-
-
 
 
 
