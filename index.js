@@ -1405,7 +1405,15 @@ function generateQuestionAndAnswerTeacher(textRaw) {
     return /(?:li|la|lo|lem|lam|emy|imy|asz|esz|amy|acie|uja|uje|ujesz|ujemy)$/i.test(x);
   }
   // łagodniejsze przycinanie
-  const trimAtVerb = p => p.split(/\s+/).filter(x => !isVerbishToken(x)).slice(0, 12).join(" ").trim();
+  function trimAtVerb(p=""){
+  const toks = String(p).split(/\s+/);
+  const out = [];
+  for (const tok of toks){
+    if (isVerbishToken(tok)) break;
+    out.push(tok);
+  }
+  return out.join(" ").trim();
+}
 
   // ===== markery dyskursywne =====
   const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nastepnie|nast[eę]pnie|wtedy|za chwil[eę])\b/iu;
