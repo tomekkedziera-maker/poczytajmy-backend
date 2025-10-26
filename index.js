@@ -1348,14 +1348,19 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.7-verbs (hotfix) =====================
+// ===================== QUIZ: rule-teacher-strict-v7.7-verbs (FIX) =====================
+// Zakłada, że na górze index.js masz:  import { COMMON_VERBS } from "./verbs.js";
+
 export function generateQuestionAndAnswerTeacher(textRaw) {
-  if (!textRaw || typeof textRaw !== "string")
+  if (!textRaw || typeof textRaw !== "string") {
     return { ok: false, qtype: "Co się dzieje?", question: "Co się dzieje?", answer: "", source_path: "error-empty" };
+  }
 
   const text = String(textRaw).normalize("NFC").trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
+  const tLower = t.toLowerCase();
 
+  // ===== utils =====
   const normalizeSpaces = (s="") => String(s).replace(/\s+/g, " ").trim();
   const stripPunct = (s="") => String(s).trim().replace(/[.,!?;:]+$/,"");
   const deaccent = (s="") => String(s)
@@ -1364,27 +1369,37 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
     .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
 
-  // —— proste cięcie na formach finitywnych czasowników (bez pełnej listy odmian)
-  const FINITE_VERB_RE = /\s+\b\w+(?:li|ły|ł|ła|ło|łem|łam|liśmy|łyśmy|liście|łyście|łby|łaby|łoby|łbym|łabym)\b.*$/i;
-  const cutAtFiniteVerb = (s="") => normalizeSpaces(String(s).replace(FINITE_VERB_RE, ""));
+  const stripOnConjOrComma = (s="") => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
+  const removeDiscourseMarkers = (s="") => normalizeSpaces(String(s).replace(/^\s*(a|i|oraz|potem|więc|następnie|a\s+potem)\s+/i, ""));
+  const stripDanglingPrzez = (s="") => String(s).replace(/\s+przez\b.*$/i, "").trim();
 
-  const stripOnConjOrComma = (s="") => normalizeSpaces(String(s).split(/\s+(?:i|oraz|a)\s+|,/i)[0] || "");
-  const stripDanglingPrzez = s => s.replace(/\s+przez\b.*$/i, "").trim();
+  // ===== wykrywanie czasowników (cięcie przy kolejnym finitywnym) =====
+  // Uwaga: COMMON_VERBS to ~220 bezpiecznych tokenów bez metaznaków regexu.
+  const VERB_CUT_RE = new RegExp(`\\s+(${COMMON_VERBS.join("|")})\\b.*$`, "i");
+  const cutAtFiniteVerb = (s="") => normalizeSpaces(String(s).replace(VERB_CUT_RE,""));
 
-  const TIME_RE = /\b(o\s*\d{1,2}[:.]\d{2}|przed\s*\d{1,2}[:.]\d{2}|rano|wieczorem|w\s+południe|po\s+południu|w\s+sobot[ęe]|w\s+niedziel[ęe]|w\s+poniedziałek|dzisiaj|dziś|wczoraj|jutro)\b/i;
-  const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i;
+  // ===== wskazówki ruchu, by dobrać treść pytania Dokąd? =====
+  const MOTION_CUE_RE = /\b(poszed\w*|poszl\w*|pojech\w*|wróc\w*|wszed\w*|weszl\w*|wyszed\w*|przeszl\w*|pobiegl\w*|pobiegl\w*|wsiad\w*|wsied\w*)\b/i;
+  const dokadQuestionByCue = (low="") => {
+    if (/\b(wsied\w*|wsiad\w*)\b/.test(low)) return "Dokąd oni wsiedli?";
+    if (/\b(wr[óo]c\w*)\b/.test(low)) return "Dokąd oni wrócili?";
+    return "Dokąd oni poszli?";
+  };
 
-  function removeDiscourseMarkers(s="") {
-    return normalizeSpaces(String(s).replace(/^\s*(a|i|oraz|potem|więc|następnie|a\s+potem)\s+/i, ""));
-  }
+  // ===== czas =====
+  const TIME_RE = /\b(o\s*\d{1,2}[:.]\d{2}|przed\s*\d{1,2}[:.]\d{2}|rano|wieczorem|w\s+południe|po\s+południu|w\s+sobotni\s+poranek|w\s+niedzielny\s+poranek|w\s+poniedziałek|w\s+wtorek|w\s+środę|w\s+czwartek|w\s+piątek|dzisiaj|dziś|wczoraj|jutro)\b/i;
+  const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+sobotni\s+poranek|w\s+niedzielny\s+poranek)\b/i;
 
-  const MOTION_CUE_RE = /\b(poszed\w*|poszl\w*|pojech\w*|wróc\w*|przesz\w*|wszed\w*|weszli|wsiad\w*|wsied\w*|dojech\w*|podesz\w*|pobieg\w*)\b/i;
+  // ===== lokatywy na „na …”, które NIE są celem (np. „na trawie”) =====
+  const NA_LOCATIVE_BLACKLIST = [
+    "na trawie","na lawce","na ławce","na dywanie","na przystanku",
+    "na stadionie","na boisku","na rynku","na peronie","na plazy","na plaży"
+  ].map(s => deaccent(s));
 
-  // ——— Gdzie?
+  // ===== miejsce (gdzie?) =====
   function pickPlaceFromSentence(s="") {
     const base = removeDiscourseMarkers(s);
     const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w)";
-    // stop przed kolejną frazą przyimkową, „przez …” oraz przed formą finitywną czasownika
     const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
 
     let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
@@ -1392,63 +1407,69 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     pps = pps
       .map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
       .map(x => x.replace(TIME_TAIL, ""))
-      .map(stripDanglingPrzez)
-      .map(cutAtFiniteVerb)
-      .map(normalizeSpaces);
+      .map(x => stripDanglingPrzez(x))
+      .map(x => cutAtFiniteVerb(x))
+      .map(x => normalizeSpaces(x));
 
-    const isTemporalPP = (pp="") =>
-      /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
-
-    pps = pps.filter(x => x && !isTemporalPP(x));
+    const isTemporalPP = (pp="") => /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+sobotni\s+poranek|w\s+niedzielny\s+poranek)\b/i.test(pp);
+    pps = pps.filter(x => !isTemporalPP(x));
     if (!pps.length) return null;
 
-    const sDA = deaccent(s.toLowerCase());
     let best = pps[0], bestScore = -1;
     for (const cand0 of pps) {
       const cand = cand0;
       let sc = 0, low = deaccent(cand.toLowerCase());
       if (/^\s*(w|we|na)\b/i.test(cand)) sc += 2;
       if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1;
-      if (/\b(klasie|salonie|kuchni|pokoju|lawce|ławce|oknie|rynku|kinie|przystanku|fontannie|stole|zoo)\b/i.test(low)) sc += 1.5;
-      if (/usiedl|siedziel/i.test(sDA) && /^\s*przy\b/i.test(cand)) sc += 2.5; // prefer „przy oknie/ławce/stole”
+      if (/\b(klasie|salonie|kuchni|pokoju|ławce|lawce|oknie|rynku|kinie|przystanku|fontannie|stole|zoo)\b/i.test(low)) sc += 1.5;
       if (sc > bestScore) { best = cand; bestScore = sc; }
     }
     return stripPunct(normalizeSpaces(best));
   }
 
-  function dokadQuestionByCue(L="") {
-    if (/\bwsied\w*|wsiad\w*/i.test(L)) return "Dokąd oni wsiedli?";
-    if (/\bwróc\w*/i.test(L))          return "Dokąd oni wrócili?";
-    return "Dokąd oni poszli?";
-  }
-  function qKiedy() { return "Kiedy to się działo?"; }
-  function qGdzie(sDA="") {
-    const L = String(sDA).toLowerCase();
-    if (/\busiedl|siedziel/i.test(L)) return "Gdzie usiedli?";
-    if (/\bczekal|czekali/i.test(L))  return "Gdzie czekali?";
-    if (/\bczytal|czytali|czytała/i.test(L)) return "Gdzie czytali?";
+  // ===== pytania =====
+  const qKiedy = () => "Kiedy to się działo?";
+  const qGdzie = (low="") => {
+    if (/\busiad\w*|usiedl\w*|siedzieli\b/.test(low)) return "Gdzie usiedli?";
+    if (/\bczekal\w*|czekali\b/.test(low)) return "Gdzie czekali?";
+    if (/\bczytal\w*|czyta(ła|li)\b/.test(low)) return "Gdzie czytali?";
     return "Gdzie byli?";
-  }
+  };
 
-  const tLower = t.toLowerCase();
   let qtype = "", question = "", answer = "";
 
-  // 1) DOKĄD? (priorytet nad czasem — tylko gdy jest cue ruchu)
+  // 1) DOKĄD? (priorytet nad czasem i miejscem — tylko gdy jest cue ruchu)
   if (MOTION_CUE_RE.test(tLower)) {
-    // specjalny przypadek: „wsiedli/wsiadł do …”
+    // wsiedli/wsiadł → preferuj obiekt po „do …” po czasowniku
     const mBoard = t.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
     if (mBoard) {
       qtype = "Dokąd?";
       question = dokadQuestionByCue(tLower);
-      answer = stripPunct(`do ${cutAtFiniteVerb(mBoard[2])}`);
+      let body = mBoard[2];
+      body = body.replace(TIME_TAIL, "");
+      body = cutAtFiniteVerb(body);
+      body = stripOnConjOrComma(body);
+      answer = stripPunct(`do ${body}`);
     }
+
+    // ogólne „do|na …”
     if (!answer) {
       const mDest = t.match(/\b(do|na)\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
       if (mDest) {
-        qtype = "Dokąd?";
-        question = dokadQuestionByCue(tLower);
-        const body = stripOnConjOrComma(cutAtFiniteVerb(mDest[2]));
-        answer = stripPunct(`${mDest[1]} ${body}`);
+        let prep = mDest[1].toLowerCase();
+        let body = mDest[2];
+        body = body.replace(TIME_TAIL, "");
+        body = cutAtFiniteVerb(body);
+        body = stripOnConjOrComma(body);
+        let cand = stripPunct(`${prep} ${body}`);
+
+        // „na …” jako lokatyw (np. „na trawie”) → nie traktuj jako Dokąd?
+        const low = deaccent(cand.toLowerCase());
+        if (!(prep === "na" && NA_LOCATIVE_BLACKLIST.includes(low))) {
+          qtype = "Dokąd?";
+          question = dokadQuestionByCue(tLower);
+          answer = cand;
+        }
       }
     }
   }
@@ -1473,10 +1494,10 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // 4) KTO? (fallback dla „Do X poszedł Y” jeśli nic nie wyszło)
-  if (!answer) {
+  // 4) KTO? (ostatni fallback dla zdań ruchu typu „Do parku poszedł Tomek.”)
+  if (!answer && MOTION_CUE_RE.test(tLower)) {
     const mName = t.match(/\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)*\b/);
-    if (mName && MOTION_CUE_RE.test(tLower)) {
+    if (mName) {
       qtype = "Kto?";
       question = "Kto poszedł do ...?";
       answer = stripPunct(mName[0]);
@@ -1488,11 +1509,9 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     qtype,
     question,
     answer: stripPunct(answer),
-    source_path: "rule-teacher-strict-v7.7-verbs-hotfix2"
+    source_path: "rule-teacher-strict-v7.7-verbs"
   };
 }
-
-
 
 // --- QUIZ endpoints ---
 app.post("/agent/comprehend", (req, res) => {
@@ -1523,7 +1542,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
       .filter(Boolean)
       .slice(0, 30);
 
-    const deaccent = s => String(s).normalize("NFD")
+    const deaccent2 = s => String(s).normalize("NFD")
       .replace(/[\u0300-\u036f]/g,"")
       .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
       .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
@@ -1547,7 +1566,7 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
     for (const r of scored) {
       if (top.length >= max_questions) break;
       if (!r.answer) continue;
-      const key = `${r.qtype}|${deaccent((r.answer||"").toLowerCase())}`;
+      const key = `${r.qtype}|${deaccent2((r.answer||"").toLowerCase())}`;
       if (seen.has(key)) continue;
       seen.add(key);
       top.push(r);
@@ -1564,11 +1583,11 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
   }
 });
 
-// /version (dla sanity)
+// /version (sanity)
 app.get("/version", (_req, res) =>
-  res.json({ build: "2025-10-26 rule-teacher-strict-v7.7-verbs" })
+  res.json({ build: "2025-10-26 rule-teacher-strict-v7.7-verbs (fix)" })
 );
-// ===================== QUIZ: rule-teacher-strict-v7.7-verbs =====================
+// ===================== /QUIZ =====================
 
 
 
