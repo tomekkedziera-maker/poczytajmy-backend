@@ -1347,7 +1347,7 @@ app.get('/tts-voices', async (_req, res) => {
   }
 });
 
-// ===================== QUIZ: rule-teacher-strict-v7.7-verbs (hotfix) =====================
+// ===================== QUIZ: rule-teacher-strict-v7.7-verbs (hotfix-2) =====================
 export function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string")
     return { ok: false, qtype: "Co się dzieje?", question: "Co się dzieje?", answer: "", source_path: "error-empty" };
@@ -1355,140 +1355,132 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
   const text = String(textRaw).normalize("NFC").trim();
   const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
 
-  const normalizeSpaces = (s="") => String(s).replace(/\s+/g, " ").trim();
-  const stripPunct = (s="") => String(s).trim().replace(/[.,!?;:]+$/,"");
-  const deaccent = (s="") => String(s)
+  const normSpaces = (s="") => String(s).replace(/\s+/g, " ").trim();
+  const stripPunct  = (s="") => String(s).trim().replace(/[.,!?;:]+$/,"");
+  const deaccent    = (s="") => String(s)
     .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
     .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
     .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
     .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
 
-  // ===== wykrywanie czasowników z pliku verbs.js =====
+  // ===== lista czasowników (import z verbs.js) =====
   const VERB_CUT_RE = new RegExp(`\\s+(${COMMON_VERBS.join("|")})\\b.*$`, "i");
-  const stripDanglingPrzez = s => s.replace(/\s+przez\b.*$/i, "").trim();
-  const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
+  const trimAtVerb = s => normSpaces(String(s).replace(VERB_CUT_RE, ""));
 
-  // dni tygodnia + typowe markery czasu
-  const DAY = "(?:poniedzia(ł|l)ek|wtorek|środę|srode|czwartek|piątek|piatek|sobotę|sobote|niedzielę|niedziele)";
-  const TIME_TAIL = new RegExp(`\\s+(rano|wieczorem|w\\s+południe|w\\s+poludnie|po\\s+południu|po\\s+poludniu|dzisiaj|dziś|dzis|jutro|wczoraj|o\\s+\\d{1,2}[:.]\\d{2}|w\\s+${DAY})\\b`,"i");
+  // ===== słowniki =====
+  const DAY = "(?:poniedzia(ł|l)ek|wtorek|środ[ęe]|czwartek|piątek|piatek|sobot[ęe]|niedziel[ęe])";
+  const RE_TIME = new RegExp(`\\b(o\\s*\\d{1,2}[:.]\\d{2}|przed\\s*\\d{1,2}[:.]\\d{2}|rano|wieczorem|po\\s+południu|po\\s+poludniu|w\\s+${DAY}|dzisiaj|dziś|dzis|wczoraj|jutro)\\b`,"i");
+  const RE_BOARD = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i;
+  const RE_MOVE  = /\b(poszed\w*|poszl\w*|pojecha\w*|przesz\w*|wróc\w*|wroc\w*|wszed\w*|wesz\w*)\b/i;
+  const RE_KTO_LEADPP = /\b(do|na)\s+[^\s,.;!?]{1,30}(?:\s+[^\s,.;!?]{1,30}){0,3}\s+(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroc\w*|wszed\w*|wesz\w*)\s+([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)\b/;
 
-  function removeDiscourseMarkers(s="") {
-    return normalizeSpaces(String(s).replace(/^\s*(a|i|oraz|potem|więc|następnie|a\s+potem)\s+/i, ""));
-  }
+  const looksWaitVerb = /\bczek\w*\b/i.test(t); // „czekać (na)” – nie traktujemy jako celu
+  const tLower = t.toLowerCase();
 
-  // ===== miejsce (gdzie?) =====
+  // ===== pomocnicze: frazy miejsca =====
   function pickPlaceFromSentence(s="") {
-    const base = removeDiscourseMarkers(s);
     const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w)";
     const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
 
-    let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
-
-    pps = pps
+    let pps = (s.match(re) || []).map(x => normSpaces(x))
       .map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
-      .map(x => x.replace(TIME_TAIL, ""))
-      .map(x => stripDanglingPrzez(x))
-      .map(x => trimAtVerb(x))
-      .map(x => normalizeSpaces(x));
+      .map(x => x.replace(RE_TIME, ""))     // usuń ogony czasowe
+      .map(x => trimAtVerb(x))              // utnij po kolejnym czasowniku
+      .map(x => normSpaces(x));
 
-    // odfiltruj frazy, które bardziej wyglądają na obiekt "na [kogo/co]" niż miejsce
-    const PLACE_NOUN_HINT = /\b(wejściu|wejsciu|peronie|przystanku|rynku|muzeum|kinie|sklepie|cukierni|boisku|ławce|lawce|stawie|salonie|klasie|pokoju|szatni|domu|fontannie|most(ek|em|u)?|park(u|u)|dworcu|scenie|plaży|plazy|lotnisku)\b/i;
+    // odfiltruj typowe „na [kogo/co]” – obiekty, nie miejsca
     pps = pps.filter(pp => {
       const low = deaccent(pp.toLowerCase());
-      if (/^\s*na\s+\b(nauczyciel|koleg|kolez|pociag|autobus|film|lody)\w*/i.test(low)) return false;
+      if (/^\s*na\s+\b(nauczyciel|koleg|kolez|film|lody)\w*/i.test(low)) return false;
       return true;
     });
 
-    const isTemporalPP = (pp="") =>
-      /\b(rano|wieczorem|w\s+południe|w\s+poludnie|po\s+południu|po\s+poludniu|dzisiaj|dziś|dzis|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+${DAY})\b/i.test(pp);
-
-    pps = pps.filter(x => !isTemporalPP(x));
     if (!pps.length) return null;
 
+    const PLACE_NOUN_HINT = /\b(wejściu|wejsciu|peronie|przystanku|rynku|muzeum|kinie|sklepie|cukierni|boisku|ławce|lawce|stawie|salonie|klasie|pokoju|szatni|domu|fontannie|most(ek|em|u)?|parku|dworcu|scenie|plaży|plazy|lotnisku)\b/i;
     let best = pps[0], bestScore = -1;
-    for (const cand0 of pps) {
-      const cand = cand0;
+    for (const cand of pps) {
       let sc = 0, low = deaccent(cand.toLowerCase());
-      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 2;     // silne "bliskość"
-      if (/^\s*(w|we|na)\b/i.test(cand)) sc += 1;                      // neutralne
-      if (PLACE_NOUN_HINT.test(low)) sc += 2;                          // znane rzeczowniki miejsc
-      if (/^\s*na\s+\S+e\b/i.test(cand)) sc -= 0.5;                    // lekkie - za "na X-e" (często obiekt)
+      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 2;
+      if (/^\s*(w|we|na)\b/i.test(cand)) sc += 1;
+      if (PLACE_NOUN_HINT.test(low)) sc += 2;
+      if (/^\s*na\s+\S+e\b/i.test(cand)) sc -= 0.5;
       if (sc > bestScore) { best = cand; bestScore = sc; }
     }
-    return stripPunct(normalizeSpaces(best));
+    return stripPunct(normSpaces(best));
   }
 
   // ===== pytania =====
-  function qKiedy() { return "Kiedy to się działo?"; }
-  function qDokad() { return "Dokąd oni poszli?"; }
-  function qGdzie(sDA="") {
-    const L = String(sDA).toLowerCase();
-    if (/\busi(e|a)dli\b|\bsiedzieli\b/.test(L)) return "Gdzie usiedli?";
-    if (/\bczekali\b/.test(L)) return "Gdzie czekali?";
-    if (/\bczytali\b|\bczyta(ła|li)\b/.test(L)) return "Gdzie czytali?";
-    return "Gdzie byli?";
-  }
-  function qKto()   { return "Kto poszedł do ...?"; }
+  const q = {
+    kiedy:  "Kiedy to się działo?",
+    godz:   "O której godzinie to się wydarzyło?",
+    dokad:  "Dokąd oni poszli?",
+    gdzieU: "Gdzie usiedli?",
+    gdzieC: "Gdzie czekali?",
+    gdzieR: "Gdzie czytali?",
+    gdzie:  "Gdzie byli?",
+    kto:    "Kto poszedł do ...?"
+  };
 
-  // ===== analiza =====
-  let answer = "", qtype = "", question = "";
-  const tLower = t.toLowerCase();
+  let qtype="", question="", answer="";
 
-  // (A) KIEDY? — priorytet gdy obecne
-  const mTime = t.match(new RegExp(`\\b(o\\s*\\d{1,2}[:.]\\d{2}|przed\\s*\\d{1,2}[:.]\\d{2}|rano|wieczorem|po\\s+południu|po\\s+poludniu|w\\s+${DAY}|dzisiaj|dziś|dzis|wczoraj|jutro)\\b`,"i"));
-  if (mTime) {
-    qtype = "Kiedy?";
-    question = (/^\s*o\s*\d{1,2}[:.]\d{2}\b/i.test(mTime[0])) ? "O której godzinie to się wydarzyło?" : qKiedy();
-    answer = stripPunct(mTime[0]);
+  // (1) BOARDING — zawsze wygrywa nad czasem
+  const mBoard = t.match(RE_BOARD);
+  if (mBoard) {
+    qtype   = "Dokąd?";
+    question= q.dokad;
+    answer  = stripPunct(`do ${mBoard[2]}`.replace(/\s+(?:i|a|oraz)\s*$/i,""));
   }
 
-  // (B) „Do/Na <cel> <czasownik ruchu> <Imię>” → KTO?
+  // (2) „Do/Na … + VERB(ruchu) + Imię” ⇒ KTO?
   if (!answer) {
-    const reKtoLeadPP = /\b(do|na)\s+[^\s,.;!?]{1,30}(?:\s+[^\s,.;!?]{1,30}){0,3}\s+(poszed\w*|poszl\w*|pojecha\w*|wszed\w*|wesz\w*|wsiad\w*|wsied\w*)\s+([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)\b/;
-    const mKtoLead = t.match(reKtoLeadPP);
-    if (mKtoLead) {
-      qtype = "Kto?";
-      question = qKto();
-      answer = mKtoLead[3];
+    const mLead = t.match(RE_KTO_LEADPP);
+    if (mLead) {
+      qtype   = "Kto?";
+      question= q.kto;
+      answer  = stripPunct(mLead[3]);
     }
   }
 
-  // (C) Specjalny boarding: „wsiedli/wsiadł do …” → DOKĄD? (nawet jeśli na początku jest „Na peronie …”)
-  if (!answer) {
-    const mBoard = t.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
-    if (mBoard) {
-      qtype = "Dokąd?";
-      question = qDokad();
-      answer = `do ${mBoard[2]}`.replace(/\s+(?:i|a|oraz)\s*$/i,''); // urwij spójnik na końcu
-    }
-  }
-
-  // (D) Ogólne DOKĄD? (z preferencją celu nad miejscem)
-  if (!answer) {
+  // (3) DOKĄD? — tylko jeśli występuje czasownik ruchu (i nie „czekać na …”)
+  if (!answer && RE_MOVE.test(t) && !looksWaitVerb) {
     const mDest = t.match(/\b(do|na)\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
     if (mDest) {
-      qtype = "Dokąd?";
-      question = qDokad();
-      answer = `${mDest[1]} ${mDest[2]}`.replace(/\s+(?:i|a|oraz)\s*$/i,'');
+      qtype   = "Dokąd?";
+      question= q.dokad;
+      answer  = stripPunct(`${mDest[1]} ${mDest[2]}`.replace(/\s+(?:i|a|oraz)\s*$/i,""));
     }
   }
 
-  // (E) GDZIE?
+  // (4) GDZIE? — jeśli mamy dobrą frazę miejsca
   if (!answer) {
     const place = pickPlaceFromSentence(t);
     if (place) {
       qtype = "Gdzie?";
-      question = qGdzie(tLower);
+      if (/\busi(e|a)dli\b|\bsiedzieli\b/i.test(tLower)) question = q.gdzieU;
+      else if (/\bczekali\b/i.test(tLower))              question = q.gdzieC;
+      else if (/\bczyta(ła|li)\b|\bczytali\b/i.test(tLower)) question = q.gdzieR;
+      else question = q.gdzie;
       answer = place;
     }
   }
 
-  // (F) KTO? — ogólne (szukamy imienia/osoby)
-  if (!answer && /\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wszed\w*|wesz\w*|wsiad\w*|wsied\w*)\b/i.test(tLower)) {
+  // (5) KIEDY? — na końcu (chyba że nie ma nic innego)
+  if (!answer) {
+    const mTime = t.match(RE_TIME);
+    if (mTime) {
+      qtype    = "Kiedy?";
+      question = /^\s*o\s*\d{1,2}[:.]\d{2}\b/i.test(mTime[0]) ? q.godz : q.kiedy;
+      answer   = stripPunct(mTime[0]);
+    }
+  }
+
+  // (6) awaryjne KTO? — proste imię przy czas. ruchu
+  if (!answer && RE_MOVE.test(t)) {
     const mName = t.match(/\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)*\b/);
     if (mName) {
       qtype = "Kto?";
-      question = qKto();
+      question = q.kto;
       answer = stripPunct(mName[0]);
     }
   }
@@ -1497,10 +1489,11 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     ok: Boolean(question && answer),
     qtype,
     question,
-    answer: stripPunct(answer),
-    source_path: "rule-teacher-strict-v7.7-verbs-hotfix"
+    answer,
+    source_path: "rule-teacher-strict-v7.7-verbs-hotfix2"
   };
 }
+
 
 
 // --- QUIZ endpoints (bez zmian poza source) ---
