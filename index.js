@@ -1348,8 +1348,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy → regex) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy→regex, patch-perception) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1406,6 +1405,10 @@ app.get('/tts-voices', async (_req, res) => {
       "czekać","czytać","pisać","bawić się","grać","jeść","pić",
       "oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"
     ];
+    const VERBS_PERCEPTION = [
+      "patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się",
+      "oglądać","zaglądać","zerkać"
+    ];
 
     function flex(lemma) {
       const L = lemma.toLowerCase();
@@ -1432,7 +1435,8 @@ app.get('/tts-voices', async (_req, res) => {
       `\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND].map(flex).join("|")})\\b.*$`,
       "i"
     );
-    const SEATLIKE_RE = new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
+    const SEATLIKE_RE   = new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
+    const PERCEPTION_RE = new RegExp(`\\b(${VERBS_PERCEPTION.map(flex).join("|")})\\b`, "i");
 
     // ===== cięcia & cue =====
     const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
@@ -1474,7 +1478,8 @@ app.get('/tts-voices', async (_req, res) => {
     // ===== blacklist „na …” as locative (not Dokąd) =====
     const NA_LOCATIVE_BLACKLIST = [
       "na spacerze","na spacer","na dywanie","na trawie","na ławce","na lawce",
-      "na przystanku","na basenie","na stadionie","na boisku","na rynku"
+      "na przystanku","na basenie","na stadionie","na boisku","na rynku",
+      "na ulice","na ulicę","na lawke","na ławke","na ławkę"
     ].map(x => deaccent(x));
 
     // ===== temporal =====
@@ -1504,9 +1509,13 @@ app.get('/tts-voices', async (_req, res) => {
       while ((m = re.exec(cleaned)) !== null) matches.push({ prep: m[1].toLowerCase(), body: m[2], idx: m.index });
       if (!matches.length) return null;
 
-      // prefer latest „do …”, else latest „na …”
       const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
       let dest = `${pick.prep} ${pick.body}`.trim();
+
+      // percepcja + „na …” → nie traktuj jako Dokąd?
+      if (pick.prep === "na" && PERCEPTION_RE.test(s)) {
+        return null;
+      }
 
       dest = stripOnConjunctionOrComma(dest);
       dest = STRIP_ANY_PURPOSE(dest);
@@ -1522,7 +1531,7 @@ app.get('/tts-voices', async (_req, res) => {
 
       const low = deaccent(dest.toLowerCase());
 
-      // jeżeli to „na …” lokatywne (np. na trawie/ławce/przystanku/rynku), to nie jest Dokąd?
+      // jeżeli to „na …” lokatywne (np. na trawie/ławce/ulicy/przystanku/rynku), to nie jest Dokąd?
       const head2 = deaccent(dest.toLowerCase().split(/\s+/).slice(0,2).join(" "));
       if (dest.toLowerCase().startsWith("na ") && (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low))) {
         return null;
@@ -1555,23 +1564,24 @@ app.get('/tts-voices', async (_req, res) => {
       let best = pps[0], bestScore = -1, bestPos = -1;
 
       for (const cand0 of pps) {
-        const cand = cand0;
+        let cand = cand0;
         let sc = 0;
         const low = deaccent(cand.toLowerCase());
         const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
 
-        const seatLike = SEATLIKE_RE.test(t);
+        const seatLike = SEATLIKE_RE.test(t); // testuj na oryginale (z diakrytykami)
 
         if (seatLike) {
           if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
           if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
+          if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2; // bonus: „przy oknie” wyżej niż „w klasie”
         } else {
           if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
           if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1.5;
         }
 
         // bonusy za typowe miejsca
-        if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju)\b/i.test(low)) {
+        if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie)\b/i.test(low)) {
           sc += 1.5;
         }
 
@@ -1580,6 +1590,9 @@ app.get('/tts-voices', async (_req, res) => {
         }
       }
 
+      // dodatkowe, końcowe cięcie po czasowniku + normalizacja
+      best = trimAtVerb(best);
+      best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli)\b.*$/i, "").trim();
       return stripPunct(normalizeSpaces(best));
     }
 
@@ -1624,10 +1637,11 @@ app.get('/tts-voices', async (_req, res) => {
       return "Kiedy to się działo?";
     }
     function qGdzie() {
-      if (/spotkal|spotkali/i.test(tDA)) return "Gdzie się spotkali?";
-      if (SEATLIKE_RE.test(t))         return "Gdzie usiedli?";
-      if (/czekal|czekali/i.test(tDA))   return "Gdzie czekali?";
-      if (/czytal|czytala|czytali/i.test(tDA)) return "Gdzie czytali?";
+      // kolejność: konkretne czasowniki → ogólne „byli”
+      if (/spotkal|spotkali/i.test(t)) return "Gdzie się spotkali?";
+      if (/czekal|czekali/i.test(t))   return "Gdzie czekali?";
+      if (/czytal|czytała|czytala|czytali/i.test(t)) return "Gdzie czytali?";
+      if (/usiedl|usiedli|siadl|siadła|siadla|siedzi|siedzieli/i.test(t)) return "Gdzie usiedli?";
       return "Gdzie byli?";
     }
 
@@ -1713,9 +1727,9 @@ app.get('/tts-voices', async (_req, res) => {
           const r = generateQuestionAndAnswerTeacher(s);
           let sc = 0;
           if (r.qtype === "Dokąd?") sc = 100;
-          else if (r.qtype === "Kto?") sc = 85;
           else if (r.qtype === "Kiedy?") sc = 90;
           else if (r.qtype === "Gdzie?") sc = 80;
+          else if (r.qtype === "Kto?") sc = 85;
           else sc = 40;
           return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.6f-fullQ" };
         })
@@ -1760,7 +1774,7 @@ app.get('/tts-voices', async (_req, res) => {
   });
 
   app.get("/version", (_req, res) =>
-    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas" })
+    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas-p2" })
   );
 
 })(app);
