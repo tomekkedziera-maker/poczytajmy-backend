@@ -1560,7 +1560,7 @@ app.get('/tts-voices', async (_req, res) => {
         const low = deaccent(cand.toLowerCase());
         const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
 
-        const seatLike = SEATLIKE_RE.test(tDA);
+        const seatLike = SEATLIKE_RE.test(t);
 
         if (seatLike) {
           if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
@@ -1625,14 +1625,14 @@ app.get('/tts-voices', async (_req, res) => {
     }
     function qGdzie() {
       if (/spotkal|spotkali/i.test(tDA)) return "Gdzie się spotkali?";
-      if (SEATLIKE_RE.test(tDA))         return "Gdzie usiedli?";
+      if (SEATLIKE_RE.test(t))         return "Gdzie usiedli?";
       if (/czekal|czekali/i.test(tDA))   return "Gdzie czekali?";
       if (/czytal|czytala|czytali/i.test(tDA)) return "Gdzie czytali?";
       return "Gdzie byli?";
     }
 
     // ===== priorytety (preferencja Gdzie? dla czynności „miejscochłonnych”) =====
-    const preferPlaceFirst = SEATLIKE_RE.test(tDA);
+    const preferPlaceFirst = SEATLIKE_RE.test(t);
 
     if (who) {
       const ans = rehydrateAnswerFromOriginal(text, who.answer);
