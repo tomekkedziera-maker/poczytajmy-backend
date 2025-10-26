@@ -1348,7 +1348,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 
-// ===================== QUIZ: rule-teacher-strict-v7.7-verbs (tune-2) =====================
+// ===================== QUIZ: rule-teacher-strict-v7.7-verbs (tune-3) =====================
 
 export function generateQuestionAndAnswerTeacher(textRaw) {
   if (!textRaw || typeof textRaw !== "string") {
@@ -1367,14 +1367,12 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
     .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
     .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
-
   const stripOnConjOrComma = (s="") => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
   const removeDiscourseMarkers = (s="") => normalizeSpaces(String(s).replace(/^\s*(a|i|oraz|potem|więc|następnie|a\s+potem)\s+/i, ""));
   const stripDanglingPrzez = (s="") => String(s).replace(/\s+przez\b.*$/i,"").trim();
 
   // ===== cięcie przy kolejnym czasowniku =====
   const VERB_CUT_RE = new RegExp(`\\s+(${COMMON_VERBS.join("|")})\\b.*$`, "i");
-  // Fallback bez słownika – typowe formy fleksyjne PL (past/present)
   const VERB_CUT_FALLBACK = /\s+\b(usiad\w*|usied\w*|siedz\w*|czyta\w*|zjad\w*|zjed\w*|poszed\w*|poszl\w*|pojech\w*|wr[óo]c\w*|przesz\w*|czeka\w*|wesz\w*|wsiad\w*|wsied\w*)\b.*$/i;
   function cutAtVerb(s="") {
     const before = s;
@@ -1383,7 +1381,7 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     return normalizeSpaces(s);
   }
 
-  // ===== cues ruchu, dopasowanie pytania Dokąd? =====
+  // ===== cues ruchu =====
   const MOTION_CUE_RE = /\b(poszed\w*|poszl\w*|pojech\w*|wr[óo]c\w*|wszed\w*|weszl\w*|wyszed\w*|przesz\w*|pobiegl\w*|wsiad\w*|wsied\w*)\b/i;
   const dokadQuestionByCue = (low="") => {
     if (/\b(wsied\w*|wsiad\w*)\b/.test(low)) return "Dokąd oni wsiedli?";
@@ -1421,10 +1419,6 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     pps = pps.filter(x => x && !isTemporalPP(x));
     if (!pps.length) return null;
 
-    // Heurystyka wyboru:
-    // - preferuj PP z „przy …” (często lokalizacja siedzenia)
-    // - preferuj PP znajdujące się PO czasowniku „usiąść/siedzieć/czekać/czytać”
-    // - w razie remisu — weź prawostronną (ostatnią) PP
     const verbIdx = (() => {
       const m = s.match(/\b(usiad\w*|usied\w*|siedz\w*|czeka\w*|czyta\w*)\b/i);
       return m ? s.indexOf(m[0]) : -1;
@@ -1441,7 +1435,7 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
 
       const pos = s.indexOf(cand);
       if (verbIdx >= 0 && pos > verbIdx) sc += 1.8; // po czasowniku
-      sc += pos / 1000; // lekki bonus za „prawiej”
+      sc += pos / 1000;
 
       if (sc > bestScore) { best = cand; bestScore = sc; }
     }
@@ -1457,12 +1451,32 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     return "Gdzie byli?";
   };
 
+  // ===== analiza =====
   let qtype = "", question = "", answer = "";
 
-  // 1) DOKĄD? (priorytet – tylko jeśli jest cue ruchu)
-  if (MOTION_CUE_RE.test(tLower)) {
+  // indeks pierwszego czasownika ruchu (do wyszukiwań „po czasowniku”)
+  let verbIdx = -1;
+  {
+    const mCue = t.match(MOTION_CUE_RE);
+    verbIdx = mCue ? t.indexOf(mCue[0]) : -1;
+  }
+
+  // 1A) KTO? – specjalny szyk: „Do/Na … + poszedł/… + Imię”
+  if (verbIdx >= 0) {
+    const mNameAfterVerb = t.slice(verbIdx).match(/\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)*\b/);
+    const mDestBeforeVerb = t.slice(0, Math.max(0, verbIdx)).match(/\b(do|na)\s+[^\s,.;!?]+/i);
+    if (mNameAfterVerb && mDestBeforeVerb) {
+      qtype = "Kto?";
+      question = "Kto poszedł do ...?";
+      answer = stripPunct(mNameAfterVerb[0]);
+    }
+  }
+
+  // 1B) DOKĄD? – cel po czasowniku ruchu (preferowane), z pominięciem lokatywnego „na …”
+  if (!answer && verbIdx >= 0) {
     // wsiedli/wsiadł → „do …” po czasowniku
-    const mBoard = t.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
+    const boardPart = t.slice(verbIdx);
+    const mBoard = boardPart.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
     if (mBoard) {
       qtype = "Dokąd?";
       question = dokadQuestionByCue(tLower);
@@ -1473,12 +1487,14 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
       answer = stripPunct(`do ${body}`);
     }
 
-    // ogólna „do|na …”
+    // ogólne „do|na …” – ale SZUKAMY PO CZASOWNIKU
     if (!answer) {
-      const mDest = t.match(/\b(do|na)\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
-      if (mDest) {
-        let prep = mDest[1].toLowerCase();
-        let body = mDest[2];
+      const destRe = /\b(do|na)\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/gi;
+      let m;
+      while ((m = destRe.exec(t)) !== null) {
+        if (m.index <= verbIdx) continue; // tylko po czasowniku
+        let prep = m[1].toLowerCase();
+        let body = m[2];
         body = body.replace(TIME_TAIL,"");
         body = cutAtVerb(body);
         body = stripOnConjOrComma(body);
@@ -1486,10 +1502,11 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
 
         const low = deaccent(cand.toLowerCase());
         const isNaLoc = prep === "na" && NA_LOCATIVE_STARTS.some(st => low.startsWith(st));
-        if (!isNaLoc) {
+        if (!isNaLoc && /\S/.test(body)) {
           qtype = "Dokąd?";
           question = dokadQuestionByCue(tLower);
           answer = cand;
+          break;
         }
       }
     }
@@ -1515,7 +1532,7 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // 4) KTO? – np. „Do parku poszedł Tomek.”
+  // 4) KTO? – ogólne (gdy nie zadziałały powyższe)
   if (!answer && MOTION_CUE_RE.test(tLower)) {
     const mName = t.match(/\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)*\b/);
     if (mName) {
@@ -1530,11 +1547,11 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     qtype,
     question,
     answer: stripPunct(answer),
-    source_path: "rule-teacher-strict-v7.7-verbs(tune-2)"
+    source_path: "rule-teacher-strict-v7.7-verbs(tune-3)"
   };
 }
 
-// --- QUIZ endpoints ---
+// --- QUIZ endpoints (bez zmian poza source) ---
 app.post("/agent/comprehend", (req, res) => {
   try {
     const { text } = req.body || {};
@@ -1568,11 +1585,11 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
         const r = generateQuestionAndAnswerTeacher(s);
         let sc = 0;
         if (r.qtype === "Dokąd?") sc = 100;
-        else if (r.qtype === "Kto?") sc = 85;
+        else if (r.qtype === "Kto?") sc = 92;   // lekki boost, bo teraz rozstrzygamy szyk
         else if (r.qtype === "Kiedy?") sc = 90;
         else if (r.qtype === "Gdzie?") sc = 80;
         else sc = 40;
-        return { ...r, sentence: s, score: sc, src: "rule-teacher-strict-v7.7-verbs(tune-2)" };
+        return { ...r, sentence: s, score: sc, src: "rule-teacher-strict-v7.7-verbs(tune-3)" };
       })
       .sort((a,b) => b.score - a.score);
 
@@ -1599,10 +1616,9 @@ app.post("/agent/comprehend-aggregate", (req, res) => {
 });
 
 app.get("/version", (_req, res) =>
-  res.json({ build: "2025-10-26 rule-teacher-strict-v7.7-verbs(tune-2)" })
+  res.json({ build: "2025-10-26 rule-teacher-strict-v7.7-verbs(tune-3)" })
 );
 // ===================== /QUIZ =====================
-
 
 
 
