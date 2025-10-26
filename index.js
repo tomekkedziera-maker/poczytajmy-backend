@@ -1396,7 +1396,7 @@ app.get('/tts-voices', async (_req, res) => {
       a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
     // ===== cut after verb to avoid dragging predicates into answers =====
-    const VERB_CUT_RE = /\s+(usiedli|poszedł|poszła|poszli|pojechał|pojechali|wrócił|wrócili|wsiedli|wsiadł|podeszli|czekali|czytał|czytała|czytali)\b.*$/i;
+    const VERB_CUT_RE = /\s+(usiedli|poszedł|poszła|poszli|pojechał|pojechali|wrócił|wrócili|wsiedli|wsiadł|podeszli|czekali|czytał|czytała|czytali|zjedli|zjadł|zjadła|jedli|pili|bawili|oglądali|rysowali)\b.*$/i;
     const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
 
     // ===== detect verb cue (deaccented) =====
@@ -1481,8 +1481,16 @@ app.get('/tts-voices', async (_req, res) => {
       dest = normalizeSpaces(dest);
       dest = stripPunct(dest);
 
+      // jeśli w dest pojawił się czasownik aktywności, utnij go
+      dest = dest.replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "").trim();
+
       const low = deaccent(dest.toLowerCase());
-      if (dest.toLowerCase().startsWith("na ") && NA_LOCATIVE_BLACKLIST.includes(low)) return null;
+
+      // jeżeli to „na …” lokatywne (np. na trawie/ławce/przystanku/rynku), to nie jest Dokąd?
+      const head2 = deaccent(dest.toLowerCase().split(/\s+/).slice(0,2).join(" "));
+      if (dest.toLowerCase().startsWith("na ") && (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low))) {
+        return null;
+      }
 
       // cut trailing „z/ze/od …”
       dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
@@ -1639,6 +1647,7 @@ app.get('/tts-voices', async (_req, res) => {
       const { text, max_questions = 10 } = req.body || {};
       if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
+      // Rozbij też na klauzule po spójnikach typu ", a potem", "potem", "następnie", "wtedy"
       const cleaned = String(text)
         .split(/\r?\n/)
         .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
@@ -1646,18 +1655,17 @@ app.get('/tts-voices', async (_req, res) => {
         .replace(/\s+/g, " ")
         .trim();
 
-     // Rozbij też na klauzule po spójnikach typu ", a potem", "potem", "następnie", "wtedy"
-const rough = cleaned.split(/(?<=[.!?;])\s+/);
-const splitOnMarkers = s =>
-  s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
-   .map(x => x.trim())
-   .filter(Boolean);
+      const rough = cleaned.split(/(?<=[.!?;])\s+/);
+      const splitOnMarkers = s =>
+        s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
+         .map(x => x.trim())
+         .filter(Boolean);
 
-const sentences = rough
-  .flatMap(splitOnMarkers)
-  .map(s => s.trim())
-  .filter(Boolean)
-  .slice(0, 40);
+      const sentences = rough
+        .flatMap(splitOnMarkers)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .slice(0, 40);
 
       const deaccent = s => String(s).normalize("NFD")
         .replace(/[\u0300-\u036f]/g,"")
