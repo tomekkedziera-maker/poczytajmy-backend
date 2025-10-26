@@ -1347,8 +1347,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 
-
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy→regex, patch-perception) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy→regex, perception & place fixes) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1410,11 +1409,13 @@ app.get('/tts-voices', async (_req, res) => {
       "oglądać","zaglądać","zerkać"
     ];
 
+    // ogólny generator form (z wariantami „y…” typu patrzyli, wróciły, siedziały)
     function flex(lemma) {
       const L = lemma.toLowerCase();
       const stem = L.replace(/(ć|ść|źć)$/,"");
       const tails = [
         "", "ł", "ła", "li", "ły", "łem", "łam", "łeś", "łaś",
+        "ył", "yła", "yli", "yły", "yłem", "yłam", "yłeś", "yłaś",
         "ę", "esz", "e", "emy", "ecie", "ą",
         "ąc", "ący", "ana", "any", "ane"
       ];
@@ -1544,63 +1545,67 @@ app.get('/tts-voices', async (_req, res) => {
     }
 
     // ===== miejsce (gdzie?) =====
-   function pickPlaceFromSentence(s) {
-  const base = removeDiscourseMarkers(s);
+    function pickPlaceFromSentence(s) {
+      const base = removeDiscourseMarkers(s);
 
-  // 1) szybka ścieżka: „przy oknie” (najczęstszy cel przy 'usiedli/siadł')
-  if (/\bprzy\s+oknie\b/i.test(base)) return "przy oknie";
+      // szybkie ścieżki: „przy oknie/przy drzwiach”
+      if (/\bprzy\s+oknie\b/i.test(base))     return "przy oknie";
+      if (/\bprzy\s+drzwiach\b/i.test(base))  return "przy drzwiach";
 
-  const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w)";
-  const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
+      // + dodajemy z|ze
+      const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w|z|ze)";
+      const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
 
-  let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
+      let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
 
-  pps = pps.map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
-           .map(x => x.replace(TIME_TAIL, ""))
-           .map(x => stripDanglingPrzez(x))
-           .map(x => trimAtVerb(x))      // tnięcie po czasowniku już na etapie kandydatów
-           .map(x => normalizeSpaces(x));
+      pps = pps.map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
+               .map(x => x.replace(TIME_TAIL, ""))
+               .map(x => stripDanglingPrzez(x))
+               .map(x => trimAtVerb(x))
+               .map(x => normalizeSpaces(x));
 
-  const isTemporalPP = (pp="") => /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
-  pps = pps.filter(x => !isTemporalPP(x));
-  if (!pps.length) return null;
+      // odfiltruj „w ciszy” i podobne nielokatywne
+      pps = pps.filter(pp => !/\bw\s+ciszy\b/i.test(pp));
 
-  let best = pps[0], bestScore = -1, bestPos = -1;
+      const isTemporalPP = (pp="") => /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
+      pps = pps.filter(x => !isTemporalPP(x));
+      if (!pps.length) return null;
 
-  for (const cand0 of pps) {
-    let cand = cand0;
-    let sc = 0;
-    const low = deaccent(cand.toLowerCase());
-    const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
+      let best = pps[0], bestScore = -1, bestPos = -1;
 
-    const seatLike = SEATLIKE_RE.test(s); // testuj na oryginale (z diakrytykami)
+      for (const cand0 of pps) {
+        let cand = cand0;
+        let sc = 0;
+        const low = deaccent(cand.toLowerCase());
+        const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
 
-    if (seatLike) {
-      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
-      if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
-      if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2; // preferuj „przy oknie”
-    } else {
-      if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
-      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1.5;
+        const seatLike = SEATLIKE_RE.test(s); // test na oryginale (z diakrytykami)
+
+        if (seatLike) {
+          if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
+          if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
+          if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2; // preferencje
+          if (/\bprzy\s+drzwiach\b/i.test(cand))             sc += 2;
+        } else {
+          if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
+          if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1.5;
+        }
+
+        // bonusy za typowe miejsca (+ bibliotece)
+        if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie|bibliotece)\b/i.test(low)) {
+          sc += 1.5;
+        }
+
+        if (sc > bestScore || (sc === bestScore && pos > bestPos)) {
+          best = cand; bestScore = sc; bestPos = pos;
+        }
+      }
+
+      // final sanity
+      best = trimAtVerb(best);
+      best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli|usiedli|siadł|siadła)\b.*$/i, "").trim();
+      return stripPunct(normalizeSpaces(best));
     }
-
-    // bonusy za typowe miejsca
-    if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie)\b/i.test(low)) {
-      sc += 1.5;
-    }
-
-    if (sc > bestScore || (sc === bestScore && pos > bestPos)) {
-      best = cand; bestScore = sc; bestPos = pos;
-    }
-  }
-
-  // 2) finalna sanity: utniij ogon czasownikowy, usuń „spotkali/robili/byli …”
-  best = trimAtVerb(best);
-  best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli|usiedli|siadł|siadła)\b.*$/i, "").trim();
-
-  return stripPunct(normalizeSpaces(best));
-}
-
 
     // ===== „Kto?” — frontowane DO/NA + czasownik + Imię(/ i Imię) =====
     function detectWhoQuestion(s) {
@@ -1651,7 +1656,7 @@ app.get('/tts-voices', async (_req, res) => {
       return "Gdzie byli?";
     }
 
-    // ===== priorytety (preferencja Gdzie? dla czynności „miejscochłonnych”) =====
+    // ===== priorytety =====
     const preferPlaceFirst = SEATLIKE_RE.test(t);
 
     if (who) {
@@ -1734,8 +1739,8 @@ app.get('/tts-voices', async (_req, res) => {
           let sc = 0;
           if (r.qtype === "Dokąd?") sc = 100;
           else if (r.qtype === "Kiedy?") sc = 90;
+          else if (r.qtype === "Kto?")  sc = 85;
           else if (r.qtype === "Gdzie?") sc = 80;
-          else if (r.qtype === "Kto?") sc = 85;
           else sc = 40;
           return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.6f-fullQ" };
         })
@@ -1780,21 +1785,11 @@ app.get('/tts-voices', async (_req, res) => {
   });
 
   app.get("/version", (_req, res) =>
-    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas-p2" })
+    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas-p3" })
   );
 
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
-
-
-
-
-
-
-
-
-
-
 
 
 
