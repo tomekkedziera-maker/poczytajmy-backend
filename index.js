@@ -1347,7 +1347,7 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy→regex, perception & place fixes) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lemmas, perception fixes, place boosts) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1409,7 +1409,7 @@ app.get('/tts-voices', async (_req, res) => {
       "oglądać","zaglądać","zerkać"
     ];
 
-    // ogólny generator form (z wariantami „y…” typu patrzyli, wróciły, siedziały)
+    // generator form (z wariantami „y…” typu patrzyli, wróciły, siedziały)
     function flex(lemma) {
       const L = lemma.toLowerCase();
       const stem = L.replace(/(ć|ść|źć)$/,"");
@@ -1438,6 +1438,8 @@ app.get('/tts-voices', async (_req, res) => {
     );
     const SEATLIKE_RE   = new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
     const PERCEPTION_RE = new RegExp(`\\b(${VERBS_PERCEPTION.map(flex).join("|")})\\b`, "i");
+    // PATCH: deakcentowana percepcja do form „patrzyli/spojrzeli/oglądali…”
+    const PERCEPTION_TDA_RE = /\b(patrz\w*|spojrz\w*|spoglad\w*|oglad\w*|zagl\w*|zerk\w*|przyglad\w*)\b/i;
 
     // ===== cięcia & cue =====
     const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
@@ -1513,8 +1515,8 @@ app.get('/tts-voices', async (_req, res) => {
       const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
       let dest = `${pick.prep} ${pick.body}`.trim();
 
-      // percepcja + „na …” → nie traktuj jako Dokąd?
-      if (pick.prep === "na" && PERCEPTION_RE.test(s)) {
+      // PATCH: percepcja + „na …” → nie Dokąd?
+      if (pick.prep === "na" && (PERCEPTION_RE.test(s) || PERCEPTION_TDA_RE.test(tDA))) {
         return null;
       }
 
@@ -1548,9 +1550,11 @@ app.get('/tts-voices', async (_req, res) => {
     function pickPlaceFromSentence(s) {
       const base = removeDiscourseMarkers(s);
 
-      // szybkie ścieżki: „przy oknie/przy drzwiach”
+      // szybkie ścieżki miejsc
       if (/\bprzy\s+oknie\b/i.test(base))     return "przy oknie";
       if (/\bprzy\s+drzwiach\b/i.test(base))  return "przy drzwiach";
+      if (/\bprzy\s+wej[śs]ciu\b/i.test(base))return "Przy wejściu";
+      if (/\bz\s+balkonu\b/i.test(base))      return "Z balkonu";
 
       // + dodajemy z|ze
       const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w|z|ze)";
@@ -1564,7 +1568,7 @@ app.get('/tts-voices', async (_req, res) => {
                .map(x => trimAtVerb(x))
                .map(x => normalizeSpaces(x));
 
-      // odfiltruj „w ciszy” i podobne nielokatywne
+      // odfiltruj nielokatywne typu „w ciszy”
       pps = pps.filter(pp => !/\bw\s+ciszy\b/i.test(pp));
 
       const isTemporalPP = (pp="") => /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
@@ -1584,7 +1588,7 @@ app.get('/tts-voices', async (_req, res) => {
         if (seatLike) {
           if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
           if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
-          if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2; // preferencje
+          if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2;
           if (/\bprzy\s+drzwiach\b/i.test(cand))             sc += 2;
         } else {
           if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
@@ -1592,7 +1596,7 @@ app.get('/tts-voices', async (_req, res) => {
         }
 
         // bonusy za typowe miejsca (+ bibliotece)
-        if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie|bibliotece)\b/i.test(low)) {
+        if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie|bibliotece|wejściu|wejsciu|regalach|regałach)\b/i.test(low)) {
           sc += 1.5;
         }
 
@@ -1604,6 +1608,8 @@ app.get('/tts-voices', async (_req, res) => {
       // final sanity
       best = trimAtVerb(best);
       best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli|usiedli|siadł|siadła)\b.*$/i, "").trim();
+      // utnij końcowe „nie” (np. „Na rynku nie”)
+      best = best.replace(/\s+nie\b/i, "").trim();
       return stripPunct(normalizeSpaces(best));
     }
 
@@ -1614,7 +1620,9 @@ app.get('/tts-voices', async (_req, res) => {
       if (m) {
         const prep = m[1].toLowerCase();
         const place = stripPunct(trimAtVerb(m[2]));
-        const names = stripPunct(m[4]);
+        const names = stripPunct(m[4] || "");
+        // PATCH: odrzuć, jeśli „imiona” nie zaczynają się wielką literą (np. „do”)
+        if (!/^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(names)) return null;
         const plural = names.includes(" i ");
         const verb = plural ? "poszli" : "poszedł";
         return { ok: true, qtype: "Kto?", question: sanitizeQ(`Kto ${verb} ${prep} ${place}?`), answer: names };
@@ -1623,11 +1631,11 @@ app.get('/tts-voices', async (_req, res) => {
     }
 
     // ===== ekstrakcje =====
-    const who = detectWhoQuestion(t);
-    const time = extractTime(t);
-    const dest = extractDestination(t);
+    const who   = detectWhoQuestion(t);
+    const time  = extractTime(t);
+    const dest  = extractDestination(t);
     const place = pickPlaceFromSentence(t);
-    const cue = detectVerbCueDA(tDA);
+    const cue   = detectVerbCueDA(tDA);
 
     // ===== budowanie pytań =====
     function qDokad() {
@@ -1656,8 +1664,10 @@ app.get('/tts-voices', async (_req, res) => {
       return "Gdzie byli?";
     }
 
-    // ===== priorytety =====
-    const preferPlaceFirst = SEATLIKE_RE.test(t);
+    // ===== priorytety (preferencja Gdzie? tylko bez wyraźnego ruchu) =====
+    const preferPlaceFirst =
+      SEATLIKE_RE.test(t) &&
+      !/\b(przeszl\w*|przejdz\w*|poszl\w*|pojech\w*)\b/i.test(tDA);
 
     if (who) {
       const ans = rehydrateAnswerFromOriginal(text, who.answer);
@@ -1785,11 +1795,12 @@ app.get('/tts-voices', async (_req, res) => {
   });
 
   app.get("/version", (_req, res) =>
-    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas-p3" })
+    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas-p4" })
   );
 
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
+
 
 
 
