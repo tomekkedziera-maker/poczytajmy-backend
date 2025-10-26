@@ -1646,11 +1646,18 @@ app.get('/tts-voices', async (_req, res) => {
         .replace(/\s+/g, " ")
         .trim();
 
-      const sentences = cleaned
-        .split(/(?<=[.!?;])\s+/)
-        .map(s => s.trim())
-        .filter(Boolean)
-        .slice(0, 30);
+     // Rozbij też na klauzule po spójnikach typu ", a potem", "potem", "następnie", "wtedy"
+const rough = cleaned.split(/(?<=[.!?;])\s+/);
+const splitOnMarkers = s =>
+  s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
+   .map(x => x.trim())
+   .filter(Boolean);
+
+const sentences = rough
+  .flatMap(splitOnMarkers)
+  .map(s => s.trim())
+  .filter(Boolean)
+  .slice(0, 40);
 
       const deaccent = s => String(s).normalize("NFD")
         .replace(/[\u0300-\u036f]/g,"")
