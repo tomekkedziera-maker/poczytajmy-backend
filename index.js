@@ -1349,7 +1349,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy → regex) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1395,11 +1395,47 @@ app.get('/tts-voices', async (_req, res) => {
     const rehydrateAnswerFromOriginal = (orig, a) =>
       a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
 
-    // ===== cut after verb to avoid dragging predicates into answers =====
-    const VERB_CUT_RE = /\s+(usiedli|poszedł|poszła|poszli|pojechał|pojechali|wrócił|wrócili|wsiedli|wsiadł|podeszli|czekali|czytał|czytała|czytali|zjedli|zjadł|zjadła|jedli|pili|bawili|oglądali|rysowali)\b.*$/i;
-    const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
+    // ===== lematy → regex (skalowalne listy) =====
+    const VERBS_MOTION = [
+      "iść","pójść","chodzić","jechać","pojechać","wracać","wrócić",
+      "wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść",
+      "zajechać","dotrzeć","podjechać","odjechać","przyjść","podejść"
+    ];
+    const VERBS_PLACEBOUND = [
+      "usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się",
+      "czekać","czytać","pisać","bawić się","grać","jeść","pić",
+      "oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"
+    ];
 
-    // ===== detect verb cue (deaccented) =====
+    function flex(lemma) {
+      const L = lemma.toLowerCase();
+      const stem = L.replace(/(ć|ść|źć)$/,"");
+      const tails = [
+        "", "ł", "ła", "li", "ły", "łem", "łam", "łeś", "łaś",
+        "ę", "esz", "e", "emy", "ecie", "ą",
+        "ąc", "ący", "ana", "any", "ane"
+      ];
+      const altStems = {
+        "usiąś": ["usiad","usied"], "siąś": ["siad","sied"],
+        "wsiąś": ["wsiad"], "wysiąś": ["wysiad"],
+        "wejś": [" wszed","wesz"], "wyjś": [" wyszed","wysz"],
+        "leż": ["leża","leżał","leż"], "jedz": ["jad","jedz"]
+      };
+      const variants = new Set([stem]);
+      if (altStems[stem]) altStems[stem].forEach(v => variants.add(v));
+      const bodies = [];
+      for (const v of variants) bodies.push(`${v}(?:${tails.join("|")})?`);
+      return `(?:${bodies.join("|")})`;
+    }
+
+    const VERB_CUT_RE = new RegExp(
+      `\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND].map(flex).join("|")})\\b.*$`,
+      "i"
+    );
+    const SEATLIKE_RE = new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
+
+    // ===== cięcia & cue =====
+    const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
     function detectVerbCueDA(sDA) {
       const L = sDA.toLowerCase();
       if (/\bwr[oó]c\w*/i.test(L)) return "wrócili";
@@ -1524,10 +1560,9 @@ app.get('/tts-voices', async (_req, res) => {
         const low = deaccent(cand.toLowerCase());
         const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
 
-        // preferuj PRZY/POD/OBOk dla „usiedli / czekali / czytali”
-        const isSeatLike = /\b(usiedl|usiedli|czekal|czekali|czytal|czytala|czytali)\b/i.test(tDA);
+        const seatLike = SEATLIKE_RE.test(tDA);
 
-        if (isSeatLike) {
+        if (seatLike) {
           if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
           if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
         } else {
@@ -1590,14 +1625,14 @@ app.get('/tts-voices', async (_req, res) => {
     }
     function qGdzie() {
       if (/spotkal|spotkali/i.test(tDA)) return "Gdzie się spotkali?";
-      if (/usiedl|usiedli/i.test(tDA))   return "Gdzie usiedli?";
+      if (SEATLIKE_RE.test(tDA))         return "Gdzie usiedli?";
       if (/czekal|czekali/i.test(tDA))   return "Gdzie czekali?";
       if (/czytal|czytala|czytali/i.test(tDA)) return "Gdzie czytali?";
       return "Gdzie byli?";
     }
 
-    // ===== priorytety (z preferencją Gdzie? dla „usiedli/czekali/czytali”) =====
-    const preferPlaceFirst = /\b(usiedl|usiedli|czekal|czekali|czytal|czytala|czytali)\b/i.test(tDA);
+    // ===== priorytety (preferencja Gdzie? dla czynności „miejscochłonnych”) =====
+    const preferPlaceFirst = SEATLIKE_RE.test(tDA);
 
     if (who) {
       const ans = rehydrateAnswerFromOriginal(text, who.answer);
@@ -1647,7 +1682,6 @@ app.get('/tts-voices', async (_req, res) => {
       const { text, max_questions = 10 } = req.body || {};
       if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
 
-      // Rozbij też na klauzule po spójnikach typu ", a potem", "potem", "następnie", "wtedy"
       const cleaned = String(text)
         .split(/\r?\n/)
         .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
@@ -1655,6 +1689,7 @@ app.get('/tts-voices', async (_req, res) => {
         .replace(/\s+/g, " ")
         .trim();
 
+      // Rozbij na zdania + na klauzule po „, a potem / potem / następnie / wtedy”
       const rough = cleaned.split(/(?<=[.!?;])\s+/);
       const splitOnMarkers = s =>
         s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
@@ -1678,9 +1713,9 @@ app.get('/tts-voices', async (_req, res) => {
           const r = generateQuestionAndAnswerTeacher(s);
           let sc = 0;
           if (r.qtype === "Dokąd?") sc = 100;
+          else if (r.qtype === "Kto?") sc = 85;
           else if (r.qtype === "Kiedy?") sc = 90;
           else if (r.qtype === "Gdzie?") sc = 80;
-          else if (r.qtype === "Kto?") sc = 85;
           else sc = 40;
           return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.6f-fullQ" };
         })
@@ -1725,11 +1760,12 @@ app.get('/tts-voices', async (_req, res) => {
   });
 
   app.get("/version", (_req, res) =>
-    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ" })
+    res.json({ build: "2025-10-26 rule-teacher-strict-v7.6f-fullQ-lemmas" })
   );
 
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
+
 
 
 
