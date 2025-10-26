@@ -1364,27 +1364,27 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
     .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
 
+  // —— proste cięcie na formach finitywnych czasowników (bez pełnej listy odmian)
+  const FINITE_VERB_RE = /\s+\b\w+(?:li|ły|ł|ła|ło|łem|łam|liśmy|łyśmy|liście|łyście|łby|łaby|łoby|łbym|łabym)\b.*$/i;
+  const cutAtFiniteVerb = (s="") => normalizeSpaces(String(s).replace(FINITE_VERB_RE, ""));
+
+  const stripOnConjOrComma = (s="") => normalizeSpaces(String(s).split(/\s+(?:i|oraz|a)\s+|,/i)[0] || "");
   const stripDanglingPrzez = s => s.replace(/\s+przez\b.*$/i, "").trim();
 
-  // ==== Wspomagacze czasu, celu itp. ====
-  const TIME_RE = /\b(o\s*\d{1,2}[:.]\d{2}|przed\s*\d{1,2}[:.]\d{2}|rano|wieczorem|po\s+południu|w\s+sobot[ęe]|w\s+niedziel[ęe]|w\s+poniedziałek|dzisiaj|dziś|wczoraj|jutro)\b/i;
+  const TIME_RE = /\b(o\s*\d{1,2}[:.]\d{2}|przed\s*\d{1,2}[:.]\d{2}|rano|wieczorem|w\s+południe|po\s+południu|w\s+sobot[ęe]|w\s+niedziel[ęe]|w\s+poniedziałek|dzisiaj|dziś|wczoraj|jutro)\b/i;
   const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i;
 
   function removeDiscourseMarkers(s="") {
     return normalizeSpaces(String(s).replace(/^\s*(a|i|oraz|potem|więc|następnie|a\s+potem)\s+/i, ""));
   }
 
-  // ==== rozpoznanie „ruchu” (żeby nie brać „na kolegę” jako Dokąd) ====
   const MOTION_CUE_RE = /\b(poszed\w*|poszl\w*|pojech\w*|wróc\w*|przesz\w*|wszed\w*|weszli|wsiad\w*|wsied\w*|dojech\w*|podesz\w*|pobieg\w*)\b/i;
 
-  // ==== cut na czasowniku — z użyciem naszej listy COMMON_VERBS ====
-  const VERB_CUT_RE = new RegExp(`\\s+(${COMMON_VERBS.join("|")})\\b.*$`, "i");
-  const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
-
-  // ==== gdzie? ====
+  // ——— Gdzie?
   function pickPlaceFromSentence(s="") {
     const base = removeDiscourseMarkers(s);
     const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w)";
+    // stop przed kolejną frazą przyimkową, „przez …” oraz przed formą finitywną czasownika
     const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
 
     let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
@@ -1392,17 +1392,16 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     pps = pps
       .map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
       .map(x => x.replace(TIME_TAIL, ""))
-      .map(x => stripDanglingPrzez(x))
-      .map(x => trimAtVerb(x))
-      .map(x => normalizeSpaces(x));
+      .map(stripDanglingPrzez)
+      .map(cutAtFiniteVerb)
+      .map(normalizeSpaces);
 
     const isTemporalPP = (pp="") =>
       /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
 
-    pps = pps.filter(x => !isTemporalPP(x));
+    pps = pps.filter(x => x && !isTemporalPP(x));
     if (!pps.length) return null;
 
-    // heurystyka: jeśli w zdaniu jest „usiedl-”, premiuj „przy …”
     const sDA = deaccent(s.toLowerCase());
     let best = pps[0], bestScore = -1;
     for (const cand0 of pps) {
@@ -1411,15 +1410,18 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
       if (/^\s*(w|we|na)\b/i.test(cand)) sc += 2;
       if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1;
       if (/\b(klasie|salonie|kuchni|pokoju|lawce|ławce|oknie|rynku|kinie|przystanku|fontannie|stole|zoo)\b/i.test(low)) sc += 1.5;
-      if (/usiedl|siedziel/i.test(sDA) && /^\s*przy\b/i.test(cand)) sc += 2.5; // boost dla „przy oknie/ławce/stole”
+      if (/usiedl|siedziel/i.test(sDA) && /^\s*przy\b/i.test(cand)) sc += 2.5; // prefer „przy oknie/ławce/stole”
       if (sc > bestScore) { best = cand; bestScore = sc; }
     }
     return stripPunct(normalizeSpaces(best));
   }
 
-  // ==== pytania ====
+  function dokadQuestionByCue(L="") {
+    if (/\bwsied\w*|wsiad\w*/i.test(L)) return "Dokąd oni wsiedli?";
+    if (/\bwróc\w*/i.test(L))          return "Dokąd oni wrócili?";
+    return "Dokąd oni poszli?";
+  }
   function qKiedy() { return "Kiedy to się działo?"; }
-  function qDokad() { return "Dokąd oni poszli?"; }
   function qGdzie(sDA="") {
     const L = String(sDA).toLowerCase();
     if (/\busiedl|siedziel/i.test(L)) return "Gdzie usiedli?";
@@ -1427,32 +1429,31 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     if (/\bczytal|czytali|czytała/i.test(L)) return "Gdzie czytali?";
     return "Gdzie byli?";
   }
-  function qKto()   { return "Kto poszedł do ...?"; }
 
   const tLower = t.toLowerCase();
   let qtype = "", question = "", answer = "";
 
-  // === 1) DOKĄD? (priorytet nad czasem) ===
-  // tylko gdy w zdaniu jest cue ruchu; inaczej „na kolegę” nie jest celem
+  // 1) DOKĄD? (priorytet nad czasem — tylko gdy jest cue ruchu)
   if (MOTION_CUE_RE.test(tLower)) {
-    // specjalnie: „wsiedli/wsiadł do …”
+    // specjalny przypadek: „wsiedli/wsiadł do …”
     const mBoard = t.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
     if (mBoard) {
       qtype = "Dokąd?";
-      question = qDokad();
-      answer = stripPunct(`do ${mBoard[2]}`);
+      question = dokadQuestionByCue(tLower);
+      answer = stripPunct(`do ${cutAtFiniteVerb(mBoard[2])}`);
     }
     if (!answer) {
       const mDest = t.match(/\b(do|na)\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,6})/i);
       if (mDest) {
         qtype = "Dokąd?";
-        question = qDokad();
-        answer = stripPunct(`${mDest[1]} ${mDest[2]}`);
+        question = dokadQuestionByCue(tLower);
+        const body = stripOnConjOrComma(cutAtFiniteVerb(mDest[2]));
+        answer = stripPunct(`${mDest[1]} ${body}`);
       }
     }
   }
 
-  // === 2) KIEDY? (jeśli nie znaleźliśmy Dokąd?) ===
+  // 2) KIEDY?
   if (!answer) {
     const mTime = t.match(TIME_RE);
     if (mTime) {
@@ -1462,7 +1463,7 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // === 3) GDZIE? ===
+  // 3) GDZIE?
   if (!answer) {
     const place = pickPlaceFromSentence(t);
     if (place) {
@@ -1472,10 +1473,10 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // === 4) KTO? (ostatni ratunek dla „Do X poszedł Y”) ===
+  // 4) KTO? (fallback dla „Do X poszedł Y” jeśli nic nie wyszło)
   if (!answer) {
     const mName = t.match(/\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)*\b/);
-    if (mName && /\b(poszed\w*|poszl\w*|pojech\w*|wróc\w*|wszed\w*|weszli|wsiad\w*|wsied\w*)\b/i.test(tLower)) {
+    if (mName && MOTION_CUE_RE.test(tLower)) {
       qtype = "Kto?";
       question = "Kto poszedł do ...?";
       answer = stripPunct(mName[0]);
@@ -1487,7 +1488,7 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     qtype,
     question,
     answer: stripPunct(answer),
-    source_path: "rule-teacher-strict-v7.7-verbs-hotfix"
+    source_path: "rule-teacher-strict-v7.7-verbs-hotfix2"
   };
 }
 
