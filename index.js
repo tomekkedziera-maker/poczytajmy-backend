@@ -1544,57 +1544,63 @@ app.get('/tts-voices', async (_req, res) => {
     }
 
     // ===== miejsce (gdzie?) =====
-    function pickPlaceFromSentence(s) {
-      const base = removeDiscourseMarkers(s);
-      const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w)";
-      const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
+   function pickPlaceFromSentence(s) {
+  const base = removeDiscourseMarkers(s);
 
-      let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
+  // 1) szybka ścieżka: „przy oknie” (najczęstszy cel przy 'usiedli/siadł')
+  if (/\bprzy\s+oknie\b/i.test(base)) return "przy oknie";
 
-      pps = pps.map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
-               .map(x => x.replace(TIME_TAIL, ""))
-               .map(x => stripDanglingPrzez(x))
-               .map(x => trimAtVerb(x))
-               .map(x => normalizeSpaces(x));
+  const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w)";
+  const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`,"gi");
 
-      const isTemporalPP = (pp="") => /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
-      pps = pps.filter(x => !isTemporalPP(x));
-      if (!pps.length) return null;
+  let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
 
-      let best = pps[0], bestScore = -1, bestPos = -1;
+  pps = pps.map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
+           .map(x => x.replace(TIME_TAIL, ""))
+           .map(x => stripDanglingPrzez(x))
+           .map(x => trimAtVerb(x))      // tnięcie po czasowniku już na etapie kandydatów
+           .map(x => normalizeSpaces(x));
 
-      for (const cand0 of pps) {
-        let cand = cand0;
-        let sc = 0;
-        const low = deaccent(cand.toLowerCase());
-        const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
+  const isTemporalPP = (pp="") => /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
+  pps = pps.filter(x => !isTemporalPP(x));
+  if (!pps.length) return null;
 
-        const seatLike = SEATLIKE_RE.test(t); // testuj na oryginale (z diakrytykami)
+  let best = pps[0], bestScore = -1, bestPos = -1;
 
-        if (seatLike) {
-          if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
-          if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
-          if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2; // bonus: „przy oknie” wyżej niż „w klasie”
-        } else {
-          if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
-          if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1.5;
-        }
+  for (const cand0 of pps) {
+    let cand = cand0;
+    let sc = 0;
+    const low = deaccent(cand.toLowerCase());
+    const pos = base.indexOf(cand0); // tie-break: późniejsze lepsze
 
-        // bonusy za typowe miejsca
-        if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie)\b/i.test(low)) {
-          sc += 1.5;
-        }
+    const seatLike = SEATLIKE_RE.test(s); // testuj na oryginale (z diakrytykami)
 
-        if (sc > bestScore || (sc === bestScore && pos > bestPos)) {
-          best = cand; bestScore = sc; bestPos = pos;
-        }
-      }
-
-      // dodatkowe, końcowe cięcie po czasowniku + normalizacja
-      best = trimAtVerb(best);
-      best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli)\b.*$/i, "").trim();
-      return stripPunct(normalizeSpaces(best));
+    if (seatLike) {
+      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
+      if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
+      if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2; // preferuj „przy oknie”
+    } else {
+      if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
+      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1.5;
     }
+
+    // bonusy za typowe miejsca
+    if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie)\b/i.test(low)) {
+      sc += 1.5;
+    }
+
+    if (sc > bestScore || (sc === bestScore && pos > bestPos)) {
+      best = cand; bestScore = sc; bestPos = pos;
+    }
+  }
+
+  // 2) finalna sanity: utniij ogon czasownikowy, usuń „spotkali/robili/byli …”
+  best = trimAtVerb(best);
+  best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli|usiedli|siadł|siadła)\b.*$/i, "").trim();
+
+  return stripPunct(normalizeSpaces(best));
+}
+
 
     // ===== „Kto?” — frontowane DO/NA + czasownik + Imię(/ i Imię) =====
     function detectWhoQuestion(s) {
