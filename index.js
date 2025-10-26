@@ -1370,7 +1370,7 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     .replace(/[źŹżŻ]/g,"z");
 
   // ===== wykrywanie czasowników z pliku verbs.js =====
-  // (uwaga: nie uciekamy znaków — lista nie zawiera metaznaków regexu)
+  // (uwaga: lista nie zawiera metaznaków regexu, więc join("|") jest bezpieczny)
   const VERB_CUT_RE = new RegExp(`\\s+(${COMMON_VERBS.join("|")})\\b.*$`, "i");
 
   const stripDanglingPrzez = s => s.replace(/\s+przez\b.*$/i, "").trim();
@@ -1463,8 +1463,12 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
     }
   }
 
-  // 3) KTO? (gdy mamy do/na + czasownik typu poszedł/poszli/pojechali)
-  if (!answer && /\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wszed\w*|weszli|wsiad\w*|wsied\w*)\b/i.test(tLower)) {
+  // 3) KTO? — wykrycie czasownika ruchu z listy (naprawa: dynamiczny RegExp, nie literał!)
+  if (
+    !answer &&
+    new RegExp(`\\b(?:${COMMON_VERBS.join("|")})\\b`, "i").test(tLower) &&
+    /\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wszed\w*|weszli|wsiad\w*|wsied\w*)\b/i.test(tLower)
+  ) {
     const mName = t.match(/\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)*\b/);
     if (mName) {
       qtype = "Kto?";
@@ -1483,7 +1487,81 @@ export function generateQuestionAndAnswerTeacher(textRaw) {
 }
 
 
+// --- QUIZ endpoints ---
+app.post("/agent/comprehend", (req, res) => {
+  try {
+    const { text } = req.body || {};
+    const r = generateQuestionAndAnswerTeacher(text);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), source_path: "error-exception" });
+  }
+});
 
+app.post("/agent/comprehend-aggregate", (req, res) => {
+  try {
+    const { text, max_questions = 10 } = req.body || {};
+    if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
+
+    const cleaned = String(text)
+      .split(/\r?\n/)
+      .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const sentences = cleaned
+      .split(/(?<=[.!?;])\s+/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .slice(0, 30);
+
+    const deaccent = s => String(s).normalize("NFD")
+      .replace(/[\u0300-\u036f]/g,"")
+      .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
+      .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
+      .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
+
+    const scored = sentences
+      .map(s => {
+        const r = generateQuestionAndAnswerTeacher(s);
+        let sc = 0;
+        if (r.qtype === "Dokąd?") sc = 100;
+        else if (r.qtype === "Kiedy?") sc = 90;
+        else if (r.qtype === "Gdzie?") sc = 80;
+        else if (r.qtype === "Kto?") sc = 85;
+        else sc = 40;
+        return { ...r, sentence: s, score: sc, src: "rule-teacher-strict-v7.7-verbs" };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const top = [];
+    const seen = new Set();
+    for (const r of scored) {
+      if (top.length >= max_questions) break;
+      if (!r.answer) continue;
+      const key = `${r.qtype}|${deaccent((r.answer||"").toLowerCase())}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      top.push(r);
+    }
+    if (top.length === 0) {
+      for (const r of scored) {
+        if (top.length >= max_questions) break;
+        if (r.answer) top.push(r);
+      }
+    }
+    res.json({ ok: true, count: top.length, items: top });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), source_path: "error-exception" });
+  }
+});
+
+// /version (dla sanity)
+app.get("/version", (_req, res) =>
+  res.json({ build: "2025-10-26 rule-teacher-strict-v7.7-verbs" })
+);
+// ===================== QUIZ: rule-teacher-strict-v7.7-verbs =====================
 
 
 
