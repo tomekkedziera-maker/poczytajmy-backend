@@ -1509,9 +1509,8 @@ app.get("/version", (_req, res) =>
 app.post("/verbs/reload", async (_req, res) => {
   try {
     const path = "./verbs.js";
-    const resolved = new URL(path, import.meta.url).pathname;
-    delete import.cache?.[resolved];
-    const verbsModule = await import(path + `?v=${Date.now()}`); // cache-bust
+    // wymuś przeładowanie przez dodanie unikalnego query parametru
+    const verbsModule = await import(`${path}?update=${Date.now()}`);
 
     VERBS_MOTION = verbsModule.VERBS_MOTION || [];
     VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
@@ -1532,6 +1531,7 @@ app.post("/verbs/reload", async (_req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 
 // --- zwraca pełną listę COMMON_VERBS ---
 app.get("/verbs/common", async (_req, res) => {
