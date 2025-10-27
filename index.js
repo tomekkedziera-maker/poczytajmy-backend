@@ -1842,8 +1842,7 @@ let VERBS_PERCEPTION = [];
   });
 
   app.get("/version", (_req, res) =>
-    res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-verbsjs-p1" })
-  );
+    res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-verbsjs-p1" });
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
 
@@ -1860,13 +1859,12 @@ app.get("/version", (_req, res) =>
 app.post("/verbs/reload", async (_req, res) => {
   try {
     const path = "./verbs.js";
-    // wymuś przeładowanie przez dodanie unikalnego query parametru
-    const verbsModule = await import(`${path}?update=${Date.now()}`);
-
+    const resolved = new URL(path, import.meta.url).pathname;
+    delete globalThis.__verb_cache; // zamiast import.cache (bezpieczne)
+    const verbsModule = await import(path + `?v=${Date.now()}`); // cache-bust
     VERBS_MOTION = verbsModule.VERBS_MOTION || [];
     VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
     VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
-
     console.log(`♻️ verbs.js reloaded (${VERBS_MOTION.length}+${VERBS_PLACEBOUND.length}+${VERBS_PERCEPTION.length})`);
     res.json({
       ok: true,
@@ -1883,20 +1881,7 @@ app.post("/verbs/reload", async (_req, res) => {
   }
 });
 
-
-// --- zwraca pełną listę COMMON_VERBS ---
-app.get("/verbs/common", async (_req, res) => {
-  try {
-    const verbsModule = await import("./verbs.js");
-    const all = verbsModule.COMMON_VERBS || verbsModule.default || [];
-    res.json({ ok: true, count: all.length, verbs: all });
-  } catch (err) {
-    console.error("Error /verbs/common:", err);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// --- healthcheck ---
+// --- healthcheck / root (Render ping) ---
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
@@ -1904,23 +1889,36 @@ app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 const server = app.listen(process.env.PORT || 3001, "0.0.0.0", () => {
   const { address, port } = server.address();
   console.log(`🚀 Backend działa na http://${address}:${port}`);
-
-  // 🛌 Anti-sleep / prewarm
-  setTimeout(prewarmOnce, 500);
-  setInterval(() => { refillPoolOnce().catch(() => {}); }, POOL_REFILL_INTERVAL_MS);
-  if (PREWARM_EVERY_MIN > 0) {
-    setInterval(() => { prewarmOnce().catch(()=>{}); }, PREWARM_EVERY_MIN * 60_000);
-    console.log(`🛌 Anti-sleep: ping co ${PREWARM_EVERY_MIN} min${BASE_URL ? ` → ${BASE_URL}/health` : ''}`);
-  }
-  console.log(`🧺 Text pool: levels=${POOL_LEVELS.join(', ')} target=${POOL_TARGET_SIZE}, refill every ${POOL_REFILL_INTERVAL_MS}ms`);
 });
 
-// --- stabilność HTTP ---
+// --- stabilność HTTP (Render fix) ---
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
 
-// --- globalne błędy ---
-process.on("unhandledRejection", err => console.error("UNHANDLED REJECTION:", err));
-process.on("uncaughtException", err => console.error("UNCAUGHT EXCEPTION:", err));
+// --- globalny catch błędów ---
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION:", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
 
-// ===================== /VERBS API + META =====================
+// --- funkcja prewarmOnce i start puli ---
+let _prewarmRunning = false;
+async function prewarmOnce() {
+  if (_prewarmRunning) return;
+  _prewarmRunning = true;
+  try {
+    // dowolna logika pingowania
+  } finally {
+    _prewarmRunning = false;
+  }
+}
+
+app.listen(PORT, () => {
+  console.log(`🎧 Serwer działa na http://localhost:${PORT}`);
+  setTimeout(prewarmOnce, 500);
+});
+
+console.log("✅ index.js zakończony poprawnie");
+/* ===================== END ===================== */
