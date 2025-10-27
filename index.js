@@ -385,7 +385,7 @@ try {
   err.cause = lastErr;
   err.code = 'GEN_FALLBACK';
   throw err;
-
+}
 // --- END RESILIENT chatPref ---
 
 
