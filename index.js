@@ -1864,12 +1864,6 @@ let VERBS_PERCEPTION = [];
       res.status(500).json({ ok: false, error: String(err.message || err) });
     }
   });
-
-  // ==================== HEALTH (lokalne) ====================
-  app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
-})(app);
-/* ===================== /QUIZ — INLINE ===================== */
-
 /* ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE ===================== */
 /* Cel: z całego tekstu wybierz jeden, najbardziej „mięsisty” fakt.
    Priorytet (gdy dostępne):
@@ -2039,6 +2033,12 @@ app.post("/agent/comprehend-one", (req, res) => {
   }
 });
 /* ===================== /ADD-ON ===================== */
+
+  // ==================== HEALTH (lokalne) ====================
+  app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
+})(app);
+/* ===================== /QUIZ — INLINE ===================== */
+
 
 
 
