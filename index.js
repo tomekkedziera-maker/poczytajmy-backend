@@ -340,10 +340,11 @@ async function chatPref({
   const short = Math.max(1200, Math.min(deadlineMs, 2500));
   const long  = Math.max(2000, Math.min(deadlineMs * 1.8, 6000));
 
-  const order = (() => {
-    if (prefer === 'groq-first') return ['groq', 'openai'];
-    if (prefer === 'race')       return ['race'];
-    return ['openai', 'groq']; // default openai-first
+  const order =
+  prefer === 'groq-first' ? ['groq', 'openai'] :
+  prefer === 'race'       ? ['race'] :
+                            ['openai', 'groq'];
+
   })();
 
   try {
@@ -1347,93 +1348,53 @@ app.get('/tts-voices', async (_req, res) => {
   }
 });
 
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (lematy→regex, perception & place fixes) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
 */
-
-(function attachQuizRoutes(app){
-  if (!app || typeof app.post !== "function") {
-    console.error("[QUIZ] Brak instancji Express `app` — wklej ten blok PO inicjalizacji app.");
-    return;
-  }
-
-  // -------------------- CORE: generator Q/A --------------------
-  function generateQuestionAndAnswerTeacher(textRaw) {
-    if (!textRaw || typeof textRaw !== "string")
-      return { ok: false, qtype: "Co się dzieje?", question: "Co się dzieje?", answer: "", source_path: "error-empty" };
-
-    const text = String(textRaw).normalize("NFC").trim();
-    const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
-
-    // ===== utils =====
-    const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
-    const stripPunct = (s = "") => String(s).trim().replace(/[.,!?;:]+$/,"");
-    const deaccent = s => String(s).normalize("NFD")
-      .replace(/[\u0300-\u036f]/g,"")
-      .replace(/[łŁ]/g,"l").replace(/[ąĄ]/g,"a").replace(/[ćĆ]/g,"c")
-      .replace(/[ęĘ]/g,"e").replace(/[ńŃ]/g,"n").replace(/[óÓ]/g,"o")
-      .replace(/[śŚ]/g,"s").replace(/[źŹżŻ]/g,"z");
-    const tDA = deaccent(t);
-
-    const sanitizeQ = s => normalizeSpaces(String(s).replace(/\b(Rano|Po|P[oó]zniej|Później|Na)\b/gi,""));
-
-    function rehydrateFromOriginal(orig, frag) {
-      if (!orig || !frag) return frag || "";
-      const O = String(orig);
-      const F = normalizeSpaces(frag);
-      const Fda = deaccent(F).toLowerCase();
-      for (let j = 0; j <= O.length - F.length; j++) {
-        const win = O.substring(j, j + F.length);
-        if (deaccent(win).toLowerCase() === Fda) return stripPunct(win);
-      }
-      return stripPunct(F);
-    }
-    const rehydrateAnswerFromOriginal = (orig, a) =>
-      a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
-
-/* ===================== QUIZ — INLINE ===================== */
 
 // --- Globalne listy czasowników (wspólne dla całego modułu) ---
 let VERBS_MOTION = [];
 let VERBS_PLACEBOUND = [];
 let VERBS_PERCEPTION = [];
 
-(async function (app) {
-  if (!app || typeof app.post !== "function") {
+(function attachQuizAndVerbsRoutes(app) {
+  if (!app || typeof app.post !== "function" || typeof app.get !== "function") {
     console.error("[QUIZ] Brak instancji Express `app` — wklej ten blok PO inicjalizacji app.");
     return;
   }
 
-  // ===== Import lematów z ./verbs.js (z fallbackiem) =====
-  try {
-    const verbsModule = await import("./verbs.js");
-    VERBS_MOTION     = verbsModule.VERBS_MOTION     || [];
-    VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
-    VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
-    console.log(`✅ Załadowano lematy z ./verbs.js (motion=${VERBS_MOTION.length}, place=${VERBS_PLACEBOUND.length}, perc=${VERBS_PERCEPTION.length})`);
-  } catch (e) {
-    console.warn("⚠️ Nie udało się załadować ./verbs.js, używam fallbacku:", e.message);
-    VERBS_MOTION = [
-      "iść","pójść","chodzić","jechać","pojechać","wracać","wrócić",
-      "wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść",
-      "zajechać","dotrzeć","podjechać","odjechać","przyjść"
-    ];
-    VERBS_PLACEBOUND = [
-      "usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się",
-      "czekać","czytać","pisać","bawić się","grać","jeść","pić",
-      "oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"
-    ];
-    VERBS_PERCEPTION = [
-      "patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się",
-      "oglądać","zaglądać","zerkać"
-    ];
-  }
+  // ==================== ŁADOWANIE LEMATÓW ====================
+  (async () => {
+    try {
+      const verbsModule = await import("./verbs.js");
+      VERBS_MOTION     = verbsModule.VERBS_MOTION     || [];
+      VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
+      VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
+      console.log(`✅ verbs.js: motion=${VERBS_MOTION.length}, place=${VERBS_PLACEBOUND.length}, perc=${VERBS_PERCEPTION.length}`);
+    } catch (e) {
+      console.warn("⚠️ Nie udało się załadować ./verbs.js, używam fallbacku:", e.message);
+      VERBS_MOTION = [
+        "iść","pójść","chodzić","jechać","pojechać","wracać","wrócić",
+        "wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść",
+        "zajechać","dotrzeć","podjechać","odjechać","przyjść"
+      ];
+      VERBS_PLACEBOUND = [
+        "usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się",
+        "czekać","czytać","pisać","bawić się","grać","jeść","pić",
+        "oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"
+      ];
+      VERBS_PERCEPTION = [
+        "patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się",
+        "oglądać","zaglądać","zerkać"
+      ];
+    }
+  })();
 
-  // ===== Utils =====
+  // ==================== UTILS ====================
   const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
-  const stripPunct = (s = "") => String(s).trim().replace(/[.,;!?…]+$/u, "");
+  const stripPunct = (s = "") => String(s).trim().replace(/[.,;!?…:]+$/u, "");
   const deaccent = (s = "") =>
     String(s)
       .normalize("NFD")
@@ -1486,15 +1447,12 @@ let VERBS_PERCEPTION = [];
     return `(?:${bodies.join("|")})`;
   }
 
-  const VERB_CUT_RE = new RegExp(
-    `\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND].map(flex).join("|")})\\b.*$`,
-    "i"
-  );
-  const SEATLIKE_RE   = new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
-  const PERCEPTION_RE = new RegExp(`\\b(${VERBS_PERCEPTION.map(flex).join("|")})\\b`, "i");
+  const VERB_CUT_RE = () =>
+    new RegExp(`\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND].map(flex).join("|")})\\b.*$`, "i");
+  const SEATLIKE_RE   = () => new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
+  const PERCEPTION_RE = () => new RegExp(`\\b(${VERBS_PERCEPTION.map(flex).join("|")})\\b`, "i");
 
-  // ===== cięcia & cue =====
-  const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE, ""));
+  const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE(), ""));
   function detectVerbCueDA(sDA) {
     const L = String(sDA || "").toLowerCase();
     if (/\bwr[oó]c\w*/i.test(L)) return "wrócili";
@@ -1507,7 +1465,6 @@ let VERBS_PERCEPTION = [];
     return "poszli";
   }
 
-  // ===== discourse markers =====
   const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nast[eę]pnie|wtedy|za chwil[eę])\b/iu;
   const removeDiscourseMarkers = (s = "") => normalizeSpaces(String(s).replace(DISCOURSE_MARKERS_RE, " "));
 
@@ -1530,14 +1487,12 @@ let VERBS_PERCEPTION = [];
   const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
   const stripDanglingPrzez = s => s.replace(/\s+przez\b$/i, "").trim();
 
-  // ===== blacklist „na …” jako lokatywne (nie Dokąd) =====
   const NA_LOCATIVE_BLACKLIST = [
     "na spacerze","na spacer","na dywanie","na trawie","na ławce","na lawce",
     "na przystanku","na basenie","na stadionie","na boisku","na rynku",
     "na ulice","na ulicę","na lawke","na ławke","na ławkę"
   ].map(x => deaccent(x));
 
-  // ===== temporal =====
   function extractTime(s) {
     const start = String(s).match(/^\s*(w\s+(?:sobotni|niedzielny|poniedzialkowy|wtorkowy|srodowy|czwartkowy|piatkowy)\s+poranek)\b/iu);
     if (start) return stripPunct(start[1]);
@@ -1545,14 +1500,12 @@ let VERBS_PERCEPTION = [];
     return m ? stripPunct(m[0]) : null;
   }
 
-  // ===== specjalny DO obiektu po „wsiedli/wsiad-” =====
   function extractBoardingObject(s) {
     const m = String(s).match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
     if (m) return stripPunct(trimAtVerb(m[2]));
     return null;
   }
 
-  // ===== destination (do/na …) =====
   function extractDestination(s) {
     const afterBoard = extractBoardingObject(s);
     if (afterBoard) return `do ${afterBoard}`.trim();
@@ -1567,8 +1520,7 @@ let VERBS_PERCEPTION = [];
     const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
     let dest = `${pick.prep} ${pick.body}`.trim();
 
-    // percepcja + „na …” → nie traktuj jako Dokąd?
-    if (pick.prep === "na" && PERCEPTION_RE.test(s)) {
+    if (pick.prep === "na" && PERCEPTION_RE().test(s)) {
       return null;
     }
 
@@ -1581,28 +1533,22 @@ let VERBS_PERCEPTION = [];
     dest = normalizeSpaces(dest);
     dest = stripPunct(dest);
 
-    // jeśli w dest pojawił się czasownik aktywności, utnij go
     dest = dest.replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "").trim();
 
     const low = deaccent(dest.toLowerCase());
-
-    // „na …” lokatywne → nie Dokąd
     const head2 = deaccent(dest.toLowerCase().split(/\s+/).slice(0,2).join(" "));
     if (dest.toLowerCase().startsWith("na ") && (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low))) {
       return null;
     }
 
-    // cut trailing „z/ze/od …”
     dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
     dest = normalizeSpaces(dest);
     return dest || null;
   }
 
-  // ===== miejsce (gdzie?) =====
   function pickPlaceFromSentence(s) {
     const base = removeDiscourseMarkers(s);
 
-    // szybkie ścieżki
     if (/\bprzy\s+oknie\b/i.test(base))    return "przy oknie";
     if (/\bprzy\s+drzwiach\b/i.test(base)) return "przy drzwiach";
 
@@ -1617,8 +1563,8 @@ let VERBS_PERCEPTION = [];
       .map(x => stripDanglingPrzez(x))
       .map(x => trimAtVerb(x))
       .map(x => normalizeSpaces(x))
-      .filter(x => /\S+\s+\S+/.test(x))            // nie zostawiaj samych przyimków
-      .filter(pp => !/\bw\s+ciszy\b/i.test(pp));   // nielokatywne
+      .filter(x => /\S+\s+\S+/.test(x))
+      .filter(pp => !/\bw\s+ciszy\b/i.test(pp));
 
     const isTemporalPP = (pp="") =>
       /\b(rano|wieczorem|w\s+południe|po\s+południu|dzisiaj|dziś|jutro|wczoraj|o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2})\b/i.test(pp);
@@ -1632,7 +1578,7 @@ let VERBS_PERCEPTION = [];
       let sc = 0;
       const low = deaccent(cand.toLowerCase());
       const pos = base.indexOf(cand0);
-      const seatLike = SEATLIKE_RE.test(s);
+      const seatLike = SEATLIKE_RE().test(s);
 
       if (seatLike) {
         if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
@@ -1660,7 +1606,6 @@ let VERBS_PERCEPTION = [];
     return best;
   }
 
-  // ===== „Kto?” — fronta DO/NA + czasownik + Imię(/ i Imię) =====
   function detectWhoQuestion(s) {
     const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali)\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+)*)/i;
     const m = String(s).match(re);
@@ -1675,7 +1620,7 @@ let VERBS_PERCEPTION = [];
     return null;
   }
 
-  // ===== Główna funkcja Q/A =====
+  // ==================== GŁÓWNA FUNKCJA Q/A ====================
   function generateQuestionAndAnswerTeacher(textRaw) {
     if (!textRaw || typeof textRaw !== "string")
       return { ok: false, qtype: "Co się dzieje?", question: "Co się dzieje?", answer: "", source_path: "error-empty" };
@@ -1684,14 +1629,12 @@ let VERBS_PERCEPTION = [];
     const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
     const tDA = deaccent(t);
 
-    // ekstrakcje
     const who = detectWhoQuestion(t);
     const time = extractTime(t);
     const dest = extractDestination(t);
     const place = pickPlaceFromSentence(t);
-    const cue = detectVerbCueDA(tDA); // (na razie używany do qDokąd)
+    const cue = detectVerbCueDA(tDA);
 
-    // pytania
     function qDokad() {
       let v = "poszli";
       let withPron = true;
@@ -1718,8 +1661,7 @@ let VERBS_PERCEPTION = [];
       return "Gdzie byli?";
     }
 
-    // ===== priorytety =====
-    const preferPlaceFirst = SEATLIKE_RE.test(t);
+    const preferPlaceFirst = SEATLIKE_RE().test(t);
     const strongTime = !!(time && /\b(o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|dzisiaj|dziś|jutro|wczoraj|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(time));
 
     if (who) {
@@ -1756,7 +1698,7 @@ let VERBS_PERCEPTION = [];
     return { ok: true, qtype: "Co się dzieje?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6f-fullQ-fallback" };
   }
 
-  // --------------------- ENDPOINTS ---------------------
+  // ==================== ENDPOINTS: QUIZ ====================
   app.post("/agent/comprehend", (req, res) => {
     try {
       const { text } = req.body || {};
@@ -1778,7 +1720,6 @@ let VERBS_PERCEPTION = [];
         .replace(/\s+/g, " ")
         .trim();
 
-      // Rozbij na zdania + klauzule po „, a potem / potem / następnie / wtedy”
       const rough = cleaned.split(/(?<=[.!?;])\s+/);
       const splitOnMarkers = s =>
         s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
@@ -1804,7 +1745,6 @@ let VERBS_PERCEPTION = [];
         })
         .sort((a, b) => b.score - a.score);
 
-      // --- TOP z gwarancją różnorodności qtype ---
       const top = [];
       const used = new Set();
       const buckets = {
@@ -1841,84 +1781,85 @@ let VERBS_PERCEPTION = [];
     }
   });
 
+  // ==================== VERBS API + META ====================
   app.get("/version", (_req, res) =>
-    res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-verbsjs-p1" });
+    res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ" })
+  );
+
+  app.post("/verbs/reload", async (_req, res) => {
+    try {
+      const path = "./verbs.js";
+      const verbsModule = await import(path + `?v=${Date.now()}`); // cache-bust
+      VERBS_MOTION     = verbsModule.VERBS_MOTION     || [];
+      VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
+      VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
+      console.log(`♻️ verbs.js reloaded (${VERBS_MOTION.length}+${VERBS_PLACEBOUND.length}+${VERBS_PERCEPTION.length})`);
+      res.json({
+        ok: true,
+        message: "verbs.js reloaded",
+        counts: {
+          motion: VERBS_MOTION.length,
+          placebound: VERBS_PLACEBOUND.length,
+          perception: VERBS_PERCEPTION.length,
+        },
+      });
+    } catch (err) {
+      console.error("reload error:", err);
+      res.status(500).json({ ok: false, error: String(err.message || err) });
+    }
+  });
+
+  app.get("/verbs/common", async (_req, res) => {
+    try {
+      const verbsModule = await import("./verbs.js");
+      const all = verbsModule.COMMON_VERBS || verbsModule.default || [];
+      res.json({ ok: true, count: all.length, verbs: all });
+    } catch (err) {
+      console.error("Error /verbs/common:", err);
+      res.status(500).json({ ok: false, error: String(err.message || err) });
+    }
+  });
+
+  // ==================== HEALTH ====================
+  app.get("/", (_req, res) => res.status(200).send("OK"));
+  app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
+
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
 
 
 
-// ===================== VERBS API + META =====================
-
-// --- wersja buildu ---
-app.get("/version", (_req, res) =>
-  res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-verbsAPI" })
-);
-
-// --- reload verbs.js w locie (dev helper) ---
-app.post("/verbs/reload", async (_req, res) => {
+/* ===================== SERVER START (JEDEN BLOK) ===================== */
+let _prewarmRunning = false;
+async function prewarmOnce() {
+  if (_prewarmRunning) return;
+  _prewarmRunning = true;
   try {
-    const path = "./verbs.js";
-    const resolved = new URL(path, import.meta.url).pathname;
-    delete globalThis.__verb_cache; // zamiast import.cache (bezpieczne)
-    const verbsModule = await import(path + `?v=${Date.now()}`); // cache-bust
-    VERBS_MOTION = verbsModule.VERBS_MOTION || [];
-    VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
-    VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
-    console.log(`♻️ verbs.js reloaded (${VERBS_MOTION.length}+${VERBS_PLACEBOUND.length}+${VERBS_PERCEPTION.length})`);
-    res.json({
-      ok: true,
-      message: "verbs.js reloaded",
-      counts: {
-        motion: VERBS_MOTION.length,
-        placebound: VERBS_PLACEBOUND.length,
-        perception: VERBS_PERCEPTION.length,
-      },
-    });
-  } catch (err) {
-    console.error("reload error:", err);
-    res.status(500).json({ ok: false, error: err.message });
+    // tu możesz dodać pingi itp.
+  } finally {
+    _prewarmRunning = false;
   }
+}
+
+const PORT_FINAL = process.env.PORT || 3001;
+const server = app.listen(PORT_FINAL, "0.0.0.0", () => {
+  const addr = server.address();
+  const host = typeof addr === "object" && addr ? addr.address : "localhost";
+  const port = typeof addr === "object" && addr ? addr.port : PORT_FINAL;
+  console.log(`🚀 Backend działa na http://${host}:${port}`);
+  setTimeout(prewarmOnce, 500);
 });
 
-// --- healthcheck / root (Render ping) ---
-app.get("/", (_req, res) => res.status(200).send("OK"));
-app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
+// stabilność HTTP (Render)
+server.keepAliveTimeout = 65_000;
+server.headersTimeout   = 66_000;
 
-// --- uruchomienie serwera ---
-const server = app.listen(process.env.PORT || 3001, "0.0.0.0", () => {
-  const { address, port } = server.address();
-  console.log(`🚀 Backend działa na http://${address}:${port}`);
-});
-
-// --- stabilność HTTP (Render fix) ---
-server.keepAliveTimeout = 65000;
-server.headersTimeout = 66000;
-
-// --- globalny catch błędów ---
+// globalny catch błędów
 process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED REJECTION:", err);
 });
 process.on("uncaughtException", (err) => {
   console.error("UNCAUGHT EXCEPTION:", err);
 });
+/* ===================== /SERVER START ===================== */
 
-// --- funkcja prewarmOnce i start puli ---
-let _prewarmRunning = false;
-async function prewarmOnce() {
-  if (_prewarmRunning) return;
-  _prewarmRunning = true;
-  try {
-    // dowolna logika pingowania
-  } finally {
-    _prewarmRunning = false;
-  }
-}
-
-app.listen(PORT, () => {
-  console.log(`🎧 Serwer działa na http://localhost:${PORT}`);
-  setTimeout(prewarmOnce, 500);
-});
-
-console.log("✅ index.js zakończony poprawnie");
-/* ===================== END ===================== */
