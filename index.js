@@ -345,7 +345,7 @@ async function chatPref({
   prefer === 'race'       ? ['race'] :
                             ['openai', 'groq'];
 
-  })();
+  };
 
   try {
     if (order[0] === 'race' && openai && groq) {
@@ -387,7 +387,7 @@ async function chatPref({
   err.cause = lastErr;
   err.code = 'GEN_FALLBACK';
   throw err;
-}
+
 // --- END RESILIENT chatPref ---
 
 
