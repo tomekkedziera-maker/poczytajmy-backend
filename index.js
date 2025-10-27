@@ -340,33 +340,31 @@ async function chatPref({
   const short = Math.max(1200, Math.min(deadlineMs, 2500));
   const long  = Math.max(2000, Math.min(deadlineMs * 1.8, 6000));
 
-  const order =
+ const order =
   prefer === 'groq-first' ? ['groq', 'openai'] :
   prefer === 'race'       ? ['race'] :
                             ['openai', 'groq'];
 
-  };
-
-  try {
-    if (order[0] === 'race' && openai && groq) {
-      // conservative race: krótszy timeout, kto pierwszy — ten lepszy
-      const p1 = tryOpenAI(short, 0).catch(e => { throw e; });
-      const p2 = tryGroq(short, 0).catch(e => { throw e; });
-      return await Promise.any([p1, p2]);
-    }
-
-    for (const who of order) {
-      try {
-        if (who === 'openai') return await tryOpenAI(short, 0);
-        if (who === 'groq')   return await tryGroq(short, 0);
-      } catch (e) {
-        if (!isSoftFail(e)) throw e; // błąd twardy — nie ma co odraczać
-        // miękki błąd — spróbujemy drugiego w pętli
-      }
-    }
-  } catch (e) {
-    if (!isSoftFail(e)) throw e;
+try {
+  if (order[0] === 'race' && openai && groq) {
+    // conservative race: krótszy timeout, kto pierwszy — ten lepszy
+    const p1 = tryOpenAI(short, 0).catch(e => { throw e; });
+    const p2 = tryGroq(short, 0).catch(e => { throw e; });
+    return await Promise.any([p1, p2]);
   }
+
+  for (const who of order) {
+    try {
+      if (who === 'openai') return await tryOpenAI(short, 0);
+      if (who === 'groq')   return await tryGroq(short, 0);
+    } catch (e) {
+      if (!isSoftFail(e)) throw e;
+    }
+  }
+} catch (e) {
+  if (!isSoftFail(e)) throw e;
+}
+
 
   // 2) last-chance: dwie próby łącznie (po jednej na provider) z dłuższym deadline’em
   const attempts = [];
