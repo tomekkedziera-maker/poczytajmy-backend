@@ -1870,6 +1870,175 @@ let VERBS_PERCEPTION = [];
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
 
+/* ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE ===================== */
+/* Cel: z całego tekstu wybierz jeden, najbardziej „mięsisty” fakt.
+   Priorytet (gdy dostępne):
+   0) Kto?  1) Dokąd? (pojazdy/miejsca nazwane)  2) Gdzie? (precyzyjne PP)
+   3) Kiedy? (HH:MM)                            4) Kiedy? (ogólne: rano, w środę itd.)
+   Nie zmienia istniejących endpointów; dodaje /agent/comprehend-one
+*/
+
+/* — Wyciągnij WSZYSTKIE cele „do …” z jednego zdania (w tym po „wsiedli … i pojechali …”) — */
+function extractAllDestinations(s) {
+  const base = removeDiscourseMarkers(String(s || ""));
+  const results = [];
+
+  // 1) specjalny: wsiedli/wsiadł + do [obiektu]
+  const boardRe = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/gi;
+  let m1;
+  while ((m1 = boardRe.exec(base)) !== null) {
+    let dest = `do ${m1[2]}`;
+    dest = stripOnConjunctionOrComma(dest);
+    dest = STRIP_ANY_PURPOSE(dest);
+    dest = stripPurposeTail(dest);
+    dest = stripTimeTail(dest);
+    dest = stripDurationTail(dest);
+    dest = trimAtVerb(dest);
+    dest = stripPunct(normalizeSpaces(dest));
+    if (dest) results.push(dest);
+  }
+
+  // 2) ogólne „do …” (złapie np. „pojechali do muzeum zabawek”, „wrócili do domu”)
+  const genRe = /\bdo\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+){0,8})\b/gi;
+  let m2;
+  while ((m2 = genRe.exec(base)) !== null) {
+    let dest = `do ${m2[1]}`;
+    dest = stripOnConjunctionOrComma(dest);
+    dest = STRIP_ANY_PURPOSE(dest);
+    dest = stripPurposeTail(dest);
+    dest = stripTimeTail(dest);
+    dest = stripDurationTail(dest);
+    dest = trimAtVerb(dest);
+    dest = stripPunct(normalizeSpaces(dest));
+    if (dest) results.push(dest);
+  }
+
+  // dedup
+  const seen = new Set();
+  const out = [];
+  for (const d of results) {
+    const key = deaccent(d.toLowerCase());
+    if (!seen.has(key)) { seen.add(key); out.push(d); }
+  }
+  return out;
+}
+
+/* — heurystyka punktowania kandydata — */
+function scoreCandidate(kind, answer, sentence) {
+  const a = String(answer || "");
+  const ada = deaccent(a.toLowerCase());
+  let sc = 0;
+
+  if (kind === "who") {
+    sc = 140; // NAJWYŻSZY priorytet — najłatwiejsze dla dzieci
+    // mały bonus za „Imię i Imię”
+    if (/\si\s+[A-ZĄĆĘŁŃÓŚŹŻ]/.test(answer)) sc += 4;
+  } else if (kind === "dest") {
+    sc = 120;
+    if (/\b(tramwaju|autobusu|poci[aą]gu|metra)\b/i.test(ada)) sc += 10;     // pojazd
+    if (/\b(mu?zeum|ogr[oó]d|rynek|galeri[ai]|kino|szko[lł]y?)\b/i.test(ada)) sc += 8; // nazwane miejsce
+    if (/\bdo domu\b/i.test(ada)) sc -= 15;                                  // mniej informacyjne
+    sc += Math.min(10, Math.floor(a.length / 6));                             // dłuższe → zwykle konkretniejsze
+  } else if (kind === "place") {
+    sc = 95;
+    if (/\b(przy|pod|za|przed|obok|u)\b/i.test(ada)) sc += 3;                 // punktowe PP
+    if (/\b(przy\s+oknie|przy\s+drzwiach|przy\s+fontannie)\b/i.test(ada)) sc += 4;
+    sc += Math.min(8, Math.floor(a.length / 8));
+  } else if (kind === "time-hh") {
+    sc = 90;
+  } else if (kind === "time") {
+    sc = 65;
+  } else {
+    sc = 40;
+  }
+
+  // drobny bonus: jeśli w zdaniu jest czasownik ruchu i to „dest”
+  if (kind === "dest" && /\b(poszed\w*|poszl\w*|pojech\w*|wr[oó]c\w*|wsied\w*|wsiad\w*|przesz\w*|przejd\w*)\b/i.test(sentence)) {
+    sc += 5;
+  }
+  return sc;
+}
+
+/* — zbuduj pulę kandydatów z całego tekstu — */
+function buildCandidatesFromText(text) {
+  const sentences = __PRQ_splitSentences(text);
+  const cands = [];
+
+  for (const s of sentences) {
+    // 0) KTO?
+    const who = detectWhoQuestion(s);
+    if (who && who.answer) {
+      cands.push({
+        kind: "who",
+        qtype: "Kto?",
+        question: who.question,
+        answer: who.answer,
+        sentence: s
+      });
+    }
+
+    // 1) wszystkie „do …”
+    const dests = extractAllDestinations(s);
+    for (const d of dests) {
+      cands.push({ kind: "dest", qtype: "Dokąd?", question: "Dokąd oni poszli?", answer: d, sentence: s });
+    }
+
+    // 2) miejsce
+    const place = pickPlaceFromSentence(s);
+    if (place) {
+      const q = /czeka\w*/i.test(s) ? "Gdzie czekali?" :
+                /usiedl|usiedli|siadł|siadła|siedzi|siedzieli/i.test(s) ? "Gdzie usiedli?" :
+                /spotkal|spotkali/i.test(s) ? "Gdzie się spotkali?" :
+                "Gdzie byli?";
+      cands.push({ kind: "place", qtype: "Gdzie?", question: q, answer: place, sentence: s });
+    }
+
+    // 3) czas (HH:MM ma własny typ)
+    const t = extractTime(s);
+    if (t) {
+      const isHH = /^\s*(o|przed)\s+\d{1,2}[:.]\d{2}/i.test(t);
+      const q = (isHH && /\b(wsied\w*|wsiad\w*)\b/i.test(s)) ? "O której godzinie wsiedli?" :
+                (isHH && /\bwr[ao]c\w*/i.test(s))            ? "O której godzinie wrócili?" :
+                isHH ? "O której godzinie to się wydarzyło?" : "Kiedy to się działo?";
+      cands.push({ kind: isHH ? "time-hh" : "time", qtype: "Kiedy?", question: q, answer: stripPunct(t), sentence: s });
+    }
+  }
+
+  // dedup (typ+odpowiedź)
+  const seen = new Set();
+  const out = [];
+  for (const it of cands) {
+    const key = `${it.kind}|${deaccent(String(it.answer||"").toLowerCase())}`;
+    if (!seen.has(key) && it.answer) { seen.add(key); out.push(it); }
+  }
+  return out;
+}
+
+/* — wybierz JEDEN najlepszy — */
+function chooseBestOneQuestion(text) {
+  const cands = buildCandidatesFromText(text);
+  if (!cands.length) {
+    return { ok: true, qtype: "Co?", question: "Co się dzieje w tej historii?", answer: "", source_path: "one-best-fallback" };
+  }
+  cands.forEach(it => it._score = scoreCandidate(it.kind, it.answer, it.sentence));
+  cands.sort((a,b) => b._score - a._score);
+
+  // zwróć TOP-1
+  const top = cands[0];
+  return { ok: true, qtype: top.qtype, question: top.question, answer: top.answer, sentence: top.sentence, source_path: "one-best" };
+}
+
+/* — ENDPOINT: jedno pytanie z całego tekstu — */
+app.post("/agent/comprehend-one", (req, res) => {
+  try {
+    const { text } = req.body || {};
+    const one = chooseBestOneQuestion(text);
+    res.json(one);
+  } catch (e) {
+    res.status(500).json({ ok:false, error:String(e && e.message || e) });
+  }
+});
+/* ===================== /ADD-ON ===================== */
 
 
 
