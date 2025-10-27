@@ -1864,175 +1864,210 @@ let VERBS_PERCEPTION = [];
       res.status(500).json({ ok: false, error: String(err.message || err) });
     }
   });
-/* ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE ===================== */
-/* Cel: z całego tekstu wybierz jeden, najbardziej „mięsisty” fakt.
-   Priorytet (gdy dostępne):
-   0) Kto?  1) Dokąd? (pojazdy/miejsca nazwane)  2) Gdzie? (precyzyjne PP)
-   3) Kiedy? (HH:MM)                            4) Kiedy? (ogólne: rano, w środę itd.)
-   Nie zmienia istniejących endpointów; dodaje /agent/comprehend-one
-*/
+/* ===================== ADD-ON (SELF-CONTAINED): JEDNO NAJLEPSZE PYTANIE ===================== */
+/* Nie korzysta z żadnych symboli z bloku QUIZ. Można wkleić po inicjalizacji `app`. */
 
-/* — Wyciągnij WSZYSTKIE cele „do …” z jednego zdania (w tym po „wsiedli … i pojechali …”) — */
-function extractAllDestinations(s) {
-  const base = removeDiscourseMarkers(String(s || ""));
-  const results = [];
-
-  // 1) specjalny: wsiedli/wsiadł + do [obiektu]
-  const boardRe = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/gi;
-  let m1;
-  while ((m1 = boardRe.exec(base)) !== null) {
-    let dest = `do ${m1[2]}`;
-    dest = stripOnConjunctionOrComma(dest);
-    dest = STRIP_ANY_PURPOSE(dest);
-    dest = stripPurposeTail(dest);
-    dest = stripTimeTail(dest);
-    dest = stripDurationTail(dest);
-    dest = trimAtVerb(dest);
-    dest = stripPunct(normalizeSpaces(dest));
-    if (dest) results.push(dest);
+(function attachOneBestEndpoint(app){
+  if (!app || typeof app.post !== "function") {
+    console.error("[one-best] Brak instancji Express `app` — wklej ten blok PO inicjalizacji app.");
+    return;
   }
 
-  // 2) ogólne „do …” (złapie np. „pojechali do muzeum zabawek”, „wrócili do domu”)
-  const genRe = /\bdo\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+){0,8})\b/gi;
-  let m2;
-  while ((m2 = genRe.exec(base)) !== null) {
-    let dest = `do ${m2[1]}`;
-    dest = stripOnConjunctionOrComma(dest);
-    dest = STRIP_ANY_PURPOSE(dest);
-    dest = stripPurposeTail(dest);
-    dest = stripTimeTail(dest);
-    dest = stripDurationTail(dest);
-    dest = trimAtVerb(dest);
-    dest = stripPunct(normalizeSpaces(dest));
-    if (dest) results.push(dest);
+  // ---------- Utils (lokalne) ----------
+  function __ONE_normalizeSpaces(s=""){ return String(s).replace(/\s+/g," ").trim(); }
+  function __ONE_stripPunct(s=""){ return String(s).trim().replace(/[.,;!?…:]+$/u,""); }
+  function __ONE_deaccent(s=""){
+    return String(s)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g,"")
+      .replace(/[łŁ]/g,"l")
+      .replace(/[ąĄ]/g,"a")
+      .replace(/[ćĆ]/g,"c")
+      .replace(/[ęĘ]/g,"e")
+      .replace(/[ńŃ]/g,"n")
+      .replace(/[óÓ]/g,"o")
+      .replace(/[śŚ]/g,"s")
+      .replace(/[źŹżŻ]/g,"z");
+  }
+  function __ONE_splitSentences(s=""){
+    const txt = __ONE_normalizeSpaces(s).replace(/\s*[\r\n]+\s*/g," ");
+    const parts = txt.split(/(?<=[.!?…;])\s+/u).filter(Boolean);
+    if (parts.length) return parts;
+    return txt.split(/[.!?…;]\s+/u).filter(Boolean);
   }
 
-  // dedup
-  const seen = new Set();
-  const out = [];
-  for (const d of results) {
-    const key = deaccent(d.toLowerCase());
-    if (!seen.has(key)) { seen.add(key); out.push(d); }
-  }
-  return out;
-}
+  // ---------- Ekstrakcje (lokalne, proste ale bezpieczne) ----------
 
-/* — heurystyka punktowania kandydata — */
-function scoreCandidate(kind, answer, sentence) {
-  const a = String(answer || "");
-  const ada = deaccent(a.toLowerCase());
-  let sc = 0;
-
-  if (kind === "who") {
-    sc = 140; // NAJWYŻSZY priorytet — najłatwiejsze dla dzieci
-    // mały bonus za „Imię i Imię”
-    if (/\si\s+[A-ZĄĆĘŁŃÓŚŹŻ]/.test(answer)) sc += 4;
-  } else if (kind === "dest") {
-    sc = 120;
-    if (/\b(tramwaju|autobusu|poci[aą]gu|metra)\b/i.test(ada)) sc += 10;     // pojazd
-    if (/\b(mu?zeum|ogr[oó]d|rynek|galeri[ai]|kino|szko[lł]y?)\b/i.test(ada)) sc += 8; // nazwane miejsce
-    if (/\bdo domu\b/i.test(ada)) sc -= 15;                                  // mniej informacyjne
-    sc += Math.min(10, Math.floor(a.length / 6));                             // dłuższe → zwykle konkretniejsze
-  } else if (kind === "place") {
-    sc = 95;
-    if (/\b(przy|pod|za|przed|obok|u)\b/i.test(ada)) sc += 3;                 // punktowe PP
-    if (/\b(przy\s+oknie|przy\s+drzwiach|przy\s+fontannie)\b/i.test(ada)) sc += 4;
-    sc += Math.min(8, Math.floor(a.length / 8));
-  } else if (kind === "time-hh") {
-    sc = 90;
-  } else if (kind === "time") {
-    sc = 65;
-  } else {
-    sc = 40;
+  // KTO? — DO/NA + czasownik ruchu + Imię(/ i Imię)
+  function __ONE_detectWho(s=""){
+    const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali|udali\s+się)\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+)*)/i;
+    const m = String(s).match(re);
+    if (!m) return null;
+    const names = __ONE_stripPunct(m[4]).trim();
+    if (!names) return null;
+    const question = `Kto poszedł ${m[1].toLowerCase()} ${__ONE_stripPunct(m[2]).trim()}?`;
+    return { qtype:"Kto?", question, answer:names };
   }
 
-  // drobny bonus: jeśli w zdaniu jest czasownik ruchu i to „dest”
-  if (kind === "dest" && /\b(poszed\w*|poszl\w*|pojech\w*|wr[oó]c\w*|wsied\w*|wsiad\w*|przesz\w*|przejd\w*)\b/i.test(sentence)) {
-    sc += 5;
-  }
-  return sc;
-}
+  // Dokąd? — zbierz wszystkie „do …” (w tym po wsiedli/wsiadł)
+  function __ONE_extractAllDestinations(s=""){
+    const base = String(s);
+    const res = [];
 
-/* — zbuduj pulę kandydatów z całego tekstu — */
-function buildCandidatesFromText(text) {
-  const sentences = __PRQ_splitSentences(text);
-  const cands = [];
-
-  for (const s of sentences) {
-    // 0) KTO?
-    const who = detectWhoQuestion(s);
-    if (who && who.answer) {
-      cands.push({
-        kind: "who",
-        qtype: "Kto?",
-        question: who.question,
-        answer: who.answer,
-        sentence: s
-      });
+    // wsiedli/wsiadł do ...
+    const boardRe = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/gi;
+    let m1; while((m1 = boardRe.exec(base))!==null){
+      res.push(__ONE_stripPunct(__ONE_normalizeSpaces(`do ${m1[2]}`)));
     }
 
-    // 1) wszystkie „do …”
-    const dests = extractAllDestinations(s);
-    for (const d of dests) {
-      cands.push({ kind: "dest", qtype: "Dokąd?", question: "Dokąd oni poszli?", answer: d, sentence: s });
+    // ogólne do ...
+    const genRe = /\bdo\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+){0,8})\b/gi;
+    let m2; while((m2 = genRe.exec(base))!==null){
+      res.push(__ONE_stripPunct(__ONE_normalizeSpaces(`do ${m2[1]}`)));
     }
 
-    // 2) miejsce
-    const place = pickPlaceFromSentence(s);
-    if (place) {
-      const q = /czeka\w*/i.test(s) ? "Gdzie czekali?" :
-                /usiedl|usiedli|siadł|siadła|siedzi|siedzieli/i.test(s) ? "Gdzie usiedli?" :
-                /spotkal|spotkali/i.test(s) ? "Gdzie się spotkali?" :
-                "Gdzie byli?";
-      cands.push({ kind: "place", qtype: "Gdzie?", question: q, answer: place, sentence: s });
+    // dedup
+    const seen = new Set(); const out = [];
+    for(const d of res){
+      const key = __ONE_deaccent(d.toLowerCase());
+      if(!seen.has(key)){ seen.add(key); out.push(d); }
     }
+    return out;
+  }
 
-    // 3) czas (HH:MM ma własny typ)
-    const t = extractTime(s);
-    if (t) {
-      const isHH = /^\s*(o|przed)\s+\d{1,2}[:.]\d{2}/i.test(t);
-      const q = (isHH && /\b(wsied\w*|wsiad\w*)\b/i.test(s)) ? "O której godzinie wsiedli?" :
-                (isHH && /\bwr[ao]c\w*/i.test(s))            ? "O której godzinie wrócili?" :
-                isHH ? "O której godzinie to się wydarzyło?" : "Kiedy to się działo?";
-      cands.push({ kind: isHH ? "time-hh" : "time", qtype: "Kiedy?", question: q, answer: stripPunct(t), sentence: s });
+  // Gdzie? — wyciągnij pierwszą sensowną frazę przyimkową
+  function __ONE_pickPlace(s=""){
+    const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w|z|ze)";
+    const re = new RegExp(String.raw`\\b${PREP}\\s+\\S+(?:\\s+(?!${PREP}\\b|przez\\b)\\S+){0,6}`,"gi");
+    const pps = (s.match(re)||[]).map(__ONE_normalizeSpaces);
+    if (!pps.length) return null;
+
+    // prosta preferencja: „przy/pod/za/przed/obok” > „w/na”
+    const scored = pps.map(x=>{
+      let sc = 0;
+      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(x)) sc += 3;
+      if (/^\s*(w|we|na)\b/i.test(x)) sc += 2;
+      if (/\b(przy\s+oknie|przy\s+drzwiach|przy\s+fontannie)\b/i.test(x)) sc += 2;
+      sc += Math.min(4, Math.floor(x.length/10));
+      return {x, sc};
+    }).sort((a,b)=>b.sc-a.sc);
+
+    const best = __ONE_stripPunct(scored[0].x);
+    return /\S+\s+\S+/.test(best) ? best : null;
+  }
+
+  // Kiedy? — czas HH:MM lub ogólne
+  function __ONE_extractTime(s=""){
+    const combo = s.match(/\b(w\s+(?:poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])\s+(?:rano|wieczorem|po\s+południu|po\s+poludniu))\b/iu);
+    if (combo) return { type:"time", value: __ONE_stripPunct(combo[1]) };
+
+    const hh = s.match(/\b((?:o|przed)\s+\d{1,2}[:.]\d{2})\b/iu);
+    if (hh) return { type:"time-hh", value: __ONE_stripPunct(hh[1]) };
+
+    const gen = s.match(/\b(wczoraj|dzisiaj|dziś|jutro|rano|wieczorem|po\s+południu|po\s+poludniu|w\s+(?:poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe]))\b/iu);
+    if (gen) return { type:"time", value: __ONE_stripPunct(gen[0]) };
+
+    return null;
+  }
+
+  // ---------- Kandydaci i scoring ----------
+  function __ONE_score(kind, answer, sentence){
+    const a = String(answer||"");
+    const ada = __ONE_deaccent(a.toLowerCase());
+    let sc = 0;
+    if (kind==="who"){
+      sc = 140;
+      if (/\si\s+[A-ZĄĆĘŁŃÓŚŹŻ]/.test(a)) sc += 4;
+    } else if (kind==="dest"){
+      sc = 120;
+      if (/\b(tramwaju|autobusu|poci[aą]gu|metra)\b/i.test(ada)) sc += 10;
+      if (/\b(mu?zeum|ogrod|ogr[oó]d|rynek|galeri[ai]|kino|szko[ał]a?)\b/i.test(ada)) sc += 8;
+      if (/\bdo domu\b/i.test(ada)) sc -= 15;
+      sc += Math.min(10, Math.floor(a.length/6));
+      if (/\b(poszed\w*|poszl\w*|pojech\w*|wr[oó]c\w*|wsied\w*|wsiad\w*|przesz\w*|przejd\w*)\b/i.test(sentence)) sc += 5;
+    } else if (kind==="place"){
+      sc = 95;
+      if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(a)) sc += 3;
+      if (/\b(przy\s+oknie|przy\s+drzwiach|przy\s+fontannie)\b/i.test(a)) sc += 4;
+      sc += Math.min(8, Math.floor(a.length/8));
+    } else if (kind==="time-hh"){
+      sc = 90;
+    } else if (kind==="time"){
+      sc = 65;
+    } else {
+      sc = 40;
     }
+    return sc;
   }
 
-  // dedup (typ+odpowiedź)
-  const seen = new Set();
-  const out = [];
-  for (const it of cands) {
-    const key = `${it.kind}|${deaccent(String(it.answer||"").toLowerCase())}`;
-    if (!seen.has(key) && it.answer) { seen.add(key); out.push(it); }
+  function __ONE_buildCandidates(text=""){
+    const cands = [];
+    for (const s of __ONE_splitSentences(text)){
+      // Kto?
+      const who = __ONE_detectWho(s);
+      if (who && who.answer){
+        cands.push({ kind:"who", qtype:"Kto?", question: who.question, answer: who.answer, sentence: s });
+      }
+      // Dokąd?
+      for (const d of __ONE_extractAllDestinations(s)){
+        cands.push({ kind:"dest", qtype:"Dokąd?", question:"Dokąd oni poszli?", answer: d, sentence: s });
+      }
+      // Gdzie?
+      const place = __ONE_pickPlace(s);
+      if (place){
+        const q = /czeka\w*/i.test(s) ? "Gdzie czekali?" :
+                  /usiedl|usiedli|siadł|siadła|siedzi|siedzieli/i.test(s) ? "Gdzie usiedli?" :
+                  /spotkal|spotkali/i.test(s) ? "Gdzie się spotkali?" :
+                  "Gdzie byli?";
+        cands.push({ kind:"place", qtype:"Gdzie?", question:q, answer: place, sentence: s });
+      }
+      // Kiedy?
+      const t = __ONE_extractTime(s);
+      if (t){
+        const isHH = t.type==="time-hh";
+        const q = (isHH && /\b(wsied\w*|wsiad\w*)\b/i.test(s)) ? "O której godzinie wsiedli?" :
+                  (isHH && /\bwr[ao]c\w*/i.test(s))            ? "O której godzinie wrócili?" :
+                  isHH ? "O której godzinie to się wydarzyło?" : "Kiedy to się działo?";
+        cands.push({ kind:t.type, qtype:"Kiedy?", question:q, answer: t.value, sentence: s });
+      }
+    }
+    // dedup
+    const seen = new Set(); const out = [];
+    for (const it of cands){
+      const key = `${it.kind}|${__ONE_deaccent(String(it.answer||"").toLowerCase())}`;
+      if (!seen.has(key) && it.answer){ seen.add(key); out.push(it); }
+    }
+    return out;
   }
-  return out;
-}
 
-/* — wybierz JEDEN najlepszy — */
-function chooseBestOneQuestion(text) {
-  const cands = buildCandidatesFromText(text);
-  if (!cands.length) {
-    return { ok: true, qtype: "Co?", question: "Co się dzieje w tej historii?", answer: "", source_path: "one-best-fallback" };
+  function __ONE_chooseBest(text=""){
+    const cands = __ONE_buildCandidates(text);
+    if (!cands.length){
+      return { ok:true, qtype:"Co?", question:"Co się dzieje w tej historii?", answer:"", source_path:"one-best-fallback" };
+    }
+    cands.forEach(it => it._score = __ONE_score(it.kind, it.answer, it.sentence));
+    cands.sort((a,b)=>b._score - a._score);
+    const top = cands[0];
+    return { ok:true, qtype: top.qtype, question: top.question, answer: top.answer, sentence: top.sentence, source_path:"one-best" };
   }
-  cands.forEach(it => it._score = scoreCandidate(it.kind, it.answer, it.sentence));
-  cands.sort((a,b) => b._score - a._score);
 
-  // zwróć TOP-1
-  const top = cands[0];
-  return { ok: true, qtype: top.qtype, question: top.question, answer: top.answer, sentence: top.sentence, source_path: "one-best" };
-}
+  // ---------- Endpoint ----------
+  app.post("/agent/comprehend-one", (req, res) => {
+    try{
+      const { text } = req.body || {};
+      const one = __ONE_chooseBest(String(text||""));
+      res.json(one);
+    }catch(e){
+      console.error("one-best error:", e);
+      res.status(500).json({ ok:false, error:String(e && e.message || e) });
+    }
+  });
 
-/* — ENDPOINT: jedno pytanie z całego tekstu — */
-app.post("/agent/comprehend-one", (req, res) => {
-  try {
-    const { text } = req.body || {};
-    const one = chooseBestOneQuestion(text);
-    res.json(one);
-  } catch (e) {
-    res.status(500).json({ ok:false, error:String(e && e.message || e) });
-  }
-});
-/* ===================== /ADD-ON ===================== */
+  console.log("✅ /agent/comprehend-one ready (self-contained)");
+})(app);
+
+/* ===================== /ADD-ON (SELF-CONTAINED) ===================== */
+
 
   // ==================== HEALTH (lokalne) ====================
   app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
