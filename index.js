@@ -1345,7 +1345,7 @@ app.get('/tts-voices', async (_req, res) => {
     return res.status(500).json({ ok: false, error: 'VOICES_FAILED', details: String(err?.message || err) });
   }
 });
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (patched) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1387,6 +1387,12 @@ let VERBS_PERCEPTION = [];
       VERBS_PLACEBOUND = ["usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się","czekać","czytać","pisać","bawić się","grać","jeść","pić","oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"];
       VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać"];
     }
+
+    // --- Mikro-dodania rdzeni dla lepszego cięcia (obejrzeli, zobaczyli, pobiegł) ---
+    // (bezpieczne: dołóż tylko jeśli nie ma)
+    if (!VERBS_MOTION.includes("pobieg")) VERBS_MOTION.push("pobieg"); // dopasuje "pobiegł"
+    if (!VERBS_PERCEPTION.includes("zobaczy")) VERBS_PERCEPTION.push("zobaczy"); // "zobaczyli"
+    if (!VERBS_PERCEPTION.includes("obejrz")) VERBS_PERCEPTION.push("obejrz");   // "obejrzeli"
   })();
 
   // ==================== UTILS ====================
@@ -1445,7 +1451,7 @@ let VERBS_PERCEPTION = [];
   }
 
   // dynamiczne regexy (po załadowaniu list)
-  const VERB_CUT_RE   = () => new RegExp(`\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND].map(flex).join("|")})\\b.*$`, "i");
+  const VERB_CUT_RE   = () => new RegExp(`\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND, ...VERBS_PERCEPTION].map(flex).join("|")})\\b.*$`, "i");
   const SEATLIKE_RE   = () => new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
   const PERCEPTION_RE = () => new RegExp(`\\b(${VERBS_PERCEPTION.map(flex).join("|")})\\b`, "i");
 
@@ -1534,6 +1540,14 @@ let VERBS_PERCEPTION = [];
     // percepcja + „na …” → nie Dokąd?
     if (pick.prep === "na" && PERCEPTION_RE().test(s)) return null;
 
+    // --- Guard: "czekali na [osobę]" to NIE kierunek (chyba że lokatywna fraza) ---
+    const baseDA = deaccent(cleaned.toLowerCase());
+    const isWaiting = /\bczeka\w*/i.test(baseDA);
+    if (pick.prep === "na" && isWaiting) {
+      const locHint = /\b(ławce|lawce|peronie|przystanku|wejściu|wejsciu|boisku|rynku|korytarzu|holu|sali|salonie|klasie|bibliotece|kinie|parku|sklepie|fontannie|stole|biurku|oknie|drzwiach)\b/i;
+      if (!locHint.test(deaccent(dest.toLowerCase()))) return null;
+    }
+
     dest = stripOnConjunctionOrComma(dest);
     dest = STRIP_ANY_PURPOSE(dest);
     dest = stripPurposeTail(dest);
@@ -1587,7 +1601,6 @@ let VERBS_PERCEPTION = [];
         const locHint = /\b(ławce|lawce|peronie|przystanku|wejściu|wejsciu|boisku|rynku|korytarzu|holu|sali|salonie|klasie|bibliotece|kinie|parku|sklepie|fontannie|stole|biurku)\b/i;
         return locHint.test(pp);
       });
-      // Jeśli nadal nic, spróbuj wziąć inną frazę niż "na [osobę]"
     }
 
     if (!pps.length) return null;
@@ -1693,11 +1706,16 @@ let VERBS_PERCEPTION = [];
     const preferPlaceFirst = SEATLIKE_RE().test(t);
     const strongTime = !!(time && /\b(o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|dzisiaj|dziś|jutro|wczoraj|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(time));
 
-    // PRIORYTETY: Kto? > Dokąd? > (preferPlaceFirst && Gdzie?) > (strongTime && Kiedy?) > Kiedy? > Gdzie? > fallback
+    // --- PRIORYTETY (patch): Kto? > (Kiedy?) > Dokąd? > (preferPlaceFirst && Gdzie?) > Gdzie? > fallback
     if (who) {
       const ans = rehydrateAnswerFromOriginal(text, who.answer);
       const pl = who.question.replace(/\s+/g," ").trim();
       return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    }
+    if (strongTime || time) {
+      const q = qKiedy();
+      const a = rehydrateAnswerFromOriginal(text, time);
+      return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
     }
     if (dest) {
       const q = qDokad();
@@ -1708,16 +1726,6 @@ let VERBS_PERCEPTION = [];
       const q = qGdzie();
       const a = rehydrateAnswerFromOriginal(text, place);
       return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
-    }
-    if (strongTime) {
-      const q = qKiedy();
-      const a = rehydrateAnswerFromOriginal(text, time);
-      return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
-    }
-    if (time) {
-      const q = qKiedy();
-      const a = rehydrateAnswerFromOriginal(text, time);
-      return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
     }
     if (place) {
       const q = qGdzie();
@@ -1815,7 +1823,7 @@ let VERBS_PERCEPTION = [];
 
   // ==================== VERBS API + META ====================
   app.get("/version-quiz", (_req, res) =>
-    res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-fixed" })
+    res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-fixed+patch1" })
   );
 
   app.post("/verbs/reload", async (_req, res) => {
@@ -1825,6 +1833,10 @@ let VERBS_PERCEPTION = [];
       VERBS_MOTION     = verbsModule.VERBS_MOTION     || VERBS_MOTION;
       VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || VERBS_PLACEBOUND;
       VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || VERBS_PERCEPTION;
+      // dociśnij nasze mikro-dodania po reloadzie
+      if (!VERBS_MOTION.includes("pobieg")) VERBS_MOTION.push("pobieg");
+      if (!VERBS_PERCEPTION.includes("zobaczy")) VERBS_PERCEPTION.push("zobaczy");
+      if (!VERBS_PERCEPTION.includes("obejrz")) VERBS_PERCEPTION.push("obejrz");
       console.log(`♻️ verbs.js reloaded (${VERBS_MOTION.length}+${VERBS_PLACEBOUND.length}+${VERBS_PERCEPTION.length})`);
       res.json({
         ok: true,
