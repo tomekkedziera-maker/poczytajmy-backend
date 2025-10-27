@@ -1840,6 +1840,86 @@ app.get('/tts-voices', async (_req, res) => {
 /* ===================== /QUIZ — INLINE ===================== */
 
 
+// ===================== VERBS API + META =====================
+
+// --- wersja buildu ---
+app.get("/version", (_req, res) =>
+  res.json({ build: "2025-10-27 rule-teacher-strict-v7.6f-fullQ-verbsAPI" })
+);
+
+// --- reload verbs.js w locie (dev helper) ---
+app.post("/verbs/reload", async (_req, res) => {
+  try {
+    const path = "./verbs.js";
+    const resolved = new URL(path, import.meta.url).pathname;
+    // usuń z cache (Node 20+)
+    delete import.cache?.[resolved];
+
+    const verbsModule = await import(path + `?v=${Date.now()}`); // cache-bust
+    VERBS_MOTION = verbsModule.VERBS_MOTION || [];
+    VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
+    VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
+
+    console.log(
+      `♻️ verbs.js reloaded (${VERBS_MOTION.length}+${VERBS_PLACEBOUND.length}+${VERBS_PERCEPTION.length})`
+    );
+
+    res.json({
+      ok: true,
+      message: "verbs.js reloaded",
+      counts: {
+        motion: VERBS_MOTION.length,
+        placebound: VERBS_PLACEBOUND.length,
+        perception: VERBS_PERCEPTION.length,
+      },
+    });
+  } catch (err) {
+    console.error("reload error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// --- zwraca pełną listę COMMON_VERBS ---
+app.get("/verbs/common", async (_req, res) => {
+  try {
+    const verbsModule = await import("./verbs.js");
+    const all = verbsModule.COMMON_VERBS || verbsModule.default || [];
+    res.json({
+      ok: true,
+      count: all.length,
+      verbs: all,
+    });
+  } catch (err) {
+    console.error("Error /verbs/common:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// --- healthcheck / root (Render ping) ---
+app.get("/", (_req, res) => res.status(200).send("OK"));
+app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
+
+// --- uruchomienie serwera ---
+const server = app.listen(process.env.PORT || 3001, "0.0.0.0", () => {
+  const { address, port } = server.address();
+  console.log(`🚀 Backend działa na http://${address}:${port}`);
+});
+
+// --- stabilność HTTP (Render fix) ---
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
+// --- globalny catch błędów ---
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION:", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
+
+// ===================== /VERBS API + META =====================
+
+
 
 
 
