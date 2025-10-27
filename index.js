@@ -1347,101 +1347,118 @@ app.get('/tts-voices', async (_req, res) => {
 });
 
 /* ========================================================================== */
-/* ===================== QUIZ / COMPREHEND — v2.3 (PL) ====================== */
+/* ===================== QUIZ / COMPREHEND — v2.4 (PL) ====================== */
 /* ========================================================================== */
-/* Drop-in blok: wklej do index.js (po inicjalizacji Express 'app').          */
-/* Zawiera: heurystyki getQA_v23 + /agent/comprehend + /agent/comprehend-aggregate */
+/* Drop-in: wklej do index.js po app.use(express.json(...)).                  */
+/* Nie używa żadnych zewnętrznych modułów. ŻADNYCH export/require/import.     */
 /* ========================================================================== */
 
-/* ---------- Pomocnicze: bezpieczne cięcie po grafemach ---------- */
-const __PRQ_seg = (typeof Intl !== 'undefined' && Intl.Segmenter)
-  ? new Intl.Segmenter('pl', { granularity: 'grapheme' })
-  : null;
+/* ---------- Bezpieczne cięcie po grafemach (ogonkach) ---------- */
+let __PRQ_seg = null;
+try {
+  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+    __PRQ_seg = new Intl.Segmenter('pl', { granularity: 'grapheme' });
+  }
+} catch (_) { __PRQ_seg = null; }
 
 function __PRQ_safeSliceGraphemes(s = "", start = 0, end = undefined){
-  if (!__PRQ_seg){
-    // Fallback – zwykłe iterowanie po code points
+  try {
+    if (!__PRQ_seg) return Array.from(String(s)).slice(start, end).join('');
+    const it = __PRQ_seg.segment(String(s));
+    const arr = [];
+    for (const part of it) arr.push(part.segment);
+    return arr.slice(start, end).join('');
+  } catch (_e) {
     return Array.from(String(s)).slice(start, end).join('');
   }
-  const it = __PRQ_seg.segment(String(s));
-  const arr = [];
-  for (const part of it) arr.push(part.segment);
-  return arr.slice(start, end).join('');
 }
 
 /* ---------- Reguły językowe ---------- */
 const __PRQ_TIME_RE = /\b(o\s+\d{1,2}:\d{2}|w\s+(poniedziałek|wtorek|środę|czwartek|piątek|sobotę|niedzielę)|przed\s+\d{1,2}:\d{2}|rano|wieczorem|po\s+południu|nad\s+ranem|o\s+świcie)\b/iu;
 
-// Rdzenie czasowników (dopasowujemy \w* po rdzeniu)
-const __PRQ_MOVE_VERBS  = ['iś', 'pój', 'wej', 'wyj', 'wsiad', 'wsied', 'wyrusz', 'przesz', 'posz', 'pojech', 'przyjech', 'wróc', 'pobie', 'wesz'];
-const __PRQ_STATIC_VERBS= ['sied', 'sta', 'czek', 'ogląd', 'zobacz', 'je', 'czyt', 'byl', 'być', 'usied', 'zapark', 'obejrz'];
-const __PRQ_COMM_VERBS  = ['dzwo', 'zadzw', 'telefon', 'pis', 'napis', 'mail'];
+// Rdzenie czasowników (dopasowujemy \w* po rdzeniu, bardzo ostrożnie)
+const __PRQ_MOVE_VERBS   = ['iś', 'pój', 'wej', 'wyj', 'wsiad', 'wsied', 'wyrusz', 'przesz', 'posz', 'pojech', 'przyjech', 'wróc', 'pobie', 'wesz'];
+const __PRQ_STATIC_VERBS = ['sied', 'sta', 'czek', 'ogląd', 'zobacz', 'je', 'czyt', 'byl', 'być', 'usied', 'zapark', 'obejrz'];
+const __PRQ_COMM_VERBS   = ['dzwo', 'zadzw', 'telefon', 'pis', 'napis', 'mail'];
 
 function __PRQ_hasVerb(rootList, text){
-  const t = String(text || '').toLowerCase();
-  return rootList.some(r => new RegExp(`\\b${r}\\w*\\b`, 'iu').test(t));
-}
-
-function __PRQ_findFirstPP(text, preps = ['w','na','do','przy','pod','między','przed','za','nad','ku']){
-  const t = String(text || '');
-  const prep = preps.join('|');
-  const m = t.match(new RegExp(`\\b(${prep})\\s+[^,.;!?]+`, 'iu'));
-  if (!m) return null;
-
-  // Przytnij do pierwszego czasownika (wybrane popularne formy) lub znaku przestankowego
-  const span = m[0];
-  const cut = span
-    .replace(/\s+(obejrzeli|zobaczyli|usiedli|poszli|wrócili|weszli|wyszli|wsiadł|wsiadła|wsiadli|zadzwonił|zadzwoniła|zadzwonili)\b.*$/iu, '')
-    .trim();
-
-  // Dodatkowe bezpieczne obcięcie do grafemów (gdyby przypadkiem kończyło się w połowie)
-  return __PRQ_safeSliceGraphemes(cut, 0, undefined);
+  try {
+    const t = String(text || '').toLowerCase();
+    return rootList.some(r => new RegExp(`\\b${r}\\w*\\b`, 'iu').test(t));
+  } catch (_e) { return false; }
 }
 
 function __PRQ_findTime(text){
-  const m = String(text || '').match(__PRQ_TIME_RE);
-  return m ? m[0] : null;
+  try {
+    const m = String(text || '').match(__PRQ_TIME_RE);
+    return m ? m[0] : null;
+  } catch (_e) { return null; }
 }
 
-function __PRQ_normalizeAnswer(ans){
-  if (!ans) return '';
-  let out = String(ans).trim();
-  // usuń kropkę/kreski końcowe
-  out = out.replace(/[.!?]+$/u, '').trim();
-  return out;
+/* Znajdź pierwszą frazę przyimkową i przytnij do sensownej długości */
+function __PRQ_findFirstPP(text, preps){
+  try {
+    const t = String(text || '');
+    const prep = (preps && preps.length ? preps : ['w','na','do','przy','pod','między','przed','za','nad','ku']).join('|');
+    // Ogranicz długość, by nie połykać całego zdania
+    const m = t.match(new RegExp(`\\b(?:${prep})\\s+([^,.;!?]{1,80})`, 'iu'));
+    if (!m) return null;
+    let span = `${m[0]}`.trim();
+
+    // Utnij, gdy zaczyna się kolejny czasownik (kilka popularnych form)
+    span = span.replace(/\s+(obejrzeli|zobaczyli|usiedli|poszli|wrócili|weszli|wyszli|wsiadł|wsiadła|wsiadli|zadzwonił|zadzwoniła|zadzwonili)\b.*$/iu, '').trim();
+
+    // Usuń końcowe kropki/znaki
+    span = span.replace(/[.!?]+$/u,'').trim();
+
+    // Bezpieczne cięcie grafemów (gdyby kończyło się w połowie ogonka)
+    span = __PRQ_safeSliceGraphemes(span, 0, undefined);
+
+    // Mikropoprawka kapitalizacji (jeśli zaczyna się od przyimka, nie forsuj dużej litery)
+    return span;
+  } catch (_e) { return null; }
 }
 
 function __PRQ_chooseDirectionPP(text){
-  // Dla kierunku: preferuj do|na|w|ku (np. "w góry")
-  const first = [
+  // Kierunek preferuj: do|na|w|ku
+  const order = [
     __PRQ_findFirstPP(text, ['do']),
     __PRQ_findFirstPP(text, ['na']),
     __PRQ_findFirstPP(text, ['w']),
-    __PRQ_findFirstPP(text, ['ku']),
-  ].find(Boolean);
-  return first || null;
+    __PRQ_findFirstPP(text, ['ku'])
+  ].filter(Boolean);
+  return order[0] || null;
 }
 
 function __PRQ_choosePlacePP(text){
   return __PRQ_findFirstPP(text, ['pod','przy','na','w','między','przed','za','nad']);
 }
 
-/* ---------- Główna heurystyka: getQA_v23 ---------- */
-function getQA_v23(textRaw){
+function __PRQ_normalizeAnswer(ans){
+  try {
+    if (!ans) return '';
+    let out = String(ans).trim();
+    out = out.replace(/[.!?]+$/u, '').trim();
+    return out;
+  } catch (_e) { return String(ans || ''); }
+}
+
+/* ---------- Heurystyka główna ---------- */
+function getQA_v24(textRaw){
   const text = String(textRaw || '').normalize('NFC').replace(/\s+/g, ' ').trim();
   if (!text) return { qtype:'Co?', question:'Co się dzieje?', answer:'' };
 
-  const time     = __PRQ_findTime(text);
-  const hasMove  = __PRQ_hasVerb(__PRQ_MOVE_VERBS, text);
-  const hasStatic= __PRQ_hasVerb(__PRQ_STATIC_VERBS, text);
-  const hasComm  = __PRQ_hasVerb(__PRQ_COMM_VERBS, text);
+  let time = __PRQ_findTime(text);
+  const hasMove   = __PRQ_hasVerb(__PRQ_MOVE_VERBS, text);
+  const hasStatic = __PRQ_hasVerb(__PRQ_STATIC_VERBS, text);
+  const hasComm   = __PRQ_hasVerb(__PRQ_COMM_VERBS, text);
 
-  // 1) Kiedy? ma najwyższy priorytet
+  // 1) Kiedy? zawsze pierwsze
   if (time){
-    return { qtype: 'Kiedy?', question: 'Kiedy to się działo?', answer: __PRQ_normalizeAnswer(time) };
+    return { qtype:'Kiedy?', question:'Kiedy to się działo?', answer: __PRQ_normalizeAnswer(time) };
   }
 
-  // 2) Komunikacja "do [kogo]" ≠ kierunek; preferuj Gdzie? jeśli mamy PP-lokację
+  // 2) Komunikacja "do [kogo]" ≠ kierunek; preferuj Gdzie? gdy mamy lokację
   if (hasComm){
     const ppPlace = __PRQ_choosePlacePP(text);
     if (ppPlace){
@@ -1450,7 +1467,7 @@ function getQA_v23(textRaw){
     // brak miejsca — nie wymuszamy Dokąd?
   }
 
-  // 3) Ruch -> Dokąd?
+  // 3) Ruch → Dokąd? (spróbuj kierunkowe PP)
   if (hasMove){
     const dir = __PRQ_chooseDirectionPP(text) || __PRQ_choosePlacePP(text);
     if (dir){
@@ -1458,7 +1475,7 @@ function getQA_v23(textRaw){
     }
   }
 
-  // 4) Statyczne / domyślnie miejsce -> Gdzie?
+  // 4) Statyczne → Gdzie?
   if (hasStatic){
     const ppPlace = __PRQ_choosePlacePP(text);
     if (ppPlace){
@@ -1475,7 +1492,7 @@ function getQA_v23(textRaw){
     return { qtype:'Gdzie?', question:'Gdzie byli?', answer: __PRQ_normalizeAnswer(anyPP) };
   }
 
-  // 6) Ostatnia deska ratunku — jeśli mamy imię/właściwą nazwę
+  // 6) Ostatnia deska: imię/właściwa nazwa → Kto?
   const mWho = text.match(/\b([A-ZŻŹĆŃÓŁŚĄĘ][a-zżźćńółśąę]+)\b/u);
   if (mWho){
     return { qtype:'Kto?', question:'Kto to zrobił?', answer: __PRQ_normalizeAnswer(mWho[1]) };
@@ -1484,54 +1501,52 @@ function getQA_v23(textRaw){
   return { qtype:'Co?', question:'Co się dzieje?', answer:'' };
 }
 
-/* ---------- Pomocnicze: split na zdania ---------- */
+/* ---------- Split na zdania ---------- */
 function __PRQ_splitSentences(s=""){
-  return String(s||"")
-    .replace(/\s*[\r\n]+\s*/g," ")
-    .split(/(?<=[.!?…])\s+/u)
-    .map(t=>t.trim())
-    .filter(Boolean);
+  try {
+    return String(s||"")
+      .replace(/\s*[\r\n]+\s*/g," ")
+      .split(/(?<=[.!?…])\s+/u)
+      .map(t=>t.trim())
+      .filter(Boolean);
+  } catch (_e) {
+    // Fallback bez lookbehind (gdyby hosting marudził)
+    return String(s||"")
+      .replace(/\s*[\r\n]+\s*/g," ")
+      .split(/[.!?…]\s+/u)
+      .map(t=>t.trim())
+      .filter(Boolean);
+  }
 }
 
 /* ========================================================================== */
 /* ============================ ENDPOINTY API =============================== */
 /* ========================================================================== */
 
-/* --- Pojedyncze zdanie --- */
 app.post('/agent/comprehend', async (req, res) => {
   try {
     const { text } = req.body || {};
-    const qa = getQA_v23(text);
+    const qa = getQA_v24(text);
     res.setHeader('Content-Type','application/json; charset=utf-8');
-    // nagłówki pomocnicze do debugowania (opcjonalnie)
-    res.setHeader('X-Comprehend-Path', 'getQA_v23');
+    res.setHeader('X-Comprehend-Path', 'getQA_v24');
     if (qa.question) res.setHeader('X-Comprehend-Question', qa.question);
     if (qa.answer)   res.setHeader('X-Comprehend-Answer', qa.answer);
-
-    return res.status(200).json({
-      ok: true,
-      qtype: qa.qtype,
-      question: qa.question,
-      answer: qa.answer
-    });
+    return res.status(200).json({ ok:true, qtype: qa.qtype, question: qa.question, answer: qa.answer });
   } catch (e){
+    console.error('comprehend error:', e);
     return res.status(500).json({ ok:false, error: String(e && e.message || e) });
   }
 });
 
-/* --- Agregacja (wiele pytań z tekstu) --- */
 app.post('/agent/comprehend-aggregate', async (req, res) => {
   try {
     const { text, max_questions } = req.body || {};
     const limit = Math.max(1, Math.min(Number(max_questions || 6), 20));
 
     const sentences = __PRQ_splitSentences(text);
-    const itemsRaw = sentences.map(s => {
-      const qa = getQA_v23(s);
-      return { ...qa, sentence: s };
-    });
+    const itemsRaw = sentences.map(s => ({ ...getQA_v24(s), sentence: s }));
 
-    // Dedup – po (qtype + answer) i zachowanie kolejności
+    // Dedup po (qtype|answer), zachowaj kolejność
     const seen = new Set();
     const items = [];
     for (const it of itemsRaw){
@@ -1544,19 +1559,17 @@ app.post('/agent/comprehend-aggregate', async (req, res) => {
     }
 
     res.setHeader('Content-Type','application/json; charset=utf-8');
-    return res.status(200).json({
-      ok: true,
-      count: items.length,
-      items
-    });
+    return res.status(200).json({ ok:true, count: items.length, items });
   } catch (e){
+    console.error('aggregate error:', e);
     return res.status(500).json({ ok:false, error: String(e && e.message || e) });
   }
 });
 
 /* ========================================================================== */
-/* ======================= /QUIZ / COMPREHEND — v2.3 ======================== */
+/* ======================= /QUIZ / COMPREHEND — v2.4 ======================== */
 /* ========================================================================== */
+
 
 
 
