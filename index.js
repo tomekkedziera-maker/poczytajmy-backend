@@ -1578,6 +1578,7 @@ let VERBS_PERCEPTION = [];
 
     if (/\bprzy\s+oknie\b/i.test(base))    return "przy oknie";
     if (/\bprzy\s+drzwiach\b/i.test(base)) return "przy drzwiach";
+    if (/\bprzy\s+wej[śs]ciu\b/i.test(base)) return "przy wejściu"; // ⬅️ DODANE
 
     const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w|z|ze)";
     const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`, "gi");
