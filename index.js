@@ -1362,31 +1362,38 @@ let VERBS_PERCEPTION = [];
     console.error("[QUIZ] Brak instancji Express `app` — wklej ten blok PO inicjalizacji app.");
     return;
   }
-
-  // ==================== ŁADOWANIE LEMATÓW ====================
   (async () => {
     try {
       const verbsModule = await import("./verbs.js");
       VERBS_MOTION     = verbsModule.VERBS_MOTION     || [];
       VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
       VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
+
+      // ⬇️ DODAJ TEN BLOK
+      if (!VERBS_MOTION.length && !VERBS_PLACEBOUND.length && !VERBS_PERCEPTION.length) {
+        console.warn("verbs.js załadowany, ale listy puste — używam fallbacku.");
+        VERBS_MOTION = [
+          "iść","pójść","chodzić","jechać","pojechać","wracać","wrócić",
+          "wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść",
+          "zajechać","dotrzeć","podjechać","odjechać","przyjść"
+        ];
+        VERBS_PLACEBOUND = [
+          "usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się",
+          "czekać","czytać","pisać","bawić się","grać","jeść","pić",
+          "oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"
+        ];
+        VERBS_PERCEPTION = [
+          "patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się",
+          "oglądać","zaglądać","zerkać"
+        ];
+      }
       console.log(`✅ verbs.js: motion=${VERBS_MOTION.length}, place=${VERBS_PLACEBOUND.length}, perc=${VERBS_PERCEPTION.length}`);
     } catch (e) {
       console.warn("⚠️ Nie udało się załadować ./verbs.js, używam fallbacku:", e.message);
-      VERBS_MOTION = [
-        "iść","pójść","chodzić","jechać","pojechać","wracać","wrócić",
-        "wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść",
-        "zajechać","dotrzeć","podjechać","odjechać","przyjść"
-      ];
-      VERBS_PLACEBOUND = [
-        "usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się",
-        "czekać","czytać","pisać","bawić się","grać","jeść","pić",
-        "oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"
-      ];
-      VERBS_PERCEPTION = [
-        "patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się",
-        "oglądać","zaglądać","zerkać"
-      ];
+      // (zostaw Twój fallback z catch’a bez zmian)
+      VERBS_MOTION = [ /* ...jak masz... */ ];
+      VERBS_PLACEBOUND = [ /* ... */ ];
+      VERBS_PERCEPTION = [ /* ... */ ];
     }
   })();
 
