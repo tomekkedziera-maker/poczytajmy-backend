@@ -1351,7 +1351,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (patched+hotfix+KTO-activity) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.7 — INLINE (conf + safe LLM fallback) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1367,7 +1367,11 @@ let VERBS_PERCEPTION = [];
     return;
   }
 
-  // ==================== ŁADOWANIE LEMATÓW ====================
+  /* ==================== KONFIG ==================== */
+  const LLM_FALLBACK_ENABLED = process.env.LLM_FALLBACK_ENABLED !== '0';
+  const RULE_CONF_THRESHOLD = Number(process.env.RULE_CONF_THRESHOLD || 75);
+
+  /* ==================== ŁADOWANIE LEMATÓW ==================== */
   (async () => {
     try {
       const verbsModule = await import("./verbs.js");
@@ -1383,13 +1387,13 @@ let VERBS_PERCEPTION = [];
         VERBS_PLACEBOUND = ["usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się","czekać","czytać","pisać","bawić się","grać","jeść","pić","oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"];
       }
       if (!VERBS_PERCEPTION.length) {
-        VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać"];
+        VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać","zobaczyć","obejrzeć"];
       }
     } catch (e) {
       console.warn("⚠️ Nie udało się załadować ./verbs.js, używam fallbacków:", e.message);
       VERBS_MOTION = ["iść","pójść","chodzić","jechać","pojechać","wracać","wrócić","wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść","zajechać","dotrzeć","podjechać","odjechać","przyjść"];
       VERBS_PLACEBOUND = ["usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się","czekać","czytać","pisać","bawić się","grać","jeść","pić","oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"];
-      VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać"];
+      VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać","zobaczyć","obejrzeć"];
     }
     // Mikro-dodania rdzeni (bezpieczne)
     if (!VERBS_MOTION.includes("pobieg")) VERBS_MOTION.push("pobieg");           // „pobiegł”
@@ -1397,7 +1401,7 @@ let VERBS_PERCEPTION = [];
     if (!VERBS_PERCEPTION.includes("obejrz")) VERBS_PERCEPTION.push("obejrz");   // „obejrzeli”
   })();
 
-  // ==================== UTILS ====================
+  /* ==================== UTILS ==================== */
   const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
   const stripPunct = (s = "") => String(s).trim().replace(/[.,;!?…:]+$/u, "");
   const deaccent = (s = "") =>
@@ -1504,7 +1508,7 @@ let VERBS_PERCEPTION = [];
     if (/\bidziemy\b/.test(L)) return "idziemy";
     if (/\bposzed\w*|poszl\w*/i.test(L)) return "poszli";
     if (/\bpojech\w*|\bjad\w*/i.test(L)) return "pojechali";
-    if (/\bwesz\w*|\bwszed\w*/i.test(L)) return "weszli"; // ⬅️ dodane: „weszła/weszli/wszedł”
+    if (/\bwesz\w*|\bwszed\w*/i.test(L)) return "weszli";
     return "poszli";
   }
 
@@ -1526,7 +1530,7 @@ let VERBS_PERCEPTION = [];
     return null;
   }
 
-  // ===== TIME GUARD (nowe) =====
+  // ===== TIME GUARD =====
   const TIME_WORDS = "(rano|rankiem|południu|poludniu|wieczorem|nocą|noca|nocy|jutro|dzisiaj|dziś|wczoraj)";
   const TIME_RANGE_RE = new RegExp(String.raw`\\bod\\s+\\S+(?:\\s+\\S+){0,4}\\s+do\\s+\\b${TIME_WORDS}\\b`, "iu");
   const DO_TIME_RE = new RegExp(String.raw`\\bdo\\s+${TIME_WORDS}\\b`, "iu");
@@ -1550,10 +1554,6 @@ let VERBS_PERCEPTION = [];
 
     const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
     let dest = `${pick.prep} ${pick.body}`.trim();
-// Od razu utnij, jeśli we fragmencie pojawiają się czasowniki percepcji / aktywności
-dest = dest
-  .replace(/\s+\b(obejrz\p{L}*|zobacz\p{L}*|ogl[aą]d\p{L}*)\b.*$/iu, "") // np. "na wystawie obejrzeli..." → "na wystawie"
-  .replace(/\s+\b(robili|zrobili|jedli|pili|bawili|czytali|rysowali|usiedli|czekali)\b.*$/iu, "");
 
     if (pick.prep === "na" && PERCEPTION_RE().test(s)) return null;
 
@@ -1652,7 +1652,7 @@ dest = dest
       }
     }
 
-    // ⬇️ hotfix: ucinanie ogonów aktywności/oglądania
+    // hotfix: ucinanie ogonów aktywności/oglądania
     best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli|usiedli|siadł|siadła|czekali|czekał|czekała|obejrzeli|obejrzał|obejrzała|zobaczyli|zobaczył|oglądali|ogladali|ogladal|oglądał)\b.*$/iu, "").trim();
     best = stripPunct(normalizeSpaces(best));
 
@@ -1662,9 +1662,21 @@ dest = dest
 
   // ===== „Kto?” — DO/NA + czasownik + Imię(/ i Imię) =====
   function detectWhoQuestion(s) {
-    const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali|weszła|weszli|wszed[łl])\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+)*)/i;
+    const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali|weszła|weszli|wszed[łl]|robił|robili|robiła|malował|malowali|piecze|pieczenia|piecz[eał]|piecze|piekl[ai])\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+)*)/iu;
     const m = String(s).match(re);
-    if (!m) return null;
+    if (!m) {
+      // drugi wariant: „X robi/robią …” → Kto robi …?
+      const m2 = String(s).match(/^\s*([A-ZĄĆĘŁŃÓŚŹŻ][\p{L}\-]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][\p{L}\-]+)*)\s+(robi[ąa]?|maluje|piecze)\s+([^,.;!?]+)/u);
+      if (m2) {
+        const answer = stripPunct(m2[1]).trim();
+        const verb = m2[2].toLowerCase().replace(/ą$/, "a");  // „robią” → „robia” (zaraz poprawimy)
+        const object = stripPunct(m2[3]).trim();
+        const verbQ = verb.replace(/robia/i, "robi");          // „robia” → „robi” (pytanie)
+        const q = sanitizeQ(`Kto ${verbQ} ${object}`);
+        return { ok: true, qtype: "Kto?", question: q, answer };
+      }
+      return null;
+    }
 
     const namesRaw = stripPunct(m[4]).trim();
     if (!namesRaw) return null;
@@ -1681,62 +1693,75 @@ dest = dest
     return { ok: true, qtype: "Kto?", question: sanitizeQ(`Kto ${verb} ${prep} ${place}`), answer: namesRaw };
   }
 
-  /* ===== „Kto?” — aktywność (np. „Elfy robią zabawki…”) ===== */
-  const VERB_3SG_MAP = new Map(Object.entries({
-    // klucz = rdzeń/forma bazowa, wartość = 3 os. l.poj. do pytania
-    "robi": "robi",
-    "maluj": "maluje",
-    "piecze": "piecze",
-    "rysuj": "rysuje",
-    "czyta": "czyta",
-    "gotuj": "gotuje",
-    "sprząt": "sprząta",
-    "sprzat": "sprząta",
-    "pisz": "pisze",
-    "naprawi": "naprawia",
-    "buduj": "buduje"
-  }));
-  function firstListItem(s=""){
-    // "zabawki, rowery i kolejki" → "zabawki"
-    const cut = String(s).split(/\s*,\s*|\s+i\s+/i)[0] || s;
-    return stripPunct(normalizeSpaces(cut));
-  }
-  function extractWhoActivity(s) {
-    const text = String(s);
-   // \p{L} łapie pełne litery (z ogonkami), więc "robią", "rysują" itd.
-const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p{L}*|gotuj\p{L}*|sprz[aą]t\p{L}*|pisz\p{L}*|naprawi\p{L}*|buduj\p{L}*)\b/iu);
+  /* ==================== WARSTWA CONFIDENCE ==================== */
+  const ret = (value, conf=0, reason="") => ({ value: value||"", conf: Number(conf)||0, reason });
 
-    if (!m) return null;
-
-    const verbRaw = (m[1] || "").toLowerCase();
-    const tail = text.slice(m.index + m[0].length); // ogon po czasowniku
-
-    // Obiekt do najbliższego przyimka/znaku kończącego zdanie
-    let obj = tail.split(/\s+(?:w|we|na|do|przy|pod|nad|z|ze)\b/i)[0]
-                  .split(/[.;!?]/)[0];
-    obj = firstListItem(obj); // np. „zabawki”
-
-    // Mapowanie do 3 os. l.poj.
-    let stem = verbRaw
-      .replace(/ą\b/u,"a")
-      .replace(/ją\b/u,"j")
-      .replace(/ają\b/u,"aj")
-      .replace(/(uje|ają|ał|ali|ała|ały|amy|acie|am|asz|emy|ecie|ę|esz|ą)$/u, "");
-    const candidates = [stem, verbRaw.replace(/[^\p{L}]+/gu,"")].filter(Boolean);
-    let verb3sg = "robi";
-    for (const cand of candidates) {
-      for (const [k,v] of VERB_3SG_MAP.entries()) {
-        if (cand.startsWith(k)) { verb3sg = v; break; }
-      }
-    }
-
-    const objSafe = obj && /\p{L}/u.test(obj) ? obj : "";
-    const q = objSafe ? `Kto ${verb3sg} ${objSafe}` : `Kto ${verb3sg}`;
-    return sanitizeQ(q);
+  function extractDestinationWithConf(s) {
+    const v = extractDestination(s);
+    if (!v) return ret("", 0, "no-dest");
+    const txt = deaccent(String(s).toLowerCase());
+    let conf = 70;
+    if (/\b(wsied\w*|wsiad\w*)\s+do\b/.test(txt)) conf = 95;
+    if (/\b(poszed\w*|poszl\w*|pojech\w*|wesz\w*|wszed\w*)\b/.test(txt)) conf += 10;
+    if (/[,;]\s*(a\s+potem|potem|nast[eę]pnie)/i.test(s)) conf -= 5;
+    conf = Math.max(0, Math.min(100, conf));
+    return ret(v, conf, "rule-dokad");
   }
 
-  // ==================== GŁÓWNA FUNKCJA Q/A ====================
-  function generateQuestionAndAnswerTeacher(textRaw) {
+  function pickPlaceWithConf(s) {
+    const v = pickPlaceFromSentence(s);
+    if (!v) return ret("", 0, "no-place");
+    let conf = 70;
+    if (/przy\s+(oknie|drzwiach|wejściu|wejsciu)\b/i.test(v)) conf = 85;
+    if (/^\s*(w|we|na)\b/i.test(v)) conf += 5;
+    return ret(v, Math.min(conf, 95), "rule-gdzie");
+  }
+
+  function extractTimeWithConf(s) {
+    const v = extractTime(s);
+    if (!v) return ret("", 0, "no-time");
+    let conf = 70;
+    if (/^\s*o\s*\d{1,2}[:.]\d{2}\s*$/i.test(v)) conf = 90;
+    if (/\b(wczoraj|dzisiaj|dziś|jutro|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(v)) conf = Math.max(conf, 80);
+    return ret(v, conf, "rule-kiedy");
+  }
+
+  function detectWhoWithConf(s) {
+    const q = detectWhoQuestion(s);
+    if (!q || !q.answer) return { ok:false, value:"", conf:0, reason:"no-who", q:null };
+    let conf = 75;
+    if (/\b(poszed\w*|pojech\w*|wszed\w*|wesz\w*)\b/i.test(s)) conf = 85;
+    return { ok:true, value:q.answer, conf, reason:"rule-kto", q };
+  }
+
+  /* ==================== FALLBACK LLM (bezpieczny) ==================== */
+  async function llmFallbackQA({ text, preferredType }) {
+    if (!LLM_FALLBACK_ENABLED) return null;
+    // użyje globalnego helpera chatPref, jeśli istnieje; w przeciwnym razie wyłączy się elegancko
+    const hasChatPref = typeof globalThis.chatPref === "function";
+    if (!hasChatPref) return null;
+    try {
+      const prompt = [
+        { role: "system", content:
+          "Masz zwrócić najkrótszy możliwy fragment ODPOWIEDZI wyłącznie jako substring tekstu użytkownika. " +
+          "Nie parafrazuj, nie dodawaj nowych słów, nie używaj cudzysłowów. Zwróć samą odpowiedź." },
+        { role: "user", content:
+          `Tekst: ${text}\n` +
+          (preferredType ? `Pytanie typu (podpowiedź): ${preferredType}\n` : "") +
+          "Zwróć odpowiedź jako fragment oryginalnego tekstu." }
+      ];
+      const { text: out } = await globalThis.chatPref({
+        prompt, temperature: 0, max_tokens: 24, top_p: 1, deadlineMs: 1200
+      });
+      const ans = String(out||"").trim().replace(/^"+|"+$/g,"");
+      const ok = deaccent(text).toLowerCase().includes(deaccent(ans).toLowerCase());
+      if (!ok || ans.length < 1) return null;
+      return ans;
+    } catch { return null; }
+  }
+
+  /* ==================== GŁÓWNA FUNKCJA Q/A ==================== */
+  function generateQuestionAndAnswerTeacher_core(textRaw) {
     if (!textRaw || typeof textRaw !== "string")
       return { ok: false, qtype: "Co?", question: "Co się dzieje?", answer: "", source_path: "error-empty" };
 
@@ -1744,12 +1769,11 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
     const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
     const tDA = deaccent(t);
 
-    const who = detectWhoQuestion(t);
-    const whoActivityQ = extractWhoActivity(t);   // ⬅️ NOWE
-    const time = extractTime(t);
-    const dest = extractDestination(t);
-    const place = pickPlaceFromSentence(t);
-    const cue = detectVerbCueDA(tDA);
+    const who   = detectWhoWithConf(t);
+    const time  = extractTimeWithConf(t);
+    const dest  = extractDestinationWithConf(t);
+    const place = pickPlaceWithConf(t);
+    const cue   = detectVerbCueDA(tDA);
 
     function qDokad() {
       let v = "poszli";
@@ -1762,7 +1786,7 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
       return sanitizeQ(`Dokąd ${middle}`);
     }
     function qKiedy() {
-      if (time && /^o\s+\d{1,2}[:.]\d{2}/i.test(time)) {
+      if (time.value && /^o\s+\d{1,2}[:.]\d{2}/i.test(time.value)) {
         if (/wsiad\w*|wsied\w*/i.test(tDA) && /\b(do\s+(autobusu|tramwaju|pociągu|pociagu))/i.test(tDA))
           return "O której godzinie wsiedli?";
         if (/wr[ao]c/i.test(tDA)) return "O której godzinie wrócili do domu?";
@@ -1778,61 +1802,59 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
       return "Gdzie byli?";
     }
 
-    const preferPlaceFirst = SEATLIKE_RE().test(t);
-    const strongTime = !!(time && /\b(o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|dzisiaj|dziś|jutro|wczoraj|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(time));
-
-    // PRIORYTETY:
-    // 1) Kto? (ruch do/na miejsce z imieniem)
-    if (who) {
-      const ans = rehydrateAnswerFromOriginal(text, who.answer);
-      const pl = who.question.replace(/\s+/g," ").trim();
-      return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    // PRIORYTETY + progi confidence
+    if (who.ok && who.conf >= RULE_CONF_THRESHOLD) {
+      const ans = rehydrateAnswerFromOriginal(text, who.value);
+      const q = who.q?.question || "Kto to zrobił?";
+      return { ok: true, qtype: "Kto?", question: q, answer: ans, source_path: "rule-v7.7+conf" };
     }
-    // 2) Kto? (aktywność) — np. „Kto robi zabawki?”
-    if (whoActivityQ) {
-      // odpowiedź: subiekt przed czasownikiem
-      const beforeVerb = t.split(/\b(robi\w*|maluj\w*|piecze\w*|rysuj\w*|czyta\w*|gotuj\w*|sprz[aą]t\w*|pisz\w*|naprawi\w*|buduj\w*)\b/iu)[0] || "";
-      const subj = beforeVerb.trim().split(/,|\.|;/)[0].trim().split(/\s+/).slice(-2).join(" ");
-      const ans = rehydrateAnswerFromOriginal(text, subj || "");
-      return { ok: true, qtype: "Kto?", question: whoActivityQ, answer: ans || "", source_path: "rule-teacher-strict-v7.6f-fullQ-activity-fix" };
+    if (time.value && time.conf >= RULE_CONF_THRESHOLD) {
+      return { ok: true, qtype: "Kiedy?", question: qKiedy(), answer: rehydrateAnswerFromOriginal(text, time.value), source_path:"rule-v7.7+conf" };
     }
-    // 3) Kiedy?
-    if (strongTime || time) {
-      const q = qKiedy();
-      const a = rehydrateAnswerFromOriginal(text, time);
-      return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    if (dest.value && dest.conf >= RULE_CONF_THRESHOLD) {
+      return { ok: true, qtype: "Dokąd?", question: qDokad(), answer: rehydrateAnswerFromOriginal(text, dest.value), source_path:"rule-v7.7+conf" };
     }
-    // 4) Dokąd?
-    if (dest) {
-      const q = qDokad();
-      const a = rehydrateAnswerFromOriginal(text, dest);
-      return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
-    }
-    // 5) Gdzie? (seatlike preferowane)
-    if (preferPlaceFirst && place) {
-      const q = qGdzie();
-      const a = rehydrateAnswerFromOriginal(text, place);
-      return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
-    }
-    if (place) {
-      const q = qGdzie();
-      const a = rehydrateAnswerFromOriginal(text, place);
-      return { ok: true, qtype: "Gdzie?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    if (place.value && place.conf >= RULE_CONF_THRESHOLD) {
+      return { ok: true, qtype: "Gdzie?", question: qGdzie(), answer: rehydrateAnswerFromOriginal(text, place.value), source_path:"rule-v7.7+conf" };
     }
 
-    return { ok: true, qtype: "Co?", question: "Co się dzieje w tej historii?", answer: "", source_path: "rule-teacher-strict-v7.6f-fullQ-fallback" };
+    // Kandydaci o niskiej pewności (przydadzą się do debug)
+    const candidates = [
+      { type: "Dokąd?", v: dest.value, conf: dest.conf },
+      { type: "Gdzie?", v: place.value, conf: place.conf },
+      { type: "Kiedy?", v: time.value, conf: time.conf },
+      { type: "Kto?",   v: who.value, conf: who.conf }
+    ].filter(x => x.v);
+
+    return { ok: true, qtype: "Co?", question: "Co się dzieje w tej historii?", answer: "", source_path: "fallback-rule-low", candidates };
   }
 
-  // ==================== ENDPOINTY: QUIZ (multi / aggregate) ====================
-  app.post("/agent/comprehend", (req, res) => {
+  /* ==================== ENDPOINTY ==================== */
+
+  // /agent/comprehend — ASYNC aby użyć fallbacku LLM
+  app.post("/agent/comprehend", async (req, res) => {
     try {
       const { text } = req.body || {};
-      res.json(generateQuestionAndAnswerTeacher(text));
+      let r = generateQuestionAndAnswerTeacher_core(text);
+
+      // Jeśli reguły niepewne → spróbuj LLM
+      if (LLM_FALLBACK_ENABLED && r && r.qtype === "Co?" && (!r.answer || r.answer.length === 0) && text) {
+        const preferred = r.candidates?.sort((a,b)=>b.conf-a.conf)[0]?.type || null;
+        const guess = await llmFallbackQA({ text, preferredType: preferred });
+        if (guess) {
+          r = { ok:true, qtype: preferred || "Co?", question: preferred || "Co się dzieje w tej historii?", answer: rehydrateAnswerFromOriginal(text, guess), source_path:"llm-fallback" };
+        } else {
+          // zostaje fallback „Co?”
+        }
+      }
+
+      res.json(r);
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
     }
   });
 
+  // /agent/comprehend-aggregate (bez zmian w API, wewnątrz używa core)
   app.post("/agent/comprehend-aggregate", (req, res) => {
     try {
       const { text, max_questions = 10 } = req.body || {};
@@ -1859,14 +1881,14 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
 
       const scored = sentences
         .map(s => {
-          const r = generateQuestionAndAnswerTeacher(s);
+          const r = generateQuestionAndAnswerTeacher_core(s);
           let sc = 0;
-          if (r.qtype === "Dokąd?") sc = 100;
-          else if (r.qtype === "Kiedy?") sc = 90;
-          else if (r.qtype === "Kto?")  sc = 85;
-          else if (r.qtype === "Gdzie?") sc = 80;
+          if (r.qtype === "Dokąd?" && r.answer) sc = 100;
+          else if (r.qtype === "Kiedy?" && r.answer) sc = /^\s*[Oo]\s*\d{1,2}[:.]\d{2}\s*$/.test(r.answer||"") ? 60 : 90;
+          else if (r.qtype === "Kto?"   && r.answer) sc = 85;
+          else if (r.qtype === "Gdzie?" && r.answer) sc = 80;
           else sc = 40;
-          return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.6f-fullQ" };
+          return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.7" };
         })
         .sort((a, b) => b.score - a.score);
 
@@ -1926,7 +1948,6 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
       const k = norm(expectedAnswer);
       const q = String(question||"").trim();
 
-      // Pusty input dziecka -> od razu nie OK
       if (!u) {
         return res.json({
           ok: true,
@@ -1935,7 +1956,6 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
         });
       }
 
-      // 1) Jeżeli mamy oczekiwane (closed-ended) → klasyczne dopasowanie
       if (k) {
         const jaccard = (() => {
           const tok = (x) => new Set(String(x).split(" ").filter(Boolean));
@@ -1955,12 +1975,11 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
         });
       }
 
-      // 2) Brak expectedAnswer (open-ended)
+      // open-ended
       const looksMeaningful = /\S+\s+\S+/.test(childAnswer) || String(childAnswer).trim().length >= 5;
       const T = norm(text);
       const uTok = new Set(u.split(" ").filter(Boolean));
       const hits = [...uTok].filter(w => T.includes(w)).length;
-
       const pass = looksMeaningful && hits >= 1;
 
       return res.json({
@@ -1975,8 +1994,7 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
     }
   });
 
-  // ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE (ONE-BEST) =====================
-  // Priorytet: 1) Dokąd? 2) Kto? 3) Gdzie? 4) Kiedy?
+  // ===================== ONE-BEST (jak miałeś) =====================
   app.post("/agent/comprehend-one", (req, res) => {
     try {
       const { text } = req.body || {};
@@ -1986,7 +2004,6 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
 
       const P = z => String(z||"").trim().replace(/[.,;!?…:]+$/u,"");
 
-      // hotfix: ekstrakcja imion bez fałszywych „Wsiadł/Poszedł/...”
       function extractNames(s) {
         const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
         const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
@@ -2026,14 +2043,12 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
         return null;
       }
 
-      // --- Ekstrakcja miejsca docelowego tylko gdy jest ruch ---
       function extractDestinationIfMove(s) {
         const cue = detectMoveCue(s);
         if (!cue) return null;
 
         const base = String(s);
 
-        // 1) BOARDING pierwszeństwo
         const reBoard = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,5})/iu;
         const mb = base.match(reBoard);
         if (mb) {
@@ -2048,7 +2063,6 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
           return dest.trim();
         }
 
-        // 2) Ogólna ścieżka
         const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroci\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
         const tail = mv >= 0 ? base.slice(mv) : base;
 
@@ -2101,14 +2115,13 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
         const dest = extractDestinationIfMove(s);
         const move = !!detectMoveCue(s);
 
-        const r = generateQuestionAndAnswerTeacher(s);
+        const r = generateQuestionAndAnswerTeacher_core(s);
 
         let score = 0;
         let qtype = r.qtype;
         let question = r.question;
         let answer = r.answer;
 
-        // Drobna normalizacja odpowiedzi dla Gdzie? — małe litery
         if (qtype === "Gdzie?" && typeof answer === "string") {
           answer = answer.toLowerCase();
         }
@@ -2159,19 +2172,18 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
     }
   });
 
-  // ==================== VERBS API + META + HEALTH ====================
+  // ==================== VERBS API + META + HEALTH + DEBUG ====================
   app.get("/version-quiz", (_req, res) =>
-    res.json({ build: "2025-10-28 rule-teacher-strict-v7.6f-fullQ + hotfix-cut+i-verb+stadion+time-guard + activity-KTO" })
+    res.json({ build: "2025-10-28 rule-teacher-strict-v7.7 (conf + safe-llm-fallback)" })
   );
 
   app.post("/verbs/reload", async (_req, res) => {
     try {
       const path = "./verbs.js";
-      const verbsModule = await import(path + `?v=${Date.now()}`); // cache-bust
+      const verbsModule = await import(path + `?v=${Date.now()}`);
       VERBS_MOTION     = verbsModule.VERBS_MOTION     || VERBS_MOTION;
       VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || VERBS_PLACEBOUND;
       VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || VERBS_PERCEPTION;
-      // dociśnij mikro-dodania po reloadzie
       if (!VERBS_MOTION.includes("pobieg")) VERBS_MOTION.push("pobieg");
       if (!VERBS_PERCEPTION.includes("zobaczy")) VERBS_PERCEPTION.push("zobaczy");
       if (!VERBS_PERCEPTION.includes("obejrz")) VERBS_PERCEPTION.push("obejrz");
@@ -2203,6 +2215,20 @@ const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p
   });
 
   app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
+
+  // DEBUG: pokaż surowe confidence kandydatów dla jednego zdania
+  app.get("/quiz/debug", (req, res) => {
+    const text = String(req.query.text || "");
+    const r = generateQuestionAndAnswerTeacher_core(text);
+    const dbg = {
+      picked: { qtype: r.qtype, question: r.question, answer: r.answer, source: r.source_path },
+      candidates: r.candidates || [],
+      threshold: RULE_CONF_THRESHOLD,
+      llm_enabled: LLM_FALLBACK_ENABLED
+    };
+    res.json(dbg);
+  });
+
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
 
