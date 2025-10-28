@@ -1835,24 +1835,28 @@ let VERBS_PERCEPTION = [];
 function extractNames(s) {
   const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
   const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
-  const VERB_FIRST = /^(Wsiad\w*|Wszed\w*|Wes\w*|Wróc\w*|Poszed\w*|Posz\w*|Pojech\w*)$/; // czasowniki na początku
+  // czasowniki na początku zdania (z polskimi diakrytykami)
+  const VERB_FIRST = /^(Wsiad[a-ząćęłńóśźż]*|Wszed[a-ząćęłńóśźż]*|Wesz[a-ząćęłńóśźż]*|Wróc[a-ząćęłńóśźż]*|Poszed[a-ząćęłńóśźż]*|Posz[a-ząćęłńóśźż]*|Pojech[a-ząćęłńóśźż]*)$/u;
 
-  const tokens = String(s).split(/\s+/);
+  const tokens = String(s || "").split(/\s+/);
   const names = [];
   for (let i = 0; i < tokens.length; i++) {
-    let raw = tokens[i];
+    const raw = tokens[i];
     const t = raw.replace(/[.,;:!?…]+$/u,"");
-    if (i === 0 && VERB_FIRST.test(t)) continue;          // ⬅️ NIE traktuj 1. wyrazu-czasownika jako imię
-    if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
+
+    if (i === 0 && VERB_FIRST.test(t)) continue; // NIE licz 1. wyrazu-czasownika jako imię
+
+    if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/u.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
       names.push(t);
       if (tokens[i + 1] === "i") {
         const t2 = (tokens[i + 2] || "").replace(/[.,;:!?…]+$/u,"");
-        if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(t2)) { names.push(t2); i += 2; }
+        if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/u.test(t2)) { names.push(t2); i += 2; }
       }
     }
   }
   return names.length ? names.join(" i ") : null;
 }
+
 
       function detectMoveCue(s) {
         const t = deaccent(String(s).toLowerCase());
@@ -1872,64 +1876,67 @@ function extractNames(s) {
       // === REPLACE: extractDestinationIfMove ===
 function extractDestinationIfMove(s) {
   const P = x => String(x || "").trim().replace(/[.,;!?…:]+$/u, "");
-  const base = String(s || "");
-  const deacc = q => q.normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-                    .replace(/[łŁ]/g,"l").toLowerCase();
+  const orig = String(s || "");
+  const deacc = q => String(q || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[łŁ]/g,"l");
+  const low = deacc(orig).toLowerCase();
 
-  // 0) ruch?
-  if (!/\b(poszed\w*|poszl\w*|pojecha\w*|wsiad\w*|wsied\w*|wróc\w*|wroc\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu.test(base)) {
-    return null;
+  // 0) czy jest czasownik ruchu
+  const HAS_MOVE = /\b(poszed\w*|poszl\w*|pojech\w*|wsiad\w*|wsied\w*|wroci\w*|wroc\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/i;
+  if (!HAS_MOVE.test(low)) return null;
+
+  // 1) boarding ma priorytet – SZUKAJ NA KOPII DEACC, POTEM WYTNIESZ Z ORYGINAŁU
+  const mBoard = low.match(/\b(wsiad\w*|wsied\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
+  if (mBoard) {
+    // znajdź odpowiadający fragment w oryginale (rehydrate z marginesem)
+    const boardTailDA = mBoard[2];
+    const idxStart = low.indexOf(mBoard[0]);
+    // wyłuskaj podciąg oryginału o tej samej długości +/- trochę bezpieczniej
+    const approx = orig.slice(Math.max(0, idxStart - 10), Math.min(orig.length, idxStart + mBoard[0].length + 10));
+    // dopasuj "do <tail>" już na oryginale
+    const mOrig = approx.match(/\bdo\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/u);
+    if (mOrig) return ("do " + P(mOrig[1])).trim();
   }
 
-  // 1) boarding ma priorytet (do … po „wsiadł/wsiedli”)
-  const mBoard = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-  if (mBoard) return ("do " + P(mBoard[2])).trim();
+  // 2) utnij zdanie od PIERWSZEGO czasownika ruchu (indeks po deaccent)
+  const moveIdx = low.search(HAS_MOVE);
+  const tailOrig = moveIdx >= 0 ? orig.slice(moveIdx) : orig;
+  const tailLow  = moveIdx >= 0 ? low.slice(moveIdx)  : low;
 
-  // 2) utnij zdanie od pierwszego czasownika ruchu
-  const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroc\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
-  const tail = mv >= 0 ? base.slice(mv) : base;
+  // 3) wybierz PIERWSZE "do|na ..." po czasowniku ruchu
+  const reDoNa = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/iu;
+  const hitLow = tailLow.match(reDoNa);
+  const hitOrig = tailOrig.match(reDoNa);
+  if (!hitLow || !hitOrig) return null;
+  let dest = `${hitOrig[1]} ${hitOrig[2]}`;
 
-  // 3) wybierz PIERWSZE "do|na ..." w ogonie
-  const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/giu;
-  const hit = re.exec(tail);
-  if (!hit) return null;
-  let dest = `${hit[1]} ${hit[2]}`;
-
-  // 4) agresywne cięcia ogonów:
-  //    - przy kolejnym ruchu lub markerze "i potem / potem / następnie / wtedy"
-  dest = dest.replace(
-    /[\s,\u00A0]+(?:i\s+)?(?:a\s+)?(?:potem|nastepnie|nast[eę]pnie|wtedy)\b.*$/iu,
-    ""
-  );
-  //    - przy "i" + kolejny czasownik ruchu (diakrytykotolerancyjnie)
+  // 4) twarde cięcie przy „i” + kolejny ruch / markery dyskursywne
   const CUT_MOVES = /(posz\w+|pojech\w+|wsiad\w+|wsied\w+|wszed\w+|wesz\w+|wroc\w+|wróci\w+)/iu;
-  dest = dest.replace(new RegExp(String.raw`[\s,\u00A0]+i[\s,\u00A0]+${CUT_MOVES.source}.*$`, "iu"), "");
+  dest = dest
+    .replace(/[\s,\u00A0]+(?:i\s+)?(?:a\s+)?(?:potem|nast[eę]pnie|nastepnie|wtedy)\b.*$/iu, "")
+    .replace(new RegExp(String.raw`[\s,\u00A0]+i[\s,\u00A0]+${CUT_MOVES.source}.*$`, "iu"), "");
 
-  //    - usuń czasy/aktywności/2-rzędne przyimki
+  // 5) usuń czasy/aktywności/2-rzędne przyimki
   dest = dest
     .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
     .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
     .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
 
-  //    - usuń ogony celu: "na film/mecz/występ/…", "na lody/obiad/zakupy…" (jeśli NIE ma „do …” dalej)
-  //      oraz znormalizuj "na X do Y" => "do Y"
+  // 6) „na ... do ...” => "do ..."
   const naDo = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-  if (naDo) {
-    dest = "do " + P(naDo[1]);
-  } else {
-    dest = dest
-      .replace(/\s+na\s+(film|mecz|wyst[ęe]p|koncert|pokaz|seans)\b.*$/iu, "")
-      .replace(/\s+na\s+(spacer|obiad|kolacj[ęe]|lody|zakupy|posi[łl]ek)\b.*$/iu, "");
-  }
+  if (naDo) dest = "do " + P(naDo[1]);
 
-  dest = P(dest).replace(/\s+/g, " ").trim();
+  // 7) kosmetyka
+  dest = P(dest).replace(/\s+/g," ").trim();
 
-  // 5) czarna lista lokatyw „na …” (nie zwracamy jako Dokąd?)
+  // 8) czarna lista lokatyw „na …”
   if (dest.toLowerCase().startsWith("na ")) {
-    const low = deacc(dest);
-    const head2 = low.split(/\s+/).slice(0,2).join(" ");
-    if (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low)) return null;
+    const low2 = deacc(dest).toLowerCase();
+    const head2 = low2.split(/\s+/).slice(0,2).join(" ");
+    if (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low2)) return null;
   }
+
   return dest || null;
 }
 
