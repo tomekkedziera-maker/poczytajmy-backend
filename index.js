@@ -1886,55 +1886,68 @@ app.post("/agent/comprehend-one", (req, res) => {
 
     // --- patchowany ekstraktor celu po czasowniku ruchu
     function extractDestinationIfMove(s) {
-      const cue = detectMoveCue(s);
-      if (!cue) return null;
+  const cue = detectMoveCue(s);
+  if (!cue) return null;
 
-      const base = String(s);
+  const base = String(s);
 
-      // priorytet: wsiadła/wsiedli → boarding
-      if (/wsied\w*|wsiad\w*/i.test(base)) {
-        const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
-        if (m) return ("do " + P(m[2])).trim();
-      }
+  // 1) Najpierw spróbuj „wsiadł/wsiedli do …”
+  const mBoard = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
+  if (mBoard) {
+    // Zwracamy sam obiekt po "do", bez ogonów
+    let dest = "do " + mBoard[2];
+    dest = dest
+      .replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wsiad\w+|wsied\w+|wróci\w+|przesz\w+|przejd\w+)\b.*$/iu, "")
+      .replace(/(?:,?\s*a\s+)?(?:potem|nast[eę]pnie|wtedy)\b.*$/iu, "")
+      .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
+      .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
+      .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
+      .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "")
+      .replace(/\s+na\s+film(?:\s+\S+){0,6}$/iu, "")
+      .replace(/\s+na\s+(wyst[ęe]p|mecz|pokaz|koncert|zawody)(?:\s+\S+){0,6}$/iu, "");
+    dest = STRIP_ANY_PURPOSE(dest);
+    return P(normalizeSpaces(dest)) || null;
+  }
 
-      const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/i);
-      const tail = mv >= 0 ? base.slice(mv) : base;
+  // 2) Jeśli nie było „wsiad… do …”, tnij od PIERWSZEGO czasownika ruchu (teraz też z wsiad/wsied)
+  const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*|wsiad\w*|wsied\w*)\b/i);
+  const tail = mv >= 0 ? base.slice(mv) : base;
 
-      const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
-      const matches = [];
-      let m2;
-      while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1], body: m2[2], idx: m2.index });
-      if (!matches.length) return null;
+  // 3) Złap pierwsze "do|na ..." po tym czasowniku
+  const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
+  const matches = [];
+  let m2;
+  while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1], body: m2[2], idx: m2.index });
+  if (!matches.length) return null;
 
-      let dest = `${matches[0].prep} ${matches[0].body}`.trim();
+  let dest = `${matches[0].prep} ${matches[0].body}`.trim();
 
-      // --- patch: ucięcie przy kolejnym czasowniku ruchu lub frazie "a potem"
-      dest = dest
-        .replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wsiad\w+|wsied\w+|wróci\w+|przesz\w+|przejd\w+)\b.*$/iu, "")
-        .replace(/(?:,?\s*a\s+)?(?:potem|nast[eę]pnie|wtedy)\b.*$/iu, "");
+  // 4) Utnij przy kolejnym ruchu / „a potem…”
+  dest = dest
+    .replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wsiad\w+|wsied\w+|wróci\w+|przesz\w+|przejd\w+)\b.*$/iu, "")
+    .replace(/(?:,?\s*a\s+)?(?:potem|nast[eę]pnie|wtedy)\b.*$/iu, "")
+    .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
+    .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
+    .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
+    .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "")
+    .replace(/\s+na\s+film(?:\s+\S+){0,6}$/iu, "")
+    .replace(/\s+na\s+(wyst[ęe]p|mecz|pokaz|koncert|zawody)(?:\s+\S+){0,6}$/iu, "");
 
-      // --- patch: ogony
-      dest = dest
-        .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
-        .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
-        .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
-        .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "")
-        .replace(/\s+na\s+film(?:\s+\S+){0,6}$/iu, "")
-        .replace(/\s+na\s+(wyst[ęe]p|mecz|pokaz|koncert|zawody)(?:\s+\S+){0,6}$/iu, "");
+  dest = STRIP_ANY_PURPOSE(dest);
+  return P(normalizeSpaces(dest)) || null;
+}
 
-      dest = STRIP_ANY_PURPOSE(dest);
-      return P(normalizeSpaces(dest)) || null;
-    }
 
     function buildDokadQuestion(sentence, fallbackNames) {
-      const cue = detectMoveCue(sentence);
-      const namesLocal = extractNames(sentence);
-      const names = namesLocal || fallbackNames || null;
+  const cue = detectMoveCue(sentence);
+  const namesLocal = extractNames(sentence);
+  const names = namesLocal || fallbackNames || null;
 
-      if (cue && names) return `Dokąd ${cue.form} ${names}?`;
-      if (cue && !names) return `Dokąd ${cue.form} oni?`;
-      return "Dokąd oni poszli?";
-    }
+  if (cue && names) return `Dokąd ${cue.form} ${names}?`;
+  if (cue && !names) return `Dokąd ${cue.form}?`;  // ⬅️ bez „oni” — poprawna gramatyka w lp./lm.
+  return "Dokąd oni poszli?";
+}
+
 
     const cleaned = text
       .split(/\r?\n/)
