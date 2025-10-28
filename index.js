@@ -1874,72 +1874,56 @@ function extractNames(s) {
       }
 
       // === REPLACE: extractDestinationIfMove ===
+// --- Ekstrakcja miejsca docelowego: tylko gdy jest ruch (ulepszona, hartowana) ---
 function extractDestinationIfMove(s) {
-  const P = x => String(x || "").trim().replace(/[.,;!?…:]+$/u, "");
-  const orig = String(s || "");
-  const deacc = q => String(q || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .replace(/[łŁ]/g,"l");
-  const low = deacc(orig).toLowerCase();
+  const cue = detectMoveCue(s);
+  if (!cue) return null;
 
-  // 0) czy jest czasownik ruchu
-  const HAS_MOVE = /\b(poszed\w*|poszl\w*|pojech\w*|wsiad\w*|wsied\w*|wroci\w*|wroc\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/i;
-  if (!HAS_MOVE.test(low)) return null;
+  const base = String(s);
 
-  // 1) boarding ma priorytet – SZUKAJ NA KOPII DEACC, POTEM WYTNIESZ Z ORYGINAŁU
-  const mBoard = low.match(/\b(wsiad\w*|wsied\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
-  if (mBoard) {
-    // znajdź odpowiadający fragment w oryginale (rehydrate z marginesem)
-    const boardTailDA = mBoard[2];
-    const idxStart = low.indexOf(mBoard[0]);
-    // wyłuskaj podciąg oryginału o tej samej długości +/- trochę bezpieczniej
-    const approx = orig.slice(Math.max(0, idxStart - 10), Math.min(orig.length, idxStart + mBoard[0].length + 10));
-    // dopasuj "do <tail>" już na oryginale
-    const mOrig = approx.match(/\bdo\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/u);
-    if (mOrig) return ("do " + P(mOrig[1])).trim();
+  // 1) BOARDING ma najwyższy priorytet – dopasuj "do ..." ale NIE łap po tym "i/ oraz / a / do / na"
+  const reBoard = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,5})/iu;
+  const mb = base.match(reBoard);
+  if (mb) {
+    let dest = "do " + mb[2];
+    // twarde cięcie ogona: spójnik + kolejny ruch / przyimek kierunkowy
+    dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
+    // ogony: czas, aktywności, drugorzędne przyimki
+    dest = dest
+      .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
+      .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
+      .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
+    // “na ... do ...” => “do ...”
+    const naDo = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
+    if (naDo) dest = "do " + naDo[1];
+    return dest.trim();
   }
 
-  // 2) utnij zdanie od PIERWSZEGO czasownika ruchu (indeks po deaccent)
-  const moveIdx = low.search(HAS_MOVE);
-  const tailOrig = moveIdx >= 0 ? orig.slice(moveIdx) : orig;
-  const tailLow  = moveIdx >= 0 ? low.slice(moveIdx)  : low;
+  // 2) Ogólna ścieżka: od pierwszego czasownika ruchu szukaj PIERWSZEGO "do|na ..." z hartowanym body
+  const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroci\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
+  const tail = mv >= 0 ? base.slice(mv) : base;
 
-  // 3) wybierz PIERWSZE "do|na ..." po czasowniku ruchu
-  const reDoNa = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/iu;
-  const hitLow = tailLow.match(reDoNa);
-  const hitOrig = tailOrig.match(reDoNa);
-  if (!hitLow || !hitOrig) return null;
-  let dest = `${hitOrig[1]} ${hitOrig[2]}`;
+  // Hartowane body: kolejne tokeny NIE mogą zaczynać się od "i|oraz|a|do|na"
+  const reDir = /\b(do|na)\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,8})\b/iu;
+  const md = tail.match(reDir);
+  if (!md) return null;
 
-    // 4) twarde cięcie przy „i” + kolejny ruch / markery dyskursywne
-  dest = dest
-    // markery dyskursywne
-    .replace(/[\s,\u00A0]+(?:i\s+)?(?:a\s+)?(?:potem|nast[eę]pnie|nastepnie|wtedy)\b.*$/iu, "")
-    // i + kolejny czasownik ruchu (z diakrytykami i bez)
-    .replace(/[,\s\u00A0]+i[,\s\u00A0]+(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wroc\w*|wróci\w*|wszed\w*|wesz\w*)\b.*$/iu, "");
+  let dest = `${md[1]} ${md[2]}`;
 
-  // 5) usuń czasy/aktywności/2-rzędne przyimki
+  // twarde cięcie ogona po spójniku + (ruch/przyimek kierunkowy)
+  dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
+
+  // ogony: czas, aktywności, drugorzędne przyimki
   dest = dest
     .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
     .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
     .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
 
-  // 6) „na ... do ...” => "do ..."
-  const naDo = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-  if (naDo) dest = "do " + P(naDo[1]);
+  // “na ... do ...” => “do ...”
+  const naDo2 = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
+  if (naDo2) dest = "do " + naDo2[1];
 
-  // 7) kosmetyka
-  dest = P(dest).replace(/\s+/g," ").trim();
-
-
-  // 8) czarna lista lokatyw „na …”
-  if (dest.toLowerCase().startsWith("na ")) {
-    const low2 = deacc(dest).toLowerCase();
-    const head2 = low2.split(/\s+/).slice(0,2).join(" ");
-    if (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low2)) return null;
-  }
-
-  return dest || null;
+  return dest.trim() || null;
 }
 
 
