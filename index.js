@@ -1911,11 +1911,12 @@ function extractDestinationIfMove(s) {
   if (!hitLow || !hitOrig) return null;
   let dest = `${hitOrig[1]} ${hitOrig[2]}`;
 
-  // 4) twarde cięcie przy „i” + kolejny ruch / markery dyskursywne
-  const CUT_MOVES = /(posz\w+|pojech\w+|wsiad\w+|wsied\w+|wszed\w+|wesz\w+|wroc\w+|wróci\w+)/iu;
+    // 4) twarde cięcie przy „i” + kolejny ruch / markery dyskursywne
   dest = dest
+    // markery dyskursywne
     .replace(/[\s,\u00A0]+(?:i\s+)?(?:a\s+)?(?:potem|nast[eę]pnie|nastepnie|wtedy)\b.*$/iu, "")
-    .replace(new RegExp(String.raw`[\s,\u00A0]+i[\s,\u00A0]+${CUT_MOVES.source}.*$`, "iu"), "");
+    // i + kolejny czasownik ruchu (z diakrytykami i bez)
+    .replace(/[,\s\u00A0]+i[,\s\u00A0]+(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wroc\w*|wróci\w*|wszed\w*|wesz\w*)\b.*$/iu, "");
 
   // 5) usuń czasy/aktywności/2-rzędne przyimki
   dest = dest
@@ -1929,6 +1930,7 @@ function extractDestinationIfMove(s) {
 
   // 7) kosmetyka
   dest = P(dest).replace(/\s+/g," ").trim();
+
 
   // 8) czarna lista lokatyw „na …”
   if (dest.toLowerCase().startsWith("na ")) {
@@ -1947,7 +1949,7 @@ function extractDestinationIfMove(s) {
         const names = namesLocal || fallbackNames || null;
 
         if (cue && names) return `Dokąd ${cue.form} ${names}?`;
-        if (cue && !names) return `Dokąd ${cue.form} oni?`;
+        if (cue && !names) return `Dokąd ${cue.form}?`;
         return "Dokąd oni poszli?";
       }
 
