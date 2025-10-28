@@ -1899,40 +1899,36 @@ let VERBS_PERCEPTION = [];
     const tokens = String(s).split(/\s+/);
     const names = [];
     for (let i = 0; i < tokens.length; i++) {
-      const t = tokens[i];
+      const t = tokens[i].replace(/[.,;:!?…]+$/u,"");
       if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+$/.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
         names.push(t);
-        if (tokens[i + 1] === "i" && /^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(tokens[i + 2] || "")) {
-          names.push(tokens[i + 2]);
-          i += 2;
+        if (tokens[i + 1] === "i") {
+          const t2 = (tokens[i + 2] || "").replace(/[.,;:!?…]+$/u,"");
+          if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(t2)) { names.push(t2); i += 2; }
         }
       }
     }
     return names.length ? names.join(" i ") : null;
   }
 
-  // --- Detekcja czasownika ruchu + forma gramatyczna (do pytania) ---
+  // --- Detekcja czasownika ruchu + forma (do pytania) ---
   function detectMoveCue(s) {
     const t = deaccent(String(s).toLowerCase());
-    // liczba mnoga najpierw
-    if (/\bposzli\b/.test(t))    return { base: "iść",      form: "poszli",     num: "pl" };
-    if (/\bpojechali\b/.test(t)) return { base: "pojechać", form: "pojechali",  num: "pl" };
-    if (/\bwsiedli\b/.test(t))   return { base: "wsiąść",    form: "wsiedli",    num: "pl" };
-    if (/\bwrocil[iy]\b/.test(t))return { base: "wrócić",   form: "wrócili",    num: "pl" };
+    if (/\bposzli\b/.test(t))    return { form: "poszli" };
+    if (/\bpojechali\b/.test(t)) return { form: "pojechali" };
+    if (/\bwsiedli\b/.test(t))   return { form: "wsiedli" };
+    if (/\bwrocil[iy]\b/.test(t))return { form: "wrócili" };
 
-    // żeńska l.poj.
-    if (/\bposzla\b/.test(t))     return { base: "iść",      form: "poszła",     num: "sgf" };
-    if (/\bpojechala\b/.test(t))  return { base: "pojechać", form: "pojechała",  num: "sgf" };
-    if (/\bwsiedla\b/.test(t))    return { base: "wsiąść",    form: "wsiedła",    num: "sgf" };
-    if (/\bwrocila\b/.test(t))    return { base: "wrócić",   form: "wróciła",    num: "sgf" };
+    if (/\bposzla\b/.test(t))     return { form: "poszła" };
+    if (/\bpojechala\b/.test(t))  return { form: "pojechała" };
+    if (/\bwsiedla\b/.test(t))    return { form: "wsiedła" };
+    if (/\bwrocila\b/.test(t))    return { form: "wróciła" };
 
-    // męska l.poj. (lub neutral jeśli nie pewne)
-    if (/\bposzedl\b/.test(t))    return { base: "iść",      form: "poszedł",    num: "sgm" };
-    if (/\bpojechal\b/.test(t))   return { base: "pojechać", form: "pojechał",   num: "sgm" };
-    if (/\bwsz(ed|edl)\b/.test(t))return { base: "wejść",    form: "wszedł",     num: "sgm" };
-    if (/\bwrocil\b/.test(t))     return { base: "wrócić",   form: "wrócił",     num: "sgm" };
+    if (/\bposzedl\b/.test(t))    return { form: "poszedł" };
+    if (/\bpojechal\b/.test(t))   return { form: "pojechał" };
+    if (/\bwsz(ed|edl)\b/.test(t))return { form: "wszedł" };
+    if (/\bwrocil\b/.test(t))     return { form: "wrócił" };
 
-    // niezidentyfikowane
     return null;
   }
 
@@ -1943,13 +1939,11 @@ let VERBS_PERCEPTION = [];
 
     const base = String(s);
 
-    // Wsiadanie: „wsiedli/wsiadł do …”
     if (/wsied\w*|wsiad\w*/i.test(base)) {
       const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
       if (m) return ("do " + P(m[2])).trim();
     }
 
-    // Szukaj fraz do/na w ogonie po czasowniku ruchu
     const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*)\b/i);
     const tail = mv >= 0 ? base.slice(mv) : base;
 
@@ -1958,14 +1952,8 @@ let VERBS_PERCEPTION = [];
     while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1], body: m2[2], idx: m2.index });
     if (!matches.length) return null;
 
-    // Preferuj ostatnią (np. „do koleżanki” zamiast „do koszyka” z wcześniejszej klauzuli)
-    let pick = matches[matches.length - 1];
-    let dest = `${pick.prep} ${pick.body}`.trim();
-
-    // Utnij ciągi typu „, i posz…/pojech…”
+    let dest = `${matches[matches.length - 1].prep} ${matches[matches.length - 1].body}`.trim();
     dest = dest.replace(/\s+i\s+(posz\w+|pojech\w+|wsied\w*|wsiad\w*)\b.*$/i, "");
-
-    // Oczyszczanie ogonków (czas, cele, czynności)
     dest = dest
       .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
       .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/i, "")
@@ -1975,15 +1963,15 @@ let VERBS_PERCEPTION = [];
     return P(normalizeSpaces(dest)) || null;
   }
 
-  // --- sklejanie pytania „Dokąd … [forma] [imiona]?” ---
-  function buildDokadQuestion(sentence) {
+  // --- Budowa pytania „Dokąd … [forma] [imiona]?” z fallbackiem na imiona globalne ---
+  function buildDokadQuestion(sentence, fallbackNames) {
     const cue = detectMoveCue(sentence);
-    const names = extractNames(sentence);
-    if (!cue || !names) return "Dokąd oni poszli?"; // bezpieczny fallback
+    const namesLocal = extractNames(sentence);
+    const names = namesLocal || fallbackNames || null;
 
-    // Forma zależna od cue
-    const f = cue.form; // poszła/poszedł/poszli/pojechała/…
-    return `Dokąd ${f} ${names}?`;
+    if (cue && names) return `Dokąd ${cue.form} ${names}?`;
+    if (cue && !names) return `Dokąd ${cue.form} oni?`;           // rzadki fallback
+    return "Dokąd oni poszli?";                                    // ostatnia deska
   }
 
   app.post("/agent/comprehend-one", (req, res) => {
@@ -2001,6 +1989,9 @@ let VERBS_PERCEPTION = [];
         .replace(/\s+/g, " ")
         .trim();
 
+      // **NOWE**: imiona z całego tekstu (global fallback)
+      const globalNames = extractNames(cleaned);
+
       const rough = cleaned.split(/(?<=[.!?;])\s+/);
       const splitOnMarkers = s =>
         s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
@@ -2009,22 +2000,12 @@ let VERBS_PERCEPTION = [];
 
       const sentences = rough.flatMap(splitOnMarkers).filter(Boolean);
 
-      // Zbuduj kandydaty własnym skorerem (bardziej konkretnym niż ogólny)
       const candidates = sentences.map(s => {
-        const dest = extractDestinationIfMove(s);            // tylko gdy jest ruch
+        const dest = extractDestinationIfMove(s);
         const move = !!detectMoveCue(s);
-        const names = extractNames(s);
 
-        // Wspomagająco: wynik z ogólnej heurystyki (na fallback)
         const r = generateQuestionAndAnswerTeacher(s);
 
-        // Scoring:
-        // 100: ruch + dest (najlepsze „Dokąd?”)
-        // 80 : Kto? (z imieniem)
-        // 70 : Gdzie? (z odpowiedzią)
-        // 60 : Kiedy? HH:MM
-        // 50 : Kiedy? ogólne
-        // 20 : cokolwiek innego z odpowiedzią
         let score = 0;
         let qtype = r.qtype;
         let question = r.question;
@@ -2033,9 +2014,9 @@ let VERBS_PERCEPTION = [];
         if (move && dest) {
           score = 100;
           qtype = "Dokąd?";
-          question = buildDokadQuestion(s);
+          question = buildDokadQuestion(s, globalNames); // ⬅️ użyj globalNames jeśli lokalnie brak
           answer = dest;
-        } else if (names && /^Kto\?$/i.test(r.qtype)) {
+        } else if (r.qtype === "Kto?" && r.answer) {
           score = 80;
         } else if (r.qtype === "Gdzie?" && r.answer) {
           score = 70;
@@ -2047,12 +2028,9 @@ let VERBS_PERCEPTION = [];
           score = 20;
         }
 
-        return {
-          score, qtype, question, answer, sentence: s
-        };
+        return { score, qtype, question, answer, sentence: s };
       });
 
-      // Wybierz najlepszy
       candidates.sort((a,b) => b.score - a.score);
       const best = candidates[0];
 
@@ -2060,9 +2038,8 @@ let VERBS_PERCEPTION = [];
         return res.json({ ok: false, message: "No suitable question found", source_path: "one-best" });
       }
 
-      // Ostrożne doprecyzowanie pytania Dokąd? (gdyby jeszcze nie miało imion/ł/łi)
       if (best.qtype === "Dokąd?") {
-        best.question = buildDokadQuestion(best.sentence);
+        best.question = buildDokadQuestion(best.sentence, globalNames);
         const fixedDest = extractDestinationIfMove(best.sentence);
         if (fixedDest) best.answer = fixedDest;
       }
@@ -2081,6 +2058,7 @@ let VERBS_PERCEPTION = [];
   });
 })(app);
 /* ===================== /ADD-ON: JEDNO NAJLEPSZE PYTANIE ===================== */
+
 
 
 
