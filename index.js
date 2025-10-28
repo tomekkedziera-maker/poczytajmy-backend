@@ -1351,7 +1351,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (patched+hotfix) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (patched+hotfix + activity-KTO) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1677,6 +1677,39 @@ let VERBS_PERCEPTION = [];
     return { ok: true, qtype: "Kto?", question: sanitizeQ(`Kto ${verb} ${prep} ${place}`), answer: namesRaw };
   }
 
+  // ===== „Kto?” — po aktywności („Kto robi zabawki?”) =====
+  function detectWhoByActivity(sentence = "") {
+    const s = String(sentence).trim();
+    if (!s) return null;
+
+    // krótka lista czasowników aktywności (3. os. l.poj/l.mn. + kilka wariantów)
+    const VERBS = [
+      "robi","robia","robią","buduje","buduja","budują","składa","sklada","składają","skladaja",
+      "maluje","maluja","malują","szyje","szyją","piecze","pieka","pieką","gotuje","gotuja","gotują",
+      "naprawia","naprawiają","rzeźbi","rzezbi","rzeźbią","pisze","piszą","rysuje","rysują",
+      "pakuje","pakują","konstruuje","konstruują","tworzy","tworzą","lepi","lepią","montuje","montują"
+    ];
+
+    // WZORZEC: [Podmiot z wielką literą] + [czasownik z listy] + [krótki obiekt]
+    const reSubjectVerb = new RegExp(
+      String.raw`^\s*([A-ZĄĆĘŁŃÓŚŹŻ][\p{L}'-]*(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ][\p{L}'-]*)*)\s+(${VERBS.join("|")})\s*([^\s,.;!?-](?:.*?))?$`,
+      "iu"
+    );
+    const m = s.match(reSubjectVerb);
+    if (!m) return null;
+
+    const subject = stripPunct(m[1]||"").trim();         // np. „Elfy”
+    const verb    = (m[2]||"").toLowerCase();            // np. „robią”
+    let obj       = String(m[3]||"").replace(/[-–—]/g," ").split(/\s+/).slice(0,6).join(" ").trim(); // np. „zabawki …”
+    obj = stripPunct(obj);
+
+    // budowa frazy do pytania
+    const phrase = obj ? `${verb} ${obj}` : verb;
+    if (!subject) return null;
+
+    return { ok:true, qtype:"Kto?", question: sanitizeQ(`Kto ${phrase}`), answer: subject };
+  }
+
   // ==================== GŁÓWNA FUNKCJA Q/A ====================
   function generateQuestionAndAnswerTeacher(textRaw) {
     if (!textRaw || typeof textRaw !== "string")
@@ -1687,6 +1720,7 @@ let VERBS_PERCEPTION = [];
     const tDA = deaccent(t);
 
     const who = detectWhoQuestion(t);
+    const whoAct = detectWhoByActivity(t);          // ⬅️ NOWE
     const time = extractTime(t);
     const dest = extractDestination(t);
     const place = pickPlaceFromSentence(t);
@@ -1722,11 +1756,16 @@ let VERBS_PERCEPTION = [];
     const preferPlaceFirst = SEATLIKE_RE().test(t);
     const strongTime = !!(time && /\b(o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|dzisiaj|dziś|jutro|wczoraj|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(time));
 
-    // PRIORYTETY: Kto? > (Kiedy?) > Dokąd? > Gdzie? > fallback
+    // PRIORYTETY: Kto? (ruch) > Kto? (aktywność) > (Kiedy?) > Dokąd? > Gdzie? > fallback
     if (who) {
       const ans = rehydrateAnswerFromOriginal(text, who.answer);
       const pl = who.question.replace(/\s+/g," ").trim();
       return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ" };
+    }
+    if (whoAct) { // ⬅️ NOWE: np. „Elfy robią zabawki.” → „Kto robi zabawki?”
+      const ans = rehydrateAnswerFromOriginal(text, whoAct.answer);
+      const pl = whoAct.question.replace(/\s+/g," ").trim();
+      return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ-activity" };
     }
     if (strongTime || time) {
       const q = qKiedy();
@@ -1835,78 +1874,76 @@ let VERBS_PERCEPTION = [];
     }
   });
 
-// ===================== CHECK ANSWER (tekst + pytanie + oczekiwana) =====================
-app.post("/agent/check-answer-text", (req, res) => {
-  try {
-    const {
-      text = "",
-      age = 8,
-      question = "",
-      expectedAnswer = "",
-      childAnswer = "",
-    } = req.body || {};
+  // ===================== CHECK ANSWER (tekst + pytanie + oczekiwana) =====================
+  app.post("/agent/check-answer-text", (req, res) => {
+    try {
+      const {
+        text = "",
+        age = 8,
+        question = "",
+        expectedAnswer = "",
+        childAnswer = "",
+      } = req.body || {};
 
-    const norm = (s="") => String(s)
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-      .toLowerCase().replace(/[^\p{L}0-9\s-]+/gu," ")
-      .replace(/\s+/g," ").trim();
+      const norm = (s="") => String(s)
+        .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+        .toLowerCase().replace(/[^\p{L}0-9\s-]+/gu," ")
+        .replace(/\s+/g," ").trim();
 
-    const u = norm(childAnswer);
-    const k = norm(expectedAnswer);
-    const q = String(question||"").trim();
+      const u = norm(childAnswer);
+      const k = norm(expectedAnswer);
+      const q = String(question||"").trim();
 
-    // Pusty input dziecka -> od razu nie OK
-    if (!u) {
-      return res.json({
-        ok: true,
-        result: "not-ok",
-        feedback: "Spróbuj odpowiedzieć pełnym zdaniem albo jednym kluczowym słowem.",
-      });
-    }
+      // Pusty input dziecka -> od razu nie OK
+      if (!u) {
+        return res.json({
+          ok: true,
+          result: "not-ok",
+          feedback: "Spróbuj odpowiedzieć pełnym zdaniem albo jednym kluczowym słowem.",
+        });
+      }
 
-    // 1) Jeżeli mamy oczekiwane (closed-ended) → klasyczne dopasowanie
-    if (k) {
-      const jaccard = (() => {
-        const tok = (x) => new Set(String(x).split(" ").filter(Boolean));
-        const A = tok(u), B = tok(k);
-        if (!A.size && !B.size) return 1;
-        let inter = 0; for (const t of A) if (B.has(t)) inter++;
-        return inter / (A.size + B.size - inter);
-      })();
+      // 1) Jeżeli mamy oczekiwane (closed-ended) → klasyczne dopasowanie
+      if (k) {
+        const jaccard = (() => {
+          const tok = (x) => new Set(String(x).split(" ").filter(Boolean));
+          const A = tok(u), B = tok(k);
+          if (!A.size && !B.size) return 1;
+          let inter = 0; for (const t of A) if (B.has(t)) inter++;
+          return inter / (A.size + B.size - inter);
+        })();
 
-      const pass = u.includes(k) || k.includes(u) || jaccard >= 0.5;
+        const pass = u.includes(k) || k.includes(u) || jaccard >= 0.5;
+        return res.json({
+          ok: true,
+          result: pass ? "ok" : "not-ok",
+          feedback: pass
+            ? "Świetnie! Odpowiedź pasuje do treści."
+            : "Sprawdź jeszcze raz fragment i spróbuj użyć słów z tekstu.",
+        });
+      }
+
+      // 2) Brak expectedAnswer (open-ended, np. „Co się dzieje w tej historii?”)
+      const looksMeaningful = /\S+\s+\S+/.test(childAnswer) || String(childAnswer).trim().length >= 5;
+
+      // drobna „kotwica” w tekście: szukamy 1–2 słów wspólnych (po normalizacji)
+      const T = norm(text);
+      const uTok = new Set(u.split(" ").filter(Boolean));
+      const hits = [...uTok].filter(w => T.includes(w)).length;
+
+      const pass = looksMeaningful && hits >= 1;
+
       return res.json({
         ok: true,
         result: pass ? "ok" : "not-ok",
         feedback: pass
-          ? "Świetnie! Odpowiedź pasuje do treści."
-          : "Sprawdź jeszcze raz fragment i spróbuj użyć słów z tekstu.",
+          ? "Dobra odpowiedź – zgadza się z treścią."
+          : "Spróbuj odpowiedzieć prościej, używając słów z fragmentu.",
       });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e.message||e) });
     }
-
-    // 2) Brak expectedAnswer (open-ended, np. „Co się dzieje w tej historii?”)
-    //    Dla takich pytań nie katujemy dziecka ścisłym dopasowaniem – uznajemy sensowną odpowiedź za OK,
-    //    o ile nie wygląda na zupełnie losową (min. 3 znaki + 1 spacja lub ≥5 znaków bez spacji).
-    const looksMeaningful = /\S+\s+\S+/.test(childAnswer) || String(childAnswer).trim().length >= 5;
-
-    // drobna „kotwica” w tekście: szukamy 1–2 słów wspólnych (po normalizacji)
-    const T = norm(text);
-    const uTok = new Set(u.split(" ").filter(Boolean));
-    const hits = [...uTok].filter(w => T.includes(w)).length;
-
-    const pass = looksMeaningful && hits >= 1;
-
-    return res.json({
-      ok: true,
-      result: pass ? "ok" : "not-ok",
-      feedback: pass
-        ? "Dobra odpowiedź – zgadza się z treścią."
-        : "Spróbuj odpowiedzieć prościej, używając słów z fragmentu.",
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message||e) });
-  }
-});
+  });
 
   // ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE (ONE-BEST) =====================
   // Priorytet: 1) Dokąd? 2) Kto? 3) Gdzie? 4) Kiedy?
@@ -1931,7 +1968,7 @@ app.post("/agent/check-answer-text", (req, res) => {
           const raw = tokens[i];
           const t = raw.replace(/[.,;:!?…]+$/u,"");
 
-          if (i === 0 && VERB_FIRST.test(t)) continue;
+          if (i === 0 && VERB_FIRST.test(t)) continue; // NIE licz 1. wyrazu-czasownika jako imię
 
           if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/u.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
             names.push(t);
@@ -2094,7 +2131,7 @@ app.post("/agent/check-answer-text", (req, res) => {
 
   // ==================== VERBS API + META + HEALTH ====================
   app.get("/version-quiz", (_req, res) =>
-    res.json({ build: "2025-10-28 rule-teacher-strict-v7.6f-fullQ + hotfix-cut+i-verb+stadion+time-guard" })
+    res.json({ build: "2025-10-28 rule-teacher-strict-v7.6f-fullQ + hotfix-cut+i-verb+stadion+time-guard + activity-KTO" })
   );
 
   app.post("/verbs/reload", async (_req, res) => {
