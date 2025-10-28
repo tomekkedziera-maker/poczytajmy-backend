@@ -1556,6 +1556,7 @@ let VERBS_PERCEPTION = [];
 
     // utnij jeśli pojawił się czasownik aktywności
     dest = dest.replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "").trim();
+    dest = dest.replace(/[\s\u00A0]+(?:i[\s\u00A0]+)?(?:posz\w+|pojech\w+|wszed\w+|wesz\w+|wsiad\w+|wsied\w+|wróci\w+)\b.*$/i, "").trim();
 
     const low = deaccent(dest.toLowerCase());
     const head2 = deaccent(dest.toLowerCase().split(/\s+/).slice(0,2).join(" "));
@@ -1867,34 +1868,46 @@ let VERBS_PERCEPTION = [];
       }
 
       function extractDestinationIfMove(s) {
-        const cue = detectMoveCue(s);
-        if (!cue) return null;
+  const cue = detectMoveCue(s);
+  if (!cue) return null;
 
-        const base = String(s);
+  const base = String(s);
 
-        if (/wsied\w*|wsiad\w*/i.test(base)) {
-          const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
-          if (m) return ("do " + P(m[2])).trim();
-        }
+  // 2.1. Boarding ma najwyższy priorytet
+  if (/wsied\w*|wsiad\w*/i.test(base)) {
+    const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
+    if (m) return ("do " + P(m[2])).trim();
+  }
 
-        const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*)\b/i);
-        const tail = mv >= 0 ? base.slice(mv) : base;
+  // 2.2. Wytnij od pierwszego czasownika ruchu (żeby nie łapać wcześniejszych "do/na")
+  const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/i);
+  const tail = mv >= 0 ? base.slice(mv) : base;
 
-        const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
-        const matches = []; let m2;
-        while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1], body: m2[2], idx: m2.index });
-        if (!matches.length) return null;
+  // 2.3. Złap wszystkie "do|na ..." w tej ogonowej części, ale wybierz PIERWSZĄ (najbliższą ruchowi)
+  const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
+  const matches = []; let m2;
+  while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1], body: m2[2], idx: m2.index });
+  if (!matches.length) return null;
 
-        let dest = `${matches[matches.length - 1].prep} ${matches[matches.length - 1].body}`.trim();
-        dest = dest.replace(/\s+i\s+(posz\w+|pojech\w+|wsied\w*|wsiad\w*)\b.*$/i, "");
-        dest = dest
-          .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
-          .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/i, "")
-          .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "")
-          .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
+  // PIERWSZY pick po czasowniku (nie ostatni)
+  let dest = `${matches[0].prep} ${matches[0].body}`.trim();
 
-        return P(normalizeSpaces(dest)) || null;
-      }
+  // 2.4. Utnij przy kolejnym spójniku + czasowniku ruchu (również NBSP)
+  dest = dest.replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wsiad\w+|wsied\w+|wróci\w+)\b.*$/i, "");
+
+  // 2.5. Usuń ogony: cel, czas, aktywność, przyimki wtórne
+  dest = dest
+    .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
+    .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/i, "")
+    .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "")
+    .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
+
+  // 2.6. Dodatkowe: usuń „na film…/występ…/mecz…”
+  dest = STRIP_ANY_PURPOSE(dest);
+
+  return P(normalizeSpaces(dest)) || null;
+}
+
 
       function buildDokadQuestion(sentence, fallbackNames) {
         const cue = detectMoveCue(sentence);
