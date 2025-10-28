@@ -1835,6 +1835,79 @@ let VERBS_PERCEPTION = [];
     }
   });
 
+// ===================== CHECK ANSWER (tekst + pytanie + oczekiwana) =====================
+app.post("/agent/check-answer-text", (req, res) => {
+  try {
+    const {
+      text = "",
+      age = 8,
+      question = "",
+      expectedAnswer = "",
+      childAnswer = "",
+    } = req.body || {};
+
+    const norm = (s="") => String(s)
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+      .toLowerCase().replace(/[^\p{L}0-9\s-]+/gu," ")
+      .replace(/\s+/g," ").trim();
+
+    const u = norm(childAnswer);
+    const k = norm(expectedAnswer);
+    const q = String(question||"").trim();
+
+    // Pusty input dziecka -> od razu nie OK
+    if (!u) {
+      return res.json({
+        ok: true,
+        result: "not-ok",
+        feedback: "Spróbuj odpowiedzieć pełnym zdaniem albo jednym kluczowym słowem.",
+      });
+    }
+
+    // 1) Jeżeli mamy oczekiwane (closed-ended) → klasyczne dopasowanie
+    if (k) {
+      const jaccard = (() => {
+        const tok = (x) => new Set(String(x).split(" ").filter(Boolean));
+        const A = tok(u), B = tok(k);
+        if (!A.size && !B.size) return 1;
+        let inter = 0; for (const t of A) if (B.has(t)) inter++;
+        return inter / (A.size + B.size - inter);
+      })();
+
+      const pass = u.includes(k) || k.includes(u) || jaccard >= 0.5;
+      return res.json({
+        ok: true,
+        result: pass ? "ok" : "not-ok",
+        feedback: pass
+          ? "Świetnie! Odpowiedź pasuje do treści."
+          : "Sprawdź jeszcze raz fragment i spróbuj użyć słów z tekstu.",
+      });
+    }
+
+    // 2) Brak expectedAnswer (open-ended, np. „Co się dzieje w tej historii?”)
+    //    Dla takich pytań nie katujemy dziecka ścisłym dopasowaniem – uznajemy sensowną odpowiedź za OK,
+    //    o ile nie wygląda na zupełnie losową (min. 3 znaki + 1 spacja lub ≥5 znaków bez spacji).
+    const looksMeaningful = /\S+\s+\S+/.test(childAnswer) || String(childAnswer).trim().length >= 5;
+
+    // drobna „kotwica” w tekście: szukamy 1–2 słów wspólnych (po normalizacji)
+    const T = norm(text);
+    const uTok = new Set(u.split(" ").filter(Boolean));
+    const hits = [...uTok].filter(w => T.includes(w)).length;
+
+    const pass = looksMeaningful && hits >= 1;
+
+    return res.json({
+      ok: true,
+      result: pass ? "ok" : "not-ok",
+      feedback: pass
+        ? "Dobra odpowiedź – zgadza się z treścią."
+        : "Spróbuj odpowiedzieć prościej, używając słów z fragmentu.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message||e) });
+  }
+});
+
   // ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE (ONE-BEST) =====================
   // Priorytet: 1) Dokąd? 2) Kto? 3) Gdzie? 4) Kiedy?
   app.post("/agent/comprehend-one", (req, res) => {
