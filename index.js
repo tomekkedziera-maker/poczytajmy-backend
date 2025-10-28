@@ -1867,7 +1867,7 @@ let VERBS_PERCEPTION = [];
 /* ===================== ADD-ON: JEDNO NAJLEPSZE PYTANIE (ONE-BEST) ===================== */
 /* Cel: wybrać z całego tekstu jedno pytanie i odpowiedź.
    Priorytet: 1️⃣ Dokąd?  2️⃣ Kto?  3️⃣ Gdzie?  4️⃣ Kiedy?
-   Używa istniejącej funkcji generateQuestionAndAnswerTeacher() z głównego modułu.
+   Używa generateQuestionAndAnswerTeacher() z modułu quiz.
 */
 
 (function attachComprehendOne(app) {
@@ -1879,7 +1879,6 @@ let VERBS_PERCEPTION = [];
   const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
   const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
 
-  // Proste oczyszczanie
   const P = s => String(s || "").trim().replace(/[.,;!?…:]+$/u, "");
   const normalizeSpaces = s => String(s || "").replace(/\s+/g, " ").trim();
   const deaccent = s =>
@@ -1895,9 +1894,9 @@ let VERBS_PERCEPTION = [];
       .replace(/[śŚ]/g, "s")
       .replace(/[źŹżŻ]/g, "z");
 
-  // --- lokalna pomocnicza: ekstrakcja imion (z prostym filtrem) ---
+  // --- Ekstrakcja imion (prosto) ---
   function extractNames(s) {
-    const tokens = s.split(/\s+/);
+    const tokens = String(s).split(/\s+/);
     const names = [];
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i];
@@ -1912,41 +1911,81 @@ let VERBS_PERCEPTION = [];
     return names.length ? names.join(" i ") : null;
   }
 
-  // --- poprawiony extractor kierunku (ostatnia fraza po czasowniku ruchu) ---
-  function extractDestination(s) {
+  // --- Detekcja czasownika ruchu + forma gramatyczna (do pytania) ---
+  function detectMoveCue(s) {
+    const t = deaccent(String(s).toLowerCase());
+    // liczba mnoga najpierw
+    if (/\bposzli\b/.test(t))    return { base: "iść",      form: "poszli",     num: "pl" };
+    if (/\bpojechali\b/.test(t)) return { base: "pojechać", form: "pojechali",  num: "pl" };
+    if (/\bwsiedli\b/.test(t))   return { base: "wsiąść",    form: "wsiedli",    num: "pl" };
+    if (/\bwrocil[iy]\b/.test(t))return { base: "wrócić",   form: "wrócili",    num: "pl" };
+
+    // żeńska l.poj.
+    if (/\bposzla\b/.test(t))     return { base: "iść",      form: "poszła",     num: "sgf" };
+    if (/\bpojechala\b/.test(t))  return { base: "pojechać", form: "pojechała",  num: "sgf" };
+    if (/\bwsiedla\b/.test(t))    return { base: "wsiąść",    form: "wsiedła",    num: "sgf" };
+    if (/\bwrocila\b/.test(t))    return { base: "wrócić",   form: "wróciła",    num: "sgf" };
+
+    // męska l.poj. (lub neutral jeśli nie pewne)
+    if (/\bposzedl\b/.test(t))    return { base: "iść",      form: "poszedł",    num: "sgm" };
+    if (/\bpojechal\b/.test(t))   return { base: "pojechać", form: "pojechał",   num: "sgm" };
+    if (/\bwsz(ed|edl)\b/.test(t))return { base: "wejść",    form: "wszedł",     num: "sgm" };
+    if (/\bwrocil\b/.test(t))     return { base: "wrócić",   form: "wrócił",     num: "sgm" };
+
+    // niezidentyfikowane
+    return null;
+  }
+
+  // --- Ekstrakcja miejsca docelowego: tylko gdy jest ruch ---
+  function extractDestinationIfMove(s) {
+    const cue = detectMoveCue(s);
+    if (!cue) return null;
+
     const base = String(s);
 
-    // 1) Wzorzec wsiadania
-    const board = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
-    if (board) return ("do " + P(board[2])).trim();
+    // Wsiadanie: „wsiedli/wsiadł do …”
+    if (/wsied\w*|wsiad\w*/i.test(base)) {
+      const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
+      if (m) return ("do " + P(m[2])).trim();
+    }
 
-    // 2) Szukaj po czasowniku ruchu
+    // Szukaj fraz do/na w ogonie po czasowniku ruchu
     const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*)\b/i);
     const tail = mv >= 0 ? base.slice(mv) : base;
 
-    // 3) Zbierz frazy do/na
     const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
-    const matches = [];
-    let m;
-    while ((m = re.exec(tail)) !== null) matches.push({ prep: m[1], body: m[2], idx: m.index });
+    const matches = []; let m2;
+    while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1], body: m2[2], idx: m2.index });
     if (!matches.length) return null;
 
-    // 4) preferuj ostatnią (np. do koleżanki zamiast do koszyka)
+    // Preferuj ostatnią (np. „do koleżanki” zamiast „do koszyka” z wcześniejszej klauzuli)
     let pick = matches[matches.length - 1];
     let dest = `${pick.prep} ${pick.body}`.trim();
+
+    // Utnij ciągi typu „, i posz…/pojech…”
     dest = dest.replace(/\s+i\s+(posz\w+|pojech\w+|wsied\w*|wsiad\w*)\b.*$/i, "");
 
-    // 5) oczyść
+    // Oczyszczanie ogonków (czas, cele, czynności)
     dest = dest
       .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
       .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/i, "")
       .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "")
       .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
 
-    return P(normalizeSpaces(dest));
+    return P(normalizeSpaces(dest)) || null;
   }
 
-  // --- wybór najlepszego pytania ---
+  // --- sklejanie pytania „Dokąd … [forma] [imiona]?” ---
+  function buildDokadQuestion(sentence) {
+    const cue = detectMoveCue(sentence);
+    const names = extractNames(sentence);
+    if (!cue || !names) return "Dokąd oni poszli?"; // bezpieczny fallback
+
+    // Forma zależna od cue
+    const f = cue.form; // poszła/poszedł/poszli/pojechała/…
+    return `Dokąd ${f} ${names}?`;
+  }
+
   app.post("/agent/comprehend-one", (req, res) => {
     try {
       const { text } = req.body || {};
@@ -1954,7 +1993,7 @@ let VERBS_PERCEPTION = [];
         return res.status(400).json({ ok: false, error: "Empty text" });
       }
 
-      // rozbij na zdania i klauzule
+      // Rozbij na zdania + klauzule „, a potem / potem / następnie / wtedy”
       const cleaned = text
         .split(/\r?\n/)
         .map(l => l.replace(/^\s*[>›»]{1,2}\s*/, ""))
@@ -1967,32 +2006,64 @@ let VERBS_PERCEPTION = [];
         s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
          .map(x => x.trim())
          .filter(Boolean);
+
       const sentences = rough.flatMap(splitOnMarkers).filter(Boolean);
 
-      const all = sentences.map(s => {
+      // Zbuduj kandydaty własnym skorerem (bardziej konkretnym niż ogólny)
+      const candidates = sentences.map(s => {
+        const dest = extractDestinationIfMove(s);            // tylko gdy jest ruch
+        const move = !!detectMoveCue(s);
+        const names = extractNames(s);
+
+        // Wspomagająco: wynik z ogólnej heurystyki (na fallback)
         const r = generateQuestionAndAnswerTeacher(s);
-        return { ...r, sentence: s };
+
+        // Scoring:
+        // 100: ruch + dest (najlepsze „Dokąd?”)
+        // 80 : Kto? (z imieniem)
+        // 70 : Gdzie? (z odpowiedzią)
+        // 60 : Kiedy? HH:MM
+        // 50 : Kiedy? ogólne
+        // 20 : cokolwiek innego z odpowiedzią
+        let score = 0;
+        let qtype = r.qtype;
+        let question = r.question;
+        let answer = r.answer;
+
+        if (move && dest) {
+          score = 100;
+          qtype = "Dokąd?";
+          question = buildDokadQuestion(s);
+          answer = dest;
+        } else if (names && /^Kto\?$/i.test(r.qtype)) {
+          score = 80;
+        } else if (r.qtype === "Gdzie?" && r.answer) {
+          score = 70;
+        } else if (r.qtype === "Kiedy?" && /^\s*[Oo]\s*\d{1,2}[:.]\d{2}\s*$/.test(r.answer || "")) {
+          score = 60;
+        } else if (r.qtype === "Kiedy?" && r.answer) {
+          score = 50;
+        } else if (r.answer) {
+          score = 20;
+        }
+
+        return {
+          score, qtype, question, answer, sentence: s
+        };
       });
 
-      // jeśli są różne typy — ustal ranking
-      const rank = { "Dokąd?": 5, "Kto?": 4, "Gdzie?": 3, "Kiedy?": 2, "Co?": 1 };
-      const sorted = all
-        .filter(x => x.answer)
-        .sort((a, b) => (rank[b.qtype] || 0) - (rank[a.qtype] || 0));
+      // Wybierz najlepszy
+      candidates.sort((a,b) => b.score - a.score);
+      const best = candidates[0];
 
-      const best = sorted[0] || all[0] || { ok: false };
-      if (!best || !best.ok) {
+      if (!best || !best.answer) {
         return res.json({ ok: false, message: "No suitable question found", source_path: "one-best" });
       }
 
-      // poprawka: jeśli to "Dokąd?", ale znamy imię, dopasuj "Kto poszedł..."
+      // Ostrożne doprecyzowanie pytania Dokąd? (gdyby jeszcze nie miało imion/ł/łi)
       if (best.qtype === "Dokąd?") {
-        const names = extractNames(best.sentence);
-        if (names) {
-          const v = /posz\w+/.test(best.sentence) ? "poszedł" : /pojech\w+/.test(best.sentence) ? "pojechał" : "poszedł";
-          best.question = `Dokąd ${v} ${names}?`;
-        }
-        const fixedDest = extractDestination(best.sentence);
+        best.question = buildDokadQuestion(best.sentence);
+        const fixedDest = extractDestinationIfMove(best.sentence);
         if (fixedDest) best.answer = fixedDest;
       }
 
@@ -2010,6 +2081,7 @@ let VERBS_PERCEPTION = [];
   });
 })(app);
 /* ===================== /ADD-ON: JEDNO NAJLEPSZE PYTANIE ===================== */
+
 
 
 
