@@ -1526,12 +1526,22 @@ let VERBS_PERCEPTION = [];
     return null;
   }
 
+  // ===== TIME GUARD (nowe) =====
+  const TIME_WORDS = "(rano|rankiem|południu|poludniu|wieczorem|nocą|noca|nocy|jutro|dzisiaj|dziś|wczoraj)";
+  const TIME_RANGE_RE = new RegExp(String.raw`\\bod\\s+\\S+(?:\\s+\\S+){0,4}\\s+do\\s+\\b${TIME_WORDS}\\b`, "iu");
+  const DO_TIME_RE = new RegExp(String.raw`\\bdo\\s+${TIME_WORDS}\\b`, "iu");
+
   // ===== Dokąd (ogólne) =====
   function extractDestination(s) {
-    const afterBoard = extractBoardingObject(s);
+    // pre-clean: usuń zakresy czasu i „do południa/do nocy” itp.
+    let cleaned = removeDiscourseMarkers(s);
+    cleaned = cleaned.replace(TIME_RANGE_RE, " ");
+    cleaned = cleaned.replace(DO_TIME_RE, " ");
+    cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+    const afterBoard = extractBoardingObject(cleaned);
     if (afterBoard) return `do ${afterBoard}`.trim();
 
-    const cleaned = removeDiscourseMarkers(s);
     const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+){0,8})\b/gi;
     const matches = [];
     let m;
@@ -1569,6 +1579,11 @@ let VERBS_PERCEPTION = [];
 
     dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
     dest = normalizeSpaces(dest);
+
+    // time-guard po czyszczeniu
+    if (!dest) return null;
+    if (DO_TIME_RE.test(dest) || /\b(nocy|południa|poludnia|ranka|wieczora)\b/i.test(dest)) return null;
+
     return dest || null;
   }
 
@@ -1832,31 +1847,29 @@ let VERBS_PERCEPTION = [];
       const P = z => String(z||"").trim().replace(/[.,;!?…:]+$/u,"");
 
       // hotfix: ekstrakcja imion bez fałszywych „Wsiadł/Poszedł/...”
-function extractNames(s) {
-  const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
-  const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
-  // czasowniki na początku zdania (z polskimi diakrytykami)
-  const VERB_FIRST = /^(Wsiad[a-ząćęłńóśźż]*|Wszed[a-ząćęłńóśźż]*|Wesz[a-ząćęłńóśźż]*|Wróc[a-ząćęłńóśźż]*|Poszed[a-ząćęłńóśźż]*|Posz[a-ząćęłńóśźż]*|Pojech[a-ząćęłńóśźż]*)$/u;
+      function extractNames(s) {
+        const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
+        const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
+        const VERB_FIRST = /^(Wsiad[a-ząćęłńóśźż]*|Wszed[a-ząćęłńóśźż]*|Wesz[a-ząćęłńóśźż]*|Wróc[a-ząćęłńóśźż]*|Poszed[a-ząćęłńóśźż]*|Posz[a-ząćęłńóśźż]*|Pojech[a-ząćęłńóśźż]*)$/u;
 
-  const tokens = String(s || "").split(/\s+/);
-  const names = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const raw = tokens[i];
-    const t = raw.replace(/[.,;:!?…]+$/u,"");
+        const tokens = String(s || "").split(/\s+/);
+        const names = [];
+        for (let i = 0; i < tokens.length; i++) {
+          const raw = tokens[i];
+          const t = raw.replace(/[.,;:!?…]+$/u,"");
 
-    if (i === 0 && VERB_FIRST.test(t)) continue; // NIE licz 1. wyrazu-czasownika jako imię
+          if (i === 0 && VERB_FIRST.test(t)) continue;
 
-    if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/u.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
-      names.push(t);
-      if (tokens[i + 1] === "i") {
-        const t2 = (tokens[i + 2] || "").replace(/[.,;:!?…]+$/u,"");
-        if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/u.test(t2)) { names.push(t2); i += 2; }
+          if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/u.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
+            names.push(t);
+            if (tokens[i + 1] === "i") {
+              const t2 = (tokens[i + 2] || "").replace(/[.,;:!?…]+$/u,"");
+              if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/u.test(t2)) { names.push(t2); i += 2; }
+            }
+          }
+        }
+        return names.length ? names.join(" i ") : null;
       }
-    }
-  }
-  return names.length ? names.join(" i ") : null;
-}
-
 
       function detectMoveCue(s) {
         const t = deaccent(String(s).toLowerCase());
@@ -1873,59 +1886,49 @@ function extractNames(s) {
         return null;
       }
 
-      // === REPLACE: extractDestinationIfMove ===
-// --- Ekstrakcja miejsca docelowego: tylko gdy jest ruch (ulepszona, hartowana) ---
-function extractDestinationIfMove(s) {
-  const cue = detectMoveCue(s);
-  if (!cue) return null;
+      // --- Ekstrakcja miejsca docelowego: tylko gdy jest ruch (ulepszona, hartowana) ---
+      function extractDestinationIfMove(s) {
+        const cue = detectMoveCue(s);
+        if (!cue) return null;
 
-  const base = String(s);
+        const base = String(s);
 
-  // 1) BOARDING ma najwyższy priorytet – dopasuj "do ..." ale NIE łap po tym "i/ oraz / a / do / na"
-  const reBoard = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,5})/iu;
-  const mb = base.match(reBoard);
-  if (mb) {
-    let dest = "do " + mb[2];
-    // twarde cięcie ogona: spójnik + kolejny ruch / przyimek kierunkowy
-    dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
-    // ogony: czas, aktywności, drugorzędne przyimki
-    dest = dest
-      .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
-      .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
-      .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
-    // “na ... do ...” => “do ...”
-    const naDo = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-    if (naDo) dest = "do " + naDo[1];
-    return dest.trim();
-  }
+        // 1) BOARDING pierwszeństwo
+        const reBoard = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,5})/iu;
+        const mb = base.match(reBoard);
+        if (mb) {
+          let dest = "do " + mb[2];
+          dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
+          dest = dest
+            .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
+            .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
+            .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
+          const naDo = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
+          if (naDo) dest = "do " + naDo[1];
+          return dest.trim();
+        }
 
-  // 2) Ogólna ścieżka: od pierwszego czasownika ruchu szukaj PIERWSZEGO "do|na ..." z hartowanym body
-  const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroci\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
-  const tail = mv >= 0 ? base.slice(mv) : base;
+        // 2) Ogólna ścieżka — pierwszy „do/na ...” po czasowniku ruchu
+        const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroci\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
+        const tail = mv >= 0 ? base.slice(mv) : base;
 
-  // Hartowane body: kolejne tokeny NIE mogą zaczynać się od "i|oraz|a|do|na"
-  const reDir = /\b(do|na)\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,8})\b/iu;
-  const md = tail.match(reDir);
-  if (!md) return null;
+        const reDir = /\b(do|na)\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,8})\b/iu;
+        const md = tail.match(reDir);
+        if (!md) return null;
 
-  let dest = `${md[1]} ${md[2]}`;
+        let dest = `${md[1]} ${md[2]}`;
 
-  // twarde cięcie ogona po spójniku + (ruch/przyimek kierunkowy)
-  dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
+        dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
+        dest = dest
+          .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
+          .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
+          .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
 
-  // ogony: czas, aktywności, drugorzędne przyimki
-  dest = dest
-    .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
-    .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
-    .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
+        const naDo2 = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
+        if (naDo2) dest = "do " + naDo2[1];
 
-  // “na ... do ...” => “do ...”
-  const naDo2 = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-  if (naDo2) dest = "do " + naDo2[1];
-
-  return dest.trim() || null;
-}
-
+        return dest.trim() || null;
+      }
 
       function buildDokadQuestion(sentence, fallbackNames) {
         const cue = detectMoveCue(sentence);
@@ -1964,10 +1967,11 @@ function extractDestinationIfMove(s) {
         let qtype = r.qtype;
         let question = r.question;
         let answer = r.answer;
-// Drobna normalizacja odpowiedzi dla Gdzie? — małe litery (regexy bez ^[Pp]rij…)
-if (qtype === "Gdzie?" && typeof answer === "string") {
-  answer = answer.toLowerCase();
-}
+
+        // Drobna normalizacja odpowiedzi dla Gdzie? — małe litery
+        if (qtype === "Gdzie?" && typeof answer === "string") {
+          answer = answer.toLowerCase();
+        }
 
         if (move && dest) {
           score = 100;
@@ -2017,7 +2021,7 @@ if (qtype === "Gdzie?" && typeof answer === "string") {
 
   // ==================== VERBS API + META + HEALTH ====================
   app.get("/version-quiz", (_req, res) =>
-    res.json({ build: "2025-10-28 rule-teacher-strict-v7.6f-fullQ + hotfix-cut+i-verb+stadion" })
+    res.json({ build: "2025-10-28 rule-teacher-strict-v7.6f-fullQ + hotfix-cut+i-verb+stadion+time-guard" })
   );
 
   app.post("/verbs/reload", async (_req, res) => {
@@ -2061,7 +2065,6 @@ if (qtype === "Gdzie?" && typeof answer === "string") {
   app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
-
 
 
 
