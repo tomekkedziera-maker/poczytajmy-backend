@@ -1550,6 +1550,10 @@ let VERBS_PERCEPTION = [];
 
     const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
     let dest = `${pick.prep} ${pick.body}`.trim();
+// Od razu utnij, jeśli we fragmencie pojawiają się czasowniki percepcji / aktywności
+dest = dest
+  .replace(/\s+\b(obejrz\p{L}*|zobacz\p{L}*|ogl[aą]d\p{L}*)\b.*$/iu, "") // np. "na wystawie obejrzeli..." → "na wystawie"
+  .replace(/\s+\b(robili|zrobili|jedli|pili|bawili|czytali|rysowali|usiedli|czekali)\b.*$/iu, "");
 
     if (pick.prep === "na" && PERCEPTION_RE().test(s)) return null;
 
@@ -1699,7 +1703,9 @@ let VERBS_PERCEPTION = [];
   }
   function extractWhoActivity(s) {
     const text = String(s);
-    const m = text.match(/\b(robi\w*|maluj\w*|piecze\w*|rysuj\w*|czyta\w*|gotuj\w*|sprz[aą]t\w*|pisz\w*|naprawi\w*|buduj\w*)\b/iu);
+   // \p{L} łapie pełne litery (z ogonkami), więc "robią", "rysują" itd.
+const m = text.match(/\b(robi\p{L}*|maluj\p{L}*|piecze\p{L}*|rysuj\p{L}*|czyta\p{L}*|gotuj\p{L}*|sprz[aą]t\p{L}*|pisz\p{L}*|naprawi\p{L}*|buduj\p{L}*)\b/iu);
+
     if (!m) return null;
 
     const verbRaw = (m[1] || "").toLowerCase();
