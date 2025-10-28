@@ -1864,50 +1864,82 @@ app.post("/agent/comprehend-one", (req, res) => {
       return names.length ? names.join(" i ") : null;
     }
 
-    function detectMoveCue(s) {
-      const t = deaccent(String(s).toLowerCase());
-      if (/\bposzli\b/.test(t))    return { form: "poszli" };
-      if (/\bpojechali\b/.test(t)) return { form: "pojechali" };
-      if (/\bwsiedli\b/.test(t))   return { form: "wsiedli" };
-      if (/\bwrocil[iy]\b/.test(t))return { form: "wrócili" };
+   function detectMoveCue(s) {
+  const t = deaccent(String(s).toLowerCase());
 
-      if (/\bposzla\b/.test(t))     return { form: "poszła" };
-      if (/\bpojechala\b/.test(t))  return { form: "pojechała" };
-      if (/\bwsiedla\b/.test(t))    return { form: "wsiedła" };
-      if (/\bwrocila\b/.test(t))    return { form: "wróciła" };
+  // liczba mnoga
+  if (/\bposzli\b/.test(t))    return { form: "poszli" };
+  if (/\bpojechali\b/.test(t)) return { form: "pojechali" };
+  if (/\bwsiedli\b/.test(t))   return { form: "wsiedli" };
+  if (/\bwrocil[iy]\b/.test(t))return { form: "wrócili" };
+  if (/\bweszl[iy]\b/.test(t)) return { form: "weszli" };
 
-      if (/\bposzedl\b/.test(t))    return { form: "poszedł" };
-      if (/\bpojechal\b/.test(t))   return { form: "pojechał" };
-      if (/\bwsz(ed|edl)\b/.test(t))return { form: "wszedł" };
-      if (/\bwrocil\b/.test(t))     return { form: "wrócił" };
+  // żeński
+  if (/\bposzla\b/.test(t))     return { form: "poszła" };
+  if (/\bpojechala\b/.test(t))  return { form: "pojechała" };
+  if (/\bwsiadla\b/.test(t))    return { form: "wsiadła" };
+  if (/\bwrocila\b/.test(t))    return { form: "wróciła" };
+  if (/\bweszla\b/.test(t))     return { form: "weszła" };
 
-      return null;
-    }
+  // męski
+  if (/\bposzedl\b/.test(t))    return { form: "poszedł" };
+  if (/\bpojechal\b/.test(t))   return { form: "pojechał" };
+  if (/\bwrocil\b/.test(t))     return { form: "wrócił" };
+  if (/\bwszedl\b/.test(t) || /\bweszedl\b/.test(t)) return { form: "wszedł" };
+
+  return null;
+}
+
 
     // --- patchowany ekstraktor celu po czasowniku ruchu
-    function extractDestinationIfMove(s) {
+  function extractDestinationIfMove(s) {
   const cue = detectMoveCue(s);
   if (!cue) return null;
 
   const base = String(s);
 
-  // 1) Najpierw spróbuj „wsiadł/wsiedli do …”
-  const mBoard = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
-  if (mBoard) {
-    // Zwracamy sam obiekt po "do", bez ogonów
-    let dest = "do " + mBoard[2];
-    dest = dest
-      .replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wsiad\w+|wsied\w+|wróci\w+|przesz\w+|przejd\w+)\b.*$/iu, "")
-      .replace(/(?:,?\s*a\s+)?(?:potem|nast[eę]pnie|wtedy)\b.*$/iu, "")
-      .replace(/\s+(po\s+\w+.*|na\s+(spacer|obiad|lody|zakupy)\b.*)$/iu, "")
-      .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
-      .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
-      .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "")
-      .replace(/\s+na\s+film(?:\s+\S+){0,6}$/iu, "")
-      .replace(/\s+na\s+(wyst[ęe]p|mecz|pokaz|koncert|zawody)(?:\s+\S+){0,6}$/iu, "");
-    dest = STRIP_ANY_PURPOSE(dest);
-    return P(normalizeSpaces(dest)) || null;
+  // 1) Wsiadanie: "wsiadł/wsiedli do …"
+  if (/wsied\w*|wsiad\w*/i.test(base)) {
+    const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
+    if (m) return ("do " + P(m[2])).trim();
   }
+
+  // 2) Weź ogon od pierwszego czasownika ruchu (żeby ignorować wcześniejsze "do/na")
+  const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/i);
+  const tail = mv >= 0 ? base.slice(mv) : base;
+
+  // 3) Zbierz wszystkie "do|na …" w ogonie
+  const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
+  const matches = []; let m2;
+  while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1].toLowerCase(), body: m2[2], idx: m2.index });
+  if (!matches.length) return null;
+
+  // 4) Preferuj NAJBLIŻSZE po ruchu "do …"; jeśli brak — pierwszy "na …"
+  const firstDo = matches.find(x => x.prep === "do");
+  let pick = firstDo || matches[0];
+
+  let dest = `${pick.prep} ${pick.body}`.trim();
+
+  // 5) Utnij przy kolejnym ruchu / spójniku + ruchu (także NBSP)
+  dest = dest.replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wesz\w+|wsiad\w+|wsied\w+|wróci\w+)\b.*$/i, "");
+
+  // 6) Usuń "cel/powód": na lody/obiad/zakupy/spacer → zostaw czysty kierunek
+  //    Jeśli dest zaczyna się od "na ..." i gdzieś dalej jest "do ...", to wybierz to "do ..."
+  const mDoInside = dest.match(/\bdo\s+.+$/i);
+  if (/^na\s+/i.test(dest) && mDoInside) dest = mDoInside[0];
+
+  // 7) Oczyść ogony (czas, aktywność, przyimki wtórne)
+  dest = dest
+    .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/i, "")
+    .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|obejrzeli|rysowali|zobaczyli)\b.*$/i, "")
+    .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
+
+  // 8) Finalny porządek
+  dest = STRIP_ANY_PURPOSE(dest);               // "na lody/na spacer" → wycięte
+  dest = P(normalizeSpaces(dest));
+  return dest || null;
+}
+
 
   // 2) Jeśli nie było „wsiad… do …”, tnij od PIERWSZEGO czasownika ruchu (teraz też z wsiad/wsied)
   const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*|wsiad\w*|wsied\w*)\b/i);
