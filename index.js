@@ -1840,10 +1840,25 @@ app.post("/agent/comprehend-one", (req, res) => {
     const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
     const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
     const COMMON_NOUN_CAPS = new Set(["Chłopiec","Chlopiec","Dziewczynka","Mama","Tata","Pani","Pan","Dzieci","Uczeń","Uczennica"]);
+    // 👇 formy czasowników, których NIE uznajemy za imiona nawet jeśli stoją na początku zdania
+    const VERB_CAPS = new Set(["Wsiadł","Wsiadla","Wszedł","Wszedl","Weszła","Weszli","Wrócił","Wrocil","Wrócili","Poszedł","Poszedl","Poszła","Poszli","Pojechał","Pojechal","Pojechała","Pojechali"]);
 
     const P = s => String(s || "").trim().replace(/[.,;!?…:]+$/u, "");
+    const normalizeSpaces = s => String(s || "").replace(/\s+/g, " ").trim();
+    const deaccent = s =>
+      String(s)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[łŁ]/g, "l")
+        .replace(/[ąĄ]/g, "a")
+        .replace(/[ćĆ]/g, "c")
+        .replace(/[ęĘ]/g, "e")
+        .replace(/[ńŃ]/g, "n")
+        .replace(/[óÓ]/g, "o")
+        .replace(/[śŚ]/g, "s")
+        .replace(/[źŹżŻ]/g, "z");
 
-    // ====== Ekstrakcja imion ======
+    // ====== Imiona (bez fałszywych „Wsiadł” etc.) ======
     function extractNames(s) {
       const toks = String(s).split(/\s+/);
       const names = [];
@@ -1851,16 +1866,16 @@ app.post("/agent/comprehend-one", (req, res) => {
         const prev = (toks[i-1] || "").replace(/[.,;:!?…]+$/u,"");
         const tRaw = toks[i];
         const t = tRaw.replace(/[.,;:!?…]+$/u,"");
-
         if (/^(do|na)$/i.test(prev)) continue;
         if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/.test(t)
             && !STOP_CAPS.has(t)
             && !ADVERB_CAPS.has(t)
-            && !COMMON_NOUN_CAPS.has(t)) {
+            && !COMMON_NOUN_CAPS.has(t)
+            && !VERB_CAPS.has(t)) {
           names.push(t);
           if (toks[i + 1] === "i") {
             const t2 = (toks[i + 2] || "").replace(/[.,;:!?…]+$/u,"");
-            if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(t2) && !STOP_CAPS.has(t2) && !COMMON_NOUN_CAPS.has(t2)) {
+            if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(t2) && !STOP_CAPS.has(t2) && !COMMON_NOUN_CAPS.has(t2) && !VERB_CAPS.has(t2)) {
               names.push(t2);
               i += 2;
             }
@@ -1870,7 +1885,7 @@ app.post("/agent/comprehend-one", (req, res) => {
       return names.length ? names.join(" i ") : null;
     }
 
-    // ====== Detekcja formy czasownika ruchu ======
+    // ====== Czasownik ruchu (forma do pytania) ======
     function detectMoveCue(s) {
       const t = deaccent(String(s).toLowerCase());
       if (/\bposzli\b/.test(t))    return { form: "poszli" };
@@ -1892,45 +1907,64 @@ app.post("/agent/comprehend-one", (req, res) => {
       return null;
     }
 
-    // ====== Ekstrakcja miejsca docelowego ======
+    // ====== Fallback: sama fraza „gdzie?” (prepozycja + rzeczownik) ======
+    function pickPlaceFromSentence(s) {
+      const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w|z|ze)";
+      const re = new RegExp(String.raw`(?:^|\s)${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`, "gi");
+      const pps = (String(s).match(re) || []).map(x => normalizeSpaces(x));
+      if (!pps.length) return null;
+      // preferuj „na / w / przy …”
+      const scored = pps.map(p => {
+        let sc = 0;
+        if (/^\s*(w|we|na)\b/i.test(p)) sc += 2;
+        if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(p)) sc += 1.5;
+        if (/\b(stadionie|ławce|lawce|wejściu|wejsciu|rynku|kinie|parku|muzeum|klasie|sali|sklepie)\b/i.test(deaccent(p))) sc += 1;
+        return {p, sc};
+      }).sort((a,b)=>b.sc-a.sc);
+      return P(scored[0].p);
+    }
+
+    // ====== Ekstrakcja celu (z preferencją boarding + pierwsze „do …” po ruchu) ======
     function extractDestinationIfMove(s) {
       const cue = detectMoveCue(s);
       if (!cue) return null;
       const base = String(s);
 
-      // 1) Boarding ma najwyższy priorytet
+      // 1) Boarding (najpierw)
       if (/wsied\w*|wsiad\w*/i.test(base)) {
         const m = base.match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
         if (m) return ("do " + P(m[2])).trim();
       }
 
-      // 2) Wytnij od czasownika ruchu
+      // 2) Ogon od pierwszego ruchu
       const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wro\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/i);
       const tail = mv >= 0 ? base.slice(mv) : base;
 
-      // 3) Złap "do|na ..."
+      // 3) Wszystkie „do|na …” w ogonie
       const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęłńóśźż0-9:\-]+){0,8})\b/gi;
       const matches = []; let m2;
       while ((m2 = re.exec(tail)) !== null) matches.push({ prep: m2[1].toLowerCase(), body: m2[2], idx: m2.index });
       if (!matches.length) return null;
 
-      const firstDo = matches.find(x => x.prep === "do");
-      let pick = firstDo || matches[0];
+      // 4) Bierzemy PIERWSZE „do …”, a jeśli go nie ma — pierwszą frazę
+      let pick = matches.find(x => x.prep === "do") || matches[0];
       let dest = `${pick.prep} ${pick.body}`.trim();
 
-      // 4) Utnij przy kolejnym spójniku + czasowniku ruchu
+      // 5) Utnij przy kolejnym ruchu (także NBSP)
       dest = dest.replace(/[\s\u00A0]+i[\s\u00A0]+(?:posz\w+|pojech\w+|wszed\w+|wesz\w+|wsiad\w+|wsied\w+|wróci\w+)\b.*$/i, "");
 
-      // 5) Jeśli "na ... do ..." → wybierz "do ..."
-      const mDoInside = dest.match(/\bdo\s+.+$/i);
-      if (/^na\s+/i.test(dest) && mDoInside) dest = mDoInside[0];
+      // 6) Jeśli „na … do …” → wybierz część „do …”
+      const innerDo = dest.match(/\bdo\s+.+$/i);
+      if (/^na\s+/i.test(dest) && innerDo) dest = innerDo[0];
 
-      // 6) Usuń cele i ogony
+      // 7) Ogony typu cel/czas/czynność/dodatkowe przyimki — out
       dest = dest
         .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/i, "")
-        .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|obejrzeli|rysowali|zobaczyli)\b.*$/i, "")
+        .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|obejrzeli|zobaczyli|rysowali)\b.*$/i, "")
         .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
-      dest = STRIP_ANY_PURPOSE(dest);
+      // usuń „na film / na mecz / na występ …”
+      dest = dest.replace(/\s+na\s+(film|mecz|wyst[eę]p|pokaz|koncert)\b.*$/iu, "");
+
       return P(normalizeSpaces(dest)) || null;
     }
 
@@ -1964,7 +1998,7 @@ app.post("/agent/comprehend-one", (req, res) => {
     const candidates = sentences.map(s => {
       const dest = extractDestinationIfMove(s);
       const move = !!detectMoveCue(s);
-      const r = generateQuestionAndAnswerTeacher(s);
+      const r = generateQuestionAndAnswerTeacher(s); // masz to wyżej w pliku
 
       let score = 0;
       let qtype = r.qtype;
@@ -1978,8 +2012,11 @@ app.post("/agent/comprehend-one", (req, res) => {
         answer = dest;
       } else if (r.qtype === "Kto?" && r.answer) {
         score = 80;
-      } else if (r.qtype === "Gdzie?" && r.answer) {
-        score = 70;
+      } else if (r.qtype === "Gdzie?") {
+        // docięcie odpowiedzi „gdzie?” do samej frazy przyimkowej
+        const pp = pickPlaceFromSentence(s);
+        if (pp) answer = pp;
+        score = answer ? 70 : 0;
       } else if (r.qtype === "Kiedy?" && /^\s*[Oo]\s*\d{1,2}[:.]\d{2}\s*$/.test(r.answer || "")) {
         score = 60;
       } else if (r.qtype === "Kiedy?" && r.answer) {
@@ -2016,6 +2053,7 @@ app.post("/agent/comprehend-one", (req, res) => {
     res.status(500).json({ ok: false, error: String(err.message || err), source_path: "one-best" });
   }
 });
+
 
 
 
