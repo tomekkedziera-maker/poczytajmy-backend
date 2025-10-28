@@ -1821,6 +1821,28 @@ let VERBS_PERCEPTION = [];
       res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
     }
   });
+// 1) dopracuj adresat pytania, gdy w zdaniu jest "X z Y"
+const namesPair = __humanPluralNamesFromWith(cleaned);
+if (namesPair && /^Dokąd\?/.test(best.qtype || "Dokąd?")) {
+  // Zmieniamy wording pytania tylko jeśli było „Dokąd …?”
+  best.question = `Dokąd poszli ${namesPair}?`;
+}
+
+// 2) dopracuj wybór destynacji (np. preferuj „nad rzekę” nad „do wody”)
+if ((best.qtype || "").startsWith("Dokąd") && best.answer) {
+  best.answer = __preferBetterDestination(best.sentence || cleaned, best.answer);
+}
+
+// 3) (opcjonalnie) rehydratacja ogonków, jeśli jeszcze jej nie masz:
+function __rehydrateFromOriginal(orig = "", frag = ""){
+  if (!orig || !frag) return frag || "";
+  const da = x => String(x).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[łŁ]/g,"l");
+  const O = String(orig), F = String(frag);
+  const idx = da(O).toLowerCase().indexOf(da(F).toLowerCase());
+  return idx >= 0 ? O.slice(idx, idx + F.length) : F;
+}
+best.answer   = __rehydrateFromOriginal(cleaned, best.answer);
+best.sentence = __rehydrateFromOriginal(cleaned, best.sentence);
 
   // ==================== VERBS API + META ====================
   app.get("/version-quiz", (_req, res) =>
