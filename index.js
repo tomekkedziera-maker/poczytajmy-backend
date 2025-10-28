@@ -1351,7 +1351,7 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (patched+hotfix + activity-KTO) ===================== */
+/* ===================== QUIZ: rule-teacher-strict-v7.6f-fullQ — INLINE (patched+hotfix+KTO-activity) ===================== */
 /* Wklej TEN blok po inicjalizacji Express:
    const app = express();
    app.use(express.json({ limit: '10mb' }));
@@ -1677,37 +1677,56 @@ let VERBS_PERCEPTION = [];
     return { ok: true, qtype: "Kto?", question: sanitizeQ(`Kto ${verb} ${prep} ${place}`), answer: namesRaw };
   }
 
-  // ===== „Kto?” — po aktywności („Kto robi zabawki?”) =====
-  function detectWhoByActivity(sentence = "") {
-    const s = String(sentence).trim();
-    if (!s) return null;
-
-    // krótka lista czasowników aktywności (3. os. l.poj/l.mn. + kilka wariantów)
-    const VERBS = [
-      "robi","robia","robią","buduje","buduja","budują","składa","sklada","składają","skladaja",
-      "maluje","maluja","malują","szyje","szyją","piecze","pieka","pieką","gotuje","gotuja","gotują",
-      "naprawia","naprawiają","rzeźbi","rzezbi","rzeźbią","pisze","piszą","rysuje","rysują",
-      "pakuje","pakują","konstruuje","konstruują","tworzy","tworzą","lepi","lepią","montuje","montują"
-    ];
-
-    // WZORZEC: [Podmiot z wielką literą] + [czasownik z listy] + [krótki obiekt]
-    const reSubjectVerb = new RegExp(
-      String.raw`^\s*([A-ZĄĆĘŁŃÓŚŹŻ][\p{L}'-]*(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ][\p{L}'-]*)*)\s+(${VERBS.join("|")})\s*([^\s,.;!?-](?:.*?))?$`,
-      "iu"
-    );
-    const m = s.match(reSubjectVerb);
+  /* ===== „Kto?” — aktywność (np. „Elfy robią zabawki…”) ===== */
+  const VERB_3SG_MAP = new Map(Object.entries({
+    // klucz = rdzeń/forma bazowa, wartość = 3 os. l.poj. do pytania
+    "robi": "robi",
+    "maluj": "maluje",
+    "piecze": "piecze",
+    "rysuj": "rysuje",
+    "czyta": "czyta",
+    "gotuj": "gotuje",
+    "sprząt": "sprząta",
+    "sprzat": "sprząta",
+    "pisz": "pisze",
+    "naprawi": "naprawia",
+    "buduj": "buduje"
+  }));
+  function firstListItem(s=""){
+    // "zabawki, rowery i kolejki" → "zabawki"
+    const cut = String(s).split(/\s*,\s*|\s+i\s+/i)[0] || s;
+    return stripPunct(normalizeSpaces(cut));
+  }
+  function extractWhoActivity(s) {
+    const text = String(s);
+    const m = text.match(/\b(robi\w*|maluj\w*|piecze\w*|rysuj\w*|czyta\w*|gotuj\w*|sprz[aą]t\w*|pisz\w*|naprawi\w*|buduj\w*)\b/iu);
     if (!m) return null;
 
-    const subject = stripPunct(m[1]||"").trim();         // np. „Elfy”
-    const verb    = (m[2]||"").toLowerCase();            // np. „robią”
-    let obj       = String(m[3]||"").replace(/[-–—]/g," ").split(/\s+/).slice(0,6).join(" ").trim(); // np. „zabawki …”
-    obj = stripPunct(obj);
+    const verbRaw = (m[1] || "").toLowerCase();
+    const tail = text.slice(m.index + m[0].length); // ogon po czasowniku
 
-    // budowa frazy do pytania
-    const phrase = obj ? `${verb} ${obj}` : verb;
-    if (!subject) return null;
+    // Obiekt do najbliższego przyimka/znaku kończącego zdanie
+    let obj = tail.split(/\s+(?:w|we|na|do|przy|pod|nad|z|ze)\b/i)[0]
+                  .split(/[.;!?]/)[0];
+    obj = firstListItem(obj); // np. „zabawki”
 
-    return { ok:true, qtype:"Kto?", question: sanitizeQ(`Kto ${phrase}`), answer: subject };
+    // Mapowanie do 3 os. l.poj.
+    let stem = verbRaw
+      .replace(/ą\b/u,"a")
+      .replace(/ją\b/u,"j")
+      .replace(/ają\b/u,"aj")
+      .replace(/(uje|ają|ał|ali|ała|ały|amy|acie|am|asz|emy|ecie|ę|esz|ą)$/u, "");
+    const candidates = [stem, verbRaw.replace(/[^\p{L}]+/gu,"")].filter(Boolean);
+    let verb3sg = "robi";
+    for (const cand of candidates) {
+      for (const [k,v] of VERB_3SG_MAP.entries()) {
+        if (cand.startsWith(k)) { verb3sg = v; break; }
+      }
+    }
+
+    const objSafe = obj && /\p{L}/u.test(obj) ? obj : "";
+    const q = objSafe ? `Kto ${verb3sg} ${objSafe}` : `Kto ${verb3sg}`;
+    return sanitizeQ(q);
   }
 
   // ==================== GŁÓWNA FUNKCJA Q/A ====================
@@ -1720,7 +1739,7 @@ let VERBS_PERCEPTION = [];
     const tDA = deaccent(t);
 
     const who = detectWhoQuestion(t);
-    const whoAct = detectWhoByActivity(t);          // ⬅️ NOWE
+    const whoActivityQ = extractWhoActivity(t);   // ⬅️ NOWE
     const time = extractTime(t);
     const dest = extractDestination(t);
     const place = pickPlaceFromSentence(t);
@@ -1756,27 +1775,34 @@ let VERBS_PERCEPTION = [];
     const preferPlaceFirst = SEATLIKE_RE().test(t);
     const strongTime = !!(time && /\b(o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|dzisiaj|dziś|jutro|wczoraj|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(time));
 
-    // PRIORYTETY: Kto? (ruch) > Kto? (aktywność) > (Kiedy?) > Dokąd? > Gdzie? > fallback
+    // PRIORYTETY:
+    // 1) Kto? (ruch do/na miejsce z imieniem)
     if (who) {
       const ans = rehydrateAnswerFromOriginal(text, who.answer);
       const pl = who.question.replace(/\s+/g," ").trim();
       return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ" };
     }
-    if (whoAct) { // ⬅️ NOWE: np. „Elfy robią zabawki.” → „Kto robi zabawki?”
-      const ans = rehydrateAnswerFromOriginal(text, whoAct.answer);
-      const pl = whoAct.question.replace(/\s+/g," ").trim();
-      return { ok: true, qtype: "Kto?", question: pl, answer: ans, source_path: "rule-teacher-strict-v7.6f-fullQ-activity" };
+    // 2) Kto? (aktywność) — np. „Kto robi zabawki?”
+    if (whoActivityQ) {
+      // odpowiedź: subiekt przed czasownikiem
+      const beforeVerb = t.split(/\b(robi\w*|maluj\w*|piecze\w*|rysuj\w*|czyta\w*|gotuj\w*|sprz[aą]t\w*|pisz\w*|naprawi\w*|buduj\w*)\b/iu)[0] || "";
+      const subj = beforeVerb.trim().split(/,|\.|;/)[0].trim().split(/\s+/).slice(-2).join(" ");
+      const ans = rehydrateAnswerFromOriginal(text, subj || "");
+      return { ok: true, qtype: "Kto?", question: whoActivityQ, answer: ans || "", source_path: "rule-teacher-strict-v7.6f-fullQ-activity-fix" };
     }
+    // 3) Kiedy?
     if (strongTime || time) {
       const q = qKiedy();
       const a = rehydrateAnswerFromOriginal(text, time);
       return { ok: true, qtype: "Kiedy?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
     }
+    // 4) Dokąd?
     if (dest) {
       const q = qDokad();
       const a = rehydrateAnswerFromOriginal(text, dest);
       return { ok: true, qtype: "Dokąd?", question: q, answer: a, source_path: "rule-teacher-strict-v7.6f-fullQ" };
     }
+    // 5) Gdzie? (seatlike preferowane)
     if (preferPlaceFirst && place) {
       const q = qGdzie();
       const a = rehydrateAnswerFromOriginal(text, place);
@@ -1923,10 +1949,8 @@ let VERBS_PERCEPTION = [];
         });
       }
 
-      // 2) Brak expectedAnswer (open-ended, np. „Co się dzieje w tej historii?”)
+      // 2) Brak expectedAnswer (open-ended)
       const looksMeaningful = /\S+\s+\S+/.test(childAnswer) || String(childAnswer).trim().length >= 5;
-
-      // drobna „kotwica” w tekście: szukamy 1–2 słów wspólnych (po normalizacji)
       const T = norm(text);
       const uTok = new Set(u.split(" ").filter(Boolean));
       const hits = [...uTok].filter(w => T.includes(w)).length;
@@ -1968,7 +1992,7 @@ let VERBS_PERCEPTION = [];
           const raw = tokens[i];
           const t = raw.replace(/[.,;:!?…]+$/u,"");
 
-          if (i === 0 && VERB_FIRST.test(t)) continue; // NIE licz 1. wyrazu-czasownika jako imię
+          if (i === 0 && VERB_FIRST.test(t)) continue;
 
           if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/u.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
             names.push(t);
@@ -1996,7 +2020,7 @@ let VERBS_PERCEPTION = [];
         return null;
       }
 
-      // --- Ekstrakcja miejsca docelowego: tylko gdy jest ruch (ulepszona, hartowana) ---
+      // --- Ekstrakcja miejsca docelowego tylko gdy jest ruch ---
       function extractDestinationIfMove(s) {
         const cue = detectMoveCue(s);
         if (!cue) return null;
@@ -2018,7 +2042,7 @@ let VERBS_PERCEPTION = [];
           return dest.trim();
         }
 
-        // 2) Ogólna ścieżka — pierwszy „do/na ...” po czasowniku ruchu
+        // 2) Ogólna ścieżka
         const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroci\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
         const tail = mv >= 0 ? base.slice(mv) : base;
 
@@ -2175,6 +2199,7 @@ let VERBS_PERCEPTION = [];
   app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
 })(app);
 /* ===================== /QUIZ — INLINE ===================== */
+
 
 
 
