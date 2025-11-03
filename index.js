@@ -1351,197 +1351,158 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-// === QUIZ v8 (BEGIN) — deterministyczny zestaw: Kto?/Dokąd?/Gdzie?/Kiedy? ===
+/* ===================== QUIZ / COMPREHEND — RULE v7.8 ===================== */
 
-// ——— utils ———
-const qv8_norm = (s="") => String(s).normalize("NFC").replace(/\s+/g," ").trim();
-const qv8_split = (s="") =>
-  String(s).replace(/\s*[\r\n]+\s*/g," ")
-            .split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean);
-const qv8_noDiaLower = (s="") => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+import express from "express";
+const router = express.Router();
 
-function qv8_hasPluralElves(s){ return /\bElfy\b/i.test(s); }
+/* ===== Heurystyki: typy pytań ===== */
 
-function qv8_normalizeAnswer(word, ctxSentence, ctxText){
-  let a = qv8_norm(word);
+const normalizeSpaces = (s="") => String(s).replace(/\s+/g," ").trim();
 
-  // liczba mnoga „Elfy”
-  if (/^elf$/i.test(a) && qv8_hasPluralElves(ctxSentence)) a = "Elfy";
-  if (/^elfy$/i.test(a)) a = "Elfy";
+const RE_MOVEMENT = /\b(poszedł|poszła|poszli|pójdzie|pójść|wsiadł|wsiedli|wsiedła|wsiąść|pojechał|pojechała|pojechali|wrócił|wróciła|wrócili|przeszedł|przeszła|przeszli|przejść| wszedł|weszła|weszli|wejść|udał się|udali się|ruszył|ruszyli|dotarł|dotarła|dotarli)\b/iu;
+const RE_WORK = /\b(pracuje|pracował|pracowała|pracują|pracowały|pracowali|maluje|rysuje|czyta|pisze|piecze|gotuje|słucha|ogląda|gra|uczy się|sprząta|buduje|robi)\b/iu;
+const RE_TIME = /\b(o \d{1,2}:\d{2}|w (poniedziałek|wtorek|środę|czwartek|piątek|sobotę|niedzielę|wieczorem|południe|poranek|rano)|po lekcjach|przed \d{1,2}:\d{2}|od \d{1,2}:\d{2} do \d{1,2}:\d{2}|od rana do nocy|w południe|w sobotni poranek)\b/iu;
+const RE_SEATLIKE = /\b(usiedli|usiadł|usiadła|siedział|siedziała|siedzieli|czekali|czekał|czekała|stali|stał|stała|stanęli)\b/iu;
+const RE_PERCEPTION_NA = /^Na (wystawie|rynku|boisku|stadionie|lekcji|koncercie|apelu|mszy|przerwie|dworcu)\b/iu;
 
-  // pełna forma „Święty Mikołaj”, jeśli występuje w tekście
-  if (/\bŚwięty\s+Mikołaj\b/i.test(ctxText) || /\bŚwięty\s+Mikołaj\b/i.test(ctxSentence)){
-    const al = qv8_noDiaLower(a);
-    if (al === "mikolaj" || al === "mikołaj") a = "Święty Mikołaj";
-  }
-  return a;
+function extractSubjectWho(s) {
+  const m =
+    s.match(/^(?:[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+)*)\b/iu) ||
+    s.match(/\b(Elfy|Dzieci|Chłopcy|Dziewczynki|Uczniowie|Rodzice|Strażacy|Piłkarze|Mikołaj|Święty Mikołaj)\b/iu);
+  return m ? m[0] : "";
 }
 
-// ——— extractory ———
-// Kto?
-function qv8_extractWho(sentence){
-  const whoPatterns = [
-    /\b(Święty\s+Mikołaj)\b/i,
-    /\b(Mikołaj)\b/i,
-    /\b(Elfy)\b/i,
-    /\b(Pani\s+[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+)\b/u,
-    /\b([A-ZŁŚŻŹĆŃÓ][\p{L}'-]+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+){0,2})\s+(?:czyta|pisze|rysuje|maluje|gotuje|otwiera|ogląda|je|pije|słucha|gra|idzie|wraca|siedzi|stoi|leży|pracuje|ma)\b/iu,
-  ];
-  for (const re of whoPatterns){
-    const m = sentence.match(re);
-    if (m) return m[1];
-  }
-  return null;
+function extractDestination(s) {
+  const m = s.match(/\b(do|na)\s+([^.,;!?]+)/iu);
+  return m ? normalizeSpaces(m[0]) : "";
 }
 
-// Dokąd?
-function qv8_extractWhereTo(sentence){
-  const movePatterns = [
-    /\bwsiedli\s+do\s+([^\s,.!?]+(?:\s+[^\s,.!?]+){0,4})/i,
-    /\b(do\s+[^\s,.!?]+(?:\s+[^\s,.!?]+){0,5})\b/i,
-    /\bna\s+(?:lody|boisko|peron|rynek|wystaw[ęai])\b/iu,
-  ];
-  for (const re of movePatterns){
-    const m = sentence.match(re);
-    if (m){
-      const raw = m[1] || m[0];
-      if (/na\s+lody/i.test(raw) && /do\s+cukierni/i.test(sentence)) return "do cukierni";
-      if (/do\s+Gdyni/i.test(raw) && /pociąg|pociagu|pociągu/i.test(sentence)) return "do pociągu do Gdyni";
-      return qv8_norm(raw);
+function extractTime(s) {
+  const m =
+    s.match(/\bo \d{1,2}:\d{2}\b/iu) ||
+    s.match(/\bw (?:poniedziałek|wtorek|środę|czwartek|piątek|sobotę|niedzielę)\b/iu) ||
+    s.match(/\bw (?:sobotni|niedzielny) poranek\b/iu) ||
+    s.match(/\bpo lekcjach\b/iu) ||
+    s.match(/\bw południe\b/iu) ||
+    s.match(/\bprzed \d{1,2}:\d{2}\b/iu) ||
+    s.match(/\bod rana do nocy\b/iu) ||
+    s.match(/\bwieczorem\b/iu);
+  return m ? normalizeSpaces(m[0]) : "";
+}
+
+function extractPlace(s) {
+  const m = s.match(/\b(przy|w|na)\s+[^.,;!?]+/iu);
+  return m ? normalizeSpaces(m[0]) : "";
+}
+
+/* ===== Główna funkcja decydująca ===== */
+function decideQA(sentenceRaw) {
+  const s = normalizeSpaces(String(sentenceRaw||""));
+
+  // 1) KTO — pracuje/robi/rysuje/piecze itd.
+  if (RE_WORK.test(s)) {
+    const subj = extractSubjectWho(s);
+    if (/\bpracuj(ę|e|ą|ecie|emy)|pracował|pracowała|pracowali|pracowały\b/iu.test(s)) {
+      return { qtype: "Kto?", question: "Kto pracuje?", answer: subj };
     }
+    return { qtype: "Kto?", question: "Kto to zrobił?", answer: subj };
   }
-  return null;
+
+  // 2) DOKĄD — tylko jeśli ruch i nie „Na wystawie…”
+  if (RE_MOVEMENT.test(s) && !RE_PERCEPTION_NA.test(s)) {
+    const dest = extractDestination(s);
+    if (dest) return { qtype: "Dokąd?", question: "Dokąd oni poszli?", answer: dest };
+  }
+
+  // 3) KIEDY
+  if (RE_TIME.test(s)) {
+    const when = extractTime(s);
+    if (when) return { qtype: "Kiedy?", question: "Kiedy to się działo?", answer: when };
+  }
+
+  // 4) GDZIE
+  if (RE_SEATLIKE.test(s) || /\b(w|przy|na)\b/iu.test(s)) {
+    const place = extractPlace(s);
+    if (place) return { qtype: "Gdzie?", question: "Gdzie byli?", answer: place };
+  }
+
+  // 5) fallback
+  return { qtype: "Co?", question: "Co się dzieje w tej historii?", answer: "" };
 }
 
-// Gdzie?
-function qv8_extractWhere(sentence){
-  const placePatterns = [
-    /\bw\s+kawiarni\b/i, /\bprzy\s+oknie\b/i, /\bw\s+czytelni\b/i,
-    /\bw\s+klasie\b/i,   /\bna\s+rynku\b/i
-  ];
-  for (const re of placePatterns){
-    const m = sentence.match(re);
-    if (m) return qv8_norm(m[0].replace(/\b(w|na)\s+/i,""));
-  }
-  const m2 = sentence.match(/\bprzy\s+([^\s,.!?]+(?:\s+[^\s,.!?]+){0,3})/i);
-  if (m2) return qv8_norm(m2[0].replace(/^przy\s+/i,""));
-  return null;
-}
-
-// Kiedy?
-function qv8_extractWhen(sentence){
-  const timePatterns = [
-    /\bO\s*\d{1,2}:\d{2}\b/i,
-    /\bW\s+sobotni\s+poranek\b/i,
-    /\bPo\s+lekcjach\b/i,
-    /\bwieczorem\b/i,
-    /\bPrzed\s+\d{1,2}:\d{2}\b/i,
-  ];
-  for (const re of timePatterns){
-    const m = sentence.match(re);
-    if (m) return qv8_norm(m[0]);
-  }
-  return null;
-}
-
-function qv8_chooseQA(sentence, fullText){
-  // priorytet: Dokąd? > Gdzie? > Kiedy? > Kto?
-  const dokad = qv8_extractWhereTo(sentence);
-  if (dokad) return { qtype:"Dokąd?", question:"Dokąd poszli/wsiedli?", answer:qv8_normalizeAnswer(dokad, sentence, fullText) };
-
-  const gdzie = qv8_extractWhere(sentence);
-  if (gdzie) return { qtype:"Gdzie?", question:"Gdzie byli/usiedli?",   answer:qv8_normalizeAnswer(gdzie, sentence, fullText) };
-
-  const kiedy = qv8_extractWhen(sentence);
-  if (kiedy) return { qtype:"Kiedy?", question:"Kiedy to się działo?",   answer:qv8_normalizeAnswer(kiedy, sentence, fullText) };
-
-  const kto = qv8_extractWho(sentence);
-  if (kto)   return { qtype:"Kto?",   question:"Kto to zrobił?",         answer:qv8_normalizeAnswer(kto, sentence, fullText) };
-
-  return null;
-}
-
-// ——— ROUTES: podmiana istniejących handlerów ———
-
-// SINGLE zdanie (to co wcześniej /agent/comprehend)
-app.post("/agent/comprehend", (req, res) => {
+/* ===== /agent/comprehend ===== */
+router.post("/agent/comprehend", async (req, res) => {
   try {
-    const text = qv8_norm(req.body?.text || "");
-    if (!text) return res.json({ ok:false, reason:"empty" });
-    const qa = qv8_chooseQA(text, text); // traktujemy „text” jako jedno zdanie wejściowe
-    if (!qa) return res.json({ ok:false, reason:"no-question" });
-    res.setHeader("X-Comprehend-Path","v8-deterministic");
-    return res.json({ ok:true, ...qa, source_path:"v8-deterministic" });
-  } catch (e){
-    return res.status(500).json({ ok:false, error:String(e) });
-  }
-});
-
-// BEST z opowiadania (to co wcześniej /agent/comprehend-one)
-app.post("/agent/comprehend-one", (req, res) => {
-  try {
-    const full = qv8_norm(req.body?.text || "");
-    if (!full) return res.json({ ok:false, reason:"empty" });
-    const sents = qv8_split(full);
-    for (const s of sents){
-      const qa = qv8_chooseQA(s, full);
-      if (qa){
-        res.setHeader("X-Comprehend-Path","v8-deterministic-one");
-        return res.json({ ok:true, ...qa, sentence:s, source_path:"one-best-v8" });
-      }
-    }
-    return res.json({ ok:false, reason:"no-question" });
-  } catch (e){
-    return res.status(500).json({ ok:false, error:String(e) });
-  }
-});
-
-// AGGREGATE (zachowujemy kontrakt: count + items[])
-app.post("/agent/comprehend-aggregate", (req, res) => {
-  try {
-    const full = qv8_norm(req.body?.text || "");
-    const maxQ = Math.max(1, Math.min(10, Number(req.body?.max_questions) || 5));
-    if (!full) return res.json({ ok:false, count:0, items:[] });
-
-    const items = [];
-    for (const s of qv8_split(full)){
-      const qa = qv8_chooseQA(s, full);
-      if (qa) items.push({ ok:true, ...qa, sentence:s, score:90, src:"v8" });
-      if (items.length >= maxQ) break;
-    }
-    return res.json({ ok:true, count:items.length, items });
-  } catch (e){
-    return res.status(500).json({ ok:false, error:String(e) });
-  }
-});
-
-// CHECK (podmiana /agent/check-answer-text)
-app.post("/agent/check-answer-text", (req, res) => {
-  try {
-    const expected = qv8_norm(req.body?.expectedAnswer || "");
-    const child    = qv8_norm(req.body?.childAnswer || "");
-    if (!expected)
-      return res.json({ ok:false, result:"not-ok", feedback:"Brak oczekiwanej odpowiedzi." });
-
-    const ne = qv8_noDiaLower(expected);
-    const nc = qv8_noDiaLower(child);
-
-    const tok = s => new Set(String(s).split(/\s+/).filter(Boolean));
-    const A = tok(ne), B = tok(nc);
-    let inter = 0; for (const t of A) if (B.has(t)) inter++;
-    const jac = inter / (A.size + B.size - inter || 1);
-
-    const pass = (!!nc && (nc.includes(ne) || jac >= 0.55));
-    return res.json({
-      ok:true,
-      result: pass ? "ok" : "not-ok",
-      feedback: pass ? "Świetnie! Odpowiedź pasuje do treści."
-                     : "Spróbuj jeszcze raz – użyj słów z tekstu."
+    const text = String(req.body?.text || "").trim();
+    const qa = decideQA(text);
+    res.json({
+      ok: true,
+      qtype: qa.qtype,
+      question: qa.question,
+      answer: qa.answer,
+      source_path: "rule-teacher-v7.8"
     });
-  } catch (e){
-    return res.status(500).json({ ok:false, error:String(e) });
+  } catch (err) {
+    res.json({ ok: false, error: String(err) });
   }
 });
+
+/* ===== /agent/comprehend-one ===== */
+router.post("/agent/comprehend-one", async (req, res) => {
+  try {
+    const text = String(req.body?.text || "").trim();
+    // proste wybranie pierwszego zdania (jeśli są kropki)
+    const firstSentence = text.split(/[.!?]/).map(s => s.trim()).filter(Boolean)[0] || text;
+    const qa = decideQA(firstSentence);
+    res.json({
+      ok: true,
+      qtype: qa.qtype,
+      question: qa.question,
+      answer: qa.answer,
+      sentence: firstSentence,
+      source_path: "one-best-v7.8"
+    });
+  } catch (err) {
+    res.json({ ok: false, error: String(err) });
+  }
+});
+
+/* ===== /agent/comprehend-aggregate ===== */
+router.post("/agent/comprehend-aggregate", async (req, res) => {
+  try {
+    const text = String(req.body?.text || "").trim();
+    const max = Number(req.body?.max_questions || 3);
+    const sentences = text.split(/[.!?]/).map(s => s.trim()).filter(Boolean);
+    const items = sentences.slice(0, max).map(s => ({ ...decideQA(s), sentence: s, ok: true }));
+    res.json({ ok: true, count: items.length, items });
+  } catch (err) {
+    res.json({ ok: false, error: String(err) });
+  }
+});
+
+/* ===== /agent/check-answer-text ===== */
+router.post("/agent/check-answer-text", async (req, res) => {
+  try {
+    const { text, expectedAnswer, childAnswer } = req.body || {};
+    const norm = (t="") => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim();
+    const ref = norm(expectedAnswer);
+    const user = norm(childAnswer);
+    if (!ref) return res.json({ ok: true, result: "skip", feedback: "Nie mam wzorcowej odpowiedzi." });
+    if (user.includes(ref) || ref.includes(user)) {
+      return res.json({ ok: true, result: "ok", feedback: "Świetnie! Odpowiedź pasuje do treści." });
+    }
+    return res.json({
+      ok: true,
+      result: "not-ok",
+      feedback: `Spróbuj jeszcze raz. ✅ Poprawna odpowiedź: ${expectedAnswer}`
+    });
+  } catch (err) {
+    res.json({ ok: false, error: String(err) });
+  }
+});
+
+export default router;
 
 // === QUIZ v8 (END) ===
 
