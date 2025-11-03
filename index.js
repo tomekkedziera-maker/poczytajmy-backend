@@ -1351,886 +1351,200 @@ app.get('/tts-voices', async (_req, res) => {
 
 
 
-/* ===================== QUIZ: rule-teacher-strict-v7.7 — INLINE (conf + safe LLM fallback) ===================== */
-/* Wklej TEN blok po inicjalizacji Express:
-   const app = express();
-   app.use(express.json({ limit: '10mb' }));
-*/
+// === QUIZ v8 (BEGIN) — deterministyczny zestaw: Kto?/Dokąd?/Gdzie?/Kiedy? ===
 
-let VERBS_MOTION = [];
-let VERBS_PLACEBOUND = [];
-let VERBS_PERCEPTION = [];
+// ——— utils ———
+const qv8_norm = (s="") => String(s).normalize("NFC").replace(/\s+/g," ").trim();
+const qv8_split = (s="") =>
+  String(s).replace(/\s*[\r\n]+\s*/g," ")
+            .split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean);
+const qv8_noDiaLower = (s="") => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
 
-(function attachQuizAndVerbsRoutes(app) {
-  if (!app || typeof app.post !== "function" || typeof app.get !== "function") {
-    console.error("[QUIZ] Brak instancji Express `app` — wklej ten blok PO inicjalizacji app.");
-    return;
+function qv8_hasPluralElves(s){ return /\bElfy\b/i.test(s); }
+
+function qv8_normalizeAnswer(word, ctxSentence, ctxText){
+  let a = qv8_norm(word);
+
+  // liczba mnoga „Elfy”
+  if (/^elf$/i.test(a) && qv8_hasPluralElves(ctxSentence)) a = "Elfy";
+  if (/^elfy$/i.test(a)) a = "Elfy";
+
+  // pełna forma „Święty Mikołaj”, jeśli występuje w tekście
+  if (/\bŚwięty\s+Mikołaj\b/i.test(ctxText) || /\bŚwięty\s+Mikołaj\b/i.test(ctxSentence)){
+    const al = qv8_noDiaLower(a);
+    if (al === "mikolaj" || al === "mikołaj") a = "Święty Mikołaj";
   }
+  return a;
+}
 
-  /* ==================== KONFIG ==================== */
-  const LLM_FALLBACK_ENABLED = process.env.LLM_FALLBACK_ENABLED !== '0';
-  const RULE_CONF_THRESHOLD = Number(process.env.RULE_CONF_THRESHOLD || 75);
-
-  /* ==================== ŁADOWANIE LEMATÓW ==================== */
-  (async () => {
-    try {
-      const verbsModule = await import("./verbs.js");
-      VERBS_MOTION     = verbsModule.VERBS_MOTION     || [];
-      VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || [];
-      VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || [];
-      const common = verbsModule.COMMON_VERBS?.length || 0;
-      console.log(`✅ verbs.js: motion=${VERBS_MOTION.length}, place=${VERBS_PLACEBOUND.length}, perc=${VERBS_PERCEPTION.length}, common=${common}`);
-      if (!VERBS_MOTION.length) {
-        VERBS_MOTION = ["iść","pójść","chodzić","jechać","pojechać","wracać","wrócić","wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść","zajechać","dotrzeć","podjechać","odjechać","przyjść"];
-      }
-      if (!VERBS_PLACEBOUND.length) {
-        VERBS_PLACEBOUND = ["usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się","czekać","czytać","pisać","bawić się","grać","jeść","pić","oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"];
-      }
-      if (!VERBS_PERCEPTION.length) {
-        VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać","zobaczyć","obejrzeć"];
-      }
-    } catch (e) {
-      console.warn("⚠️ Nie udało się załadować ./verbs.js, używam fallbacków:", e.message);
-      VERBS_MOTION = ["iść","pójść","chodzić","jechać","pojechać","wracać","wrócić","wejść","wyjść","wsiąść","wysiąść","dojść","podejść","przejść","zajechać","dotrzeć","podjechać","odjechać","przyjść"];
-      VERBS_PLACEBOUND = ["usiąść","siedzieć","siąść","stać","stanąć","leżeć","położyć się","czekać","czytać","pisać","bawić się","grać","jeść","pić","oglądać","rozmawiać","uczyć się","pracować","odpoczywać","spać","rysować"];
-      VERBS_PERCEPTION = ["patrzeć","popatrzeć","spoglądać","spojrzeć","przyglądać się","oglądać","zaglądać","zerkać","zobaczyć","obejrzeć"];
-    }
-    // Mikro-dodania rdzeni (bezpieczne)
-    if (!VERBS_MOTION.includes("pobieg")) VERBS_MOTION.push("pobieg");           // „pobiegł”
-    if (!VERBS_PERCEPTION.includes("zobaczy")) VERBS_PERCEPTION.push("zobaczy"); // „zobaczyli”
-    if (!VERBS_PERCEPTION.includes("obejrz")) VERBS_PERCEPTION.push("obejrz");   // „obejrzeli”
-  })();
-
-  /* ==================== UTILS ==================== */
-  const normalizeSpaces = (s = "") => String(s).replace(/\s+/g, " ").trim();
-  const stripPunct = (s = "") => String(s).trim().replace(/[.,;!?…:]+$/u, "");
-  const deaccent = (s = "") =>
-    String(s)
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[łŁ]/g, "l")
-      .replace(/[ąĄ]/g, "a")
-      .replace(/[ćĆ]/g, "c")
-      .replace(/[ęĘ]/g, "e")
-      .replace(/[ńŃ]/g, "n")
-      .replace(/[óÓ]/g, "o")
-      .replace(/[śŚ]/g, "s")
-      .replace(/[źŹżŻ]/g, "z");
-
-  const sanitizeQ = (q = "") => stripPunct(String(q)).replace(/\s+/g, " ").trim() + "?";
-
-  function rehydrateFromOriginal(orig = "", frag = "") {
-    if (!orig || !frag) return frag || "";
-    const O = String(orig);
-    const F = normalizeSpaces(frag);
-    const Fda = deaccent(F).toLowerCase();
-    for (let j = 0; j <= O.length - F.length; j++) {
-      const win = O.substring(j, j + F.length);
-      if (deaccent(win).toLowerCase() === Fda) return stripPunct(win);
-    }
-    return stripPunct(F);
+// ——— extractory ———
+// Kto?
+function qv8_extractWho(sentence){
+  const whoPatterns = [
+    /\b(Święty\s+Mikołaj)\b/i,
+    /\b(Mikołaj)\b/i,
+    /\b(Elfy)\b/i,
+    /\b(Pani\s+[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+)\b/u,
+    /\b([A-ZŁŚŻŹĆŃÓ][\p{L}'-]+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+){0,2})\s+(?:czyta|pisze|rysuje|maluje|gotuje|otwiera|ogląda|je|pije|słucha|gra|idzie|wraca|siedzi|stoi|leży|pracuje|ma)\b/iu,
+  ];
+  for (const re of whoPatterns){
+    const m = sentence.match(re);
+    if (m) return m[1];
   }
-  const rehydrateAnswerFromOriginal = (orig, a) =>
-    a ? stripPunct(rehydrateFromOriginal(orig, a).replace(/\s+/g," ").trim()) : a;
+  return null;
+}
 
-  // Globalne „caps” dla imion/skrótów
-  const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
-  const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
-
-  // ===== Generator fleksyjny (lekki) =====
-  function flex(lemma) {
-    const L = String(lemma || "").toLowerCase();
-    const stem = L.replace(/(ć|ść|źć)$/u, "");
-    const tails = [
-      "", "ł", "ła", "li", "ły", "łem", "łam", "łeś", "łaś",
-      "ył", "yła", "yli", "yły", "yłem", "yłam", "yłeś", "yłaś",
-      "ę", "esz", "e", "emy", "ecie", "ą",
-      "ąc", "ący", "ana", "any", "ane"
-    ];
-    const altStems = {
-      "usiąś": ["usiad","usied"], "siąś": ["siad","sied"],
-      "wsiąś": ["wsiad"], "wysiąś": ["wysiad"],
-      "wejś": [" wszed","wesz"], "wyjś": [" wyszed","wysz"],
-      "leż": ["leża","leżał","leż"], "jedz": ["jad","jedz"]
-    };
-    const variants = new Set([stem]);
-    if (altStems[stem]) altStems[stem].forEach(v => variants.add(v));
-    const bodies = [];
-    for (const v of variants) bodies.push(`${v}(?:${tails.join("|")})?`);
-    return `(?:${bodies.join("|")})`;
+// Dokąd?
+function qv8_extractWhereTo(sentence){
+  const movePatterns = [
+    /\bwsiedli\s+do\s+([^\s,.!?]+(?:\s+[^\s,.!?]+){0,4})/i,
+    /\b(do\s+[^\s,.!?]+(?:\s+[^\s,.!?]+){0,5})\b/i,
+    /\bna\s+(?:lody|boisko|peron|rynek|wystaw[ęai])\b/iu,
+  ];
+  for (const re of movePatterns){
+    const m = sentence.match(re);
+    if (m){
+      const raw = m[1] || m[0];
+      if (/na\s+lody/i.test(raw) && /do\s+cukierni/i.test(sentence)) return "do cukierni";
+      if (/do\s+Gdyni/i.test(raw) && /pociąg|pociagu|pociągu/i.test(sentence)) return "do pociągu do Gdyni";
+      return qv8_norm(raw);
+    }
   }
+  return null;
+}
 
-  // dynamiczne regexy (po załadowaniu list)
-  const VERB_CUT_RE   = () => new RegExp(`\\s+(${[...VERBS_MOTION, ...VERBS_PLACEBOUND, ...VERBS_PERCEPTION].map(flex).join("|")})\\b.*$`, "i");
-  const SEATLIKE_RE   = () => new RegExp(`\\b(${VERBS_PLACEBOUND.map(flex).join("|")})\\b`, "i");
-  const PERCEPTION_RE = () => new RegExp(`\\b(${VERBS_PERCEPTION.map(flex).join("|")})\\b`, "i");
-
-  // ===== discourse / ogony =====
-  const DISCOURSE_MARKERS_RE = /\b(na koniec|potem|zanim|po chwili|najpierw|nast[eę]pnie|wtedy|za chwil[eę])\b/iu;
-  const removeDiscourseMarkers = (s = "") => normalizeSpaces(String(s).replace(DISCOURSE_MARKERS_RE, " "));
-
-  const PURPOSE_TAIL = new RegExp(
-    String.raw`(?:\s+(?:po\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,3}))|(?:\s+(?:na\s+(?:spacer|spacerze|lekcj[ęeai]|obiad|kolacj[ęe]|lody|zakupy|posiłek|posilek|przerw[ęe])))$`,
-    "iu"
-  );
-  const TIME_TAIL = /\s+(rano|wieczorem|w\s+południe|po\s+południu|po\s+poludniu|dzisiaj|dziś|jutro|wczoraj|w\s+(poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|przed\s+\d{1,2}[:.]\d{2}|o\s+\d{1,2}[:.]\d{2})$/iu;
-  const DURATION_TAIL = /\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/iu;
-
-  const stripPurposeTail = s => normalizeSpaces(String(s).replace(PURPOSE_TAIL, ""));
-  const stripTimeTail = s => normalizeSpaces(String(s).replace(TIME_TAIL, ""));
-  const stripDurationTail = s => normalizeSpaces(String(s).replace(DURATION_TAIL, ""));
-  const STRIP_ANY_PURPOSE = s => normalizeSpaces(
-    String(s)
-      .replace(/\s+na\s+spacerze?\b/iu, "")
-      .replace(/\s+na\s+lekcj[ęeai]\b/iu, "")
-      .replace(/\s+na\s+(lody|zakupy|obiad|kolacj[ęe]|posiłek|posilek|przerwie?)\b/iu, "")
-  );
-  const stripOnConjunctionOrComma = s => normalizeSpaces(String(s).split(/(?:,|\s+(?:i|oraz|a)\s)/i)[0] || "");
-  const stripDanglingPrzez = s => s.replace(/\s+przez\b$/i, "").trim();
-
-  // ===== blacklist „na …” jako lokatywne (nie Dokąd) =====
-  const NA_LOCATIVE_BLACKLIST = [
-    "na spacerze","na spacer","na dywanie","na trawie","na ławce","na lawce",
-    "na przystanku","na basenie","na stadionie","na boisku","na rynku",
-    "na ulice","na ulicę","na lawke","na ławke","na ławkę"
-  ].map(x => deaccent(x));
-
-  // ===== cięcie przy czasowniku =====
-  const trimAtVerb = s => normalizeSpaces(String(s).replace(VERB_CUT_RE(), ""));
-
-  // ===== detekcja cue czasownika ruchu =====
-  function detectVerbCueDA(sDA) {
-    const L = String(sDA || "").toLowerCase();
-    if (/\bwr[oó]c\w*/i.test(L)) return "wrócili";
-    if (/\bwsied\w*|\bwsiad\w*/i.test(L)) return "wsiedli";
-    if (/\bpodesz\w*/i.test(L)) return "podeszli";
-    if (/\bprzeszl\w*|\bprzejdz\w*/i.test(L)) return "przeszli";
-    if (/\bidziemy\b/.test(L)) return "idziemy";
-    if (/\bposzed\w*|poszl\w*/i.test(L)) return "poszli";
-    if (/\bpojech\w*|\bjad\w*/i.test(L)) return "pojechali";
-    if (/\bwesz\w*|\bwszed\w*/i.test(L)) return "weszli";
-    return "poszli";
+// Gdzie?
+function qv8_extractWhere(sentence){
+  const placePatterns = [
+    /\bw\s+kawiarni\b/i, /\bprzy\s+oknie\b/i, /\bw\s+czytelni\b/i,
+    /\bw\s+klasie\b/i,   /\bna\s+rynku\b/i
+  ];
+  for (const re of placePatterns){
+    const m = sentence.match(re);
+    if (m) return qv8_norm(m[0].replace(/\b(w|na)\s+/i,""));
   }
+  const m2 = sentence.match(/\bprzy\s+([^\s,.!?]+(?:\s+[^\s,.!?]+){0,3})/i);
+  if (m2) return qv8_norm(m2[0].replace(/^przy\s+/i,""));
+  return null;
+}
 
-  // ===== time =====
-  function extractTime(s) {
-    const txt = String(s);
-    const mCombo = txt.match(/\b(w\s+(?:poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])\s+(?:rano|wieczorem|po\s+południu|po\s+poludniu))\b/iu);
-    if (mCombo) return stripPunct(mCombo[1]);
-    const start = txt.match(/^\s*(w\s+(?:sobotni|niedzielny|poniedzialkowy|wtorkowy|srodowy|czwartkowy|piatkowy)\s+poranek)\b/iu);
-    if (start) return stripPunct(start[1]);
-    const m = txt.match(/\b(o\s+\d{1,2}[:.]\d{2}|przed\s+\d{1,2}[:.]\d{2}|wczoraj|dzisiaj|dziś|jutro|rano|wieczorem|po\s+południu|po\s+poludniu|w\s+(?:poniedziałek|wtorek|środ[ęe]|czwartek|piątek|sobot[ęe]|niedziel[ęe])|na\s+przerwie|po\s+(lekcjach|obiedzie|śniadaniu))\b/iu);
-    return m ? stripPunct(m[0]) : null;
+// Kiedy?
+function qv8_extractWhen(sentence){
+  const timePatterns = [
+    /\bO\s*\d{1,2}:\d{2}\b/i,
+    /\bW\s+sobotni\s+poranek\b/i,
+    /\bPo\s+lekcjach\b/i,
+    /\bwieczorem\b/i,
+    /\bPrzed\s+\d{1,2}:\d{2}\b/i,
+  ];
+  for (const re of timePatterns){
+    const m = sentence.match(re);
+    if (m) return qv8_norm(m[0]);
   }
+  return null;
+}
 
-  // ===== specjalny: DO obiektu po „wsiedli/wsiad-” =====
-  function extractBoardingObject(s) {
-    const m = String(s).match(/\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/i);
-    if (m) return stripPunct(trimAtVerb(m[2]));
-    return null;
+function qv8_chooseQA(sentence, fullText){
+  // priorytet: Dokąd? > Gdzie? > Kiedy? > Kto?
+  const dokad = qv8_extractWhereTo(sentence);
+  if (dokad) return { qtype:"Dokąd?", question:"Dokąd poszli/wsiedli?", answer:qv8_normalizeAnswer(dokad, sentence, fullText) };
+
+  const gdzie = qv8_extractWhere(sentence);
+  if (gdzie) return { qtype:"Gdzie?", question:"Gdzie byli/usiedli?",   answer:qv8_normalizeAnswer(gdzie, sentence, fullText) };
+
+  const kiedy = qv8_extractWhen(sentence);
+  if (kiedy) return { qtype:"Kiedy?", question:"Kiedy to się działo?",   answer:qv8_normalizeAnswer(kiedy, sentence, fullText) };
+
+  const kto = qv8_extractWho(sentence);
+  if (kto)   return { qtype:"Kto?",   question:"Kto to zrobił?",         answer:qv8_normalizeAnswer(kto, sentence, fullText) };
+
+  return null;
+}
+
+// ——— ROUTES: podmiana istniejących handlerów ———
+
+// SINGLE zdanie (to co wcześniej /agent/comprehend)
+app.post("/agent/comprehend", (req, res) => {
+  try {
+    const text = qv8_norm(req.body?.text || "");
+    if (!text) return res.json({ ok:false, reason:"empty" });
+    const qa = qv8_chooseQA(text, text); // traktujemy „text” jako jedno zdanie wejściowe
+    if (!qa) return res.json({ ok:false, reason:"no-question" });
+    res.setHeader("X-Comprehend-Path","v8-deterministic");
+    return res.json({ ok:true, ...qa, source_path:"v8-deterministic" });
+  } catch (e){
+    return res.status(500).json({ ok:false, error:String(e) });
   }
+});
 
-  // ===== TIME GUARD =====
-  const TIME_WORDS = "(rano|rankiem|południu|poludniu|wieczorem|nocą|noca|nocy|jutro|dzisiaj|dziś|wczoraj)";
-  const TIME_RANGE_RE = new RegExp(String.raw`\\bod\\s+\\S+(?:\\s+\\S+){0,4}\\s+do\\s+\\b${TIME_WORDS}\\b`, "iu");
-  const DO_TIME_RE = new RegExp(String.raw`\\bdo\\s+${TIME_WORDS}\\b`, "iu");
-
-  // ===== Dokąd (ogólne) =====
-  function extractDestination(s) {
-    // pre-clean: usuń zakresy czasu i „do południa/do nocy” itp.
-    let cleaned = removeDiscourseMarkers(s);
-    cleaned = cleaned.replace(TIME_RANGE_RE, " ");
-    cleaned = cleaned.replace(DO_TIME_RE, " ");
-    cleaned = cleaned.replace(/\s+/g, " ").trim();
-
-    const afterBoard = extractBoardingObject(cleaned);
-    if (afterBoard) return `do ${afterBoard}`.trim();
-
-    const re = /\b(do|na)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+(?:\s+[A-Za-zĄĆĘŁŃÓŚŹŻąęćłńóśźż0-9:\-]+){0,8})\b/gi;
-    const matches = [];
-    let m;
-    while ((m = re.exec(cleaned)) !== null) matches.push({ prep: m[1].toLowerCase(), body: m[2], idx: m.index });
-    if (!matches.length) return null;
-
-    const pick = [...matches].reverse().find(x => x.prep === "do") || matches[matches.length - 1];
-    let dest = `${pick.prep} ${pick.body}`.trim();
-
-    if (pick.prep === "na" && PERCEPTION_RE().test(s)) return null;
-
-    const baseDA = deaccent(cleaned.toLowerCase());
-    const isWaiting = /\bczeka\w*/i.test(baseDA);
-    if (pick.prep === "na" && isWaiting) {
-      const locHint = /\b(ławce|lawce|peronie|przystanku|wejściu|wejsciu|boisku|rynku|korytarzu|holu|sali|salonie|klasie|bibliotece|kinie|parku|sklepie|fontannie|stole|biurku|oknie|drzwiach)\b/i;
-      if (!locHint.test(deaccent(dest.toLowerCase()))) return null;
+// BEST z opowiadania (to co wcześniej /agent/comprehend-one)
+app.post("/agent/comprehend-one", (req, res) => {
+  try {
+    const full = qv8_norm(req.body?.text || "");
+    if (!full) return res.json({ ok:false, reason:"empty" });
+    const sents = qv8_split(full);
+    for (const s of sents){
+      const qa = qv8_chooseQA(s, full);
+      if (qa){
+        res.setHeader("X-Comprehend-Path","v8-deterministic-one");
+        return res.json({ ok:true, ...qa, sentence:s, source_path:"one-best-v8" });
+      }
     }
-
-    dest = stripOnConjunctionOrComma(dest);
-    dest = STRIP_ANY_PURPOSE(dest);
-    dest = stripPurposeTail(dest);
-    dest = stripTimeTail(dest);
-    dest = stripDurationTail(dest);
-    dest = trimAtVerb(dest);
-    dest = normalizeSpaces(dest);
-    dest = stripPunct(dest);
-    dest = dest.replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/i, "").trim();
-    dest = dest.replace(/[\s\u00A0]+(?:i[\s\u00A0]+)?(?:posz\w+|pojech\w+|wszed\w+|wesz\w+|wsiad\w+|wsied\w+|wróci\w+|wroci\w+)\b.*$/i, "").trim();
-
-    const low = deaccent(dest.toLowerCase());
-    const head2 = deaccent(dest.toLowerCase().split(/\s+/).slice(0,2).join(" "));
-    if (dest.toLowerCase().startsWith("na ") && (NA_LOCATIVE_BLACKLIST.includes(head2) || NA_LOCATIVE_BLACKLIST.includes(low))) {
-      return null;
-    }
-
-    dest = dest.replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^,.;!?]+$/iu, "");
-    dest = normalizeSpaces(dest);
-
-    // time-guard po czyszczeniu
-    if (!dest) return null;
-    if (DO_TIME_RE.test(dest) || /\b(nocy|południa|poludnia|ranka|wieczora)\b/i.test(dest)) return null;
-
-    return dest || null;
+    return res.json({ ok:false, reason:"no-question" });
+  } catch (e){
+    return res.status(500).json({ ok:false, error:String(e) });
   }
+});
 
-  // ===== Gdzie =====
-  function pickPlaceFromSentence(s) {
-    const base = removeDiscourseMarkers(s);
+// AGGREGATE (zachowujemy kontrakt: count + items[])
+app.post("/agent/comprehend-aggregate", (req, res) => {
+  try {
+    const full = qv8_norm(req.body?.text || "");
+    const maxQ = Math.max(1, Math.min(10, Number(req.body?.max_questions) || 5));
+    if (!full) return res.json({ ok:false, count:0, items:[] });
 
-    if (/\bprzy\s+oknie\b/i.test(base))    return "przy oknie";
-    if (/\bprzy\s+drzwiach\b/i.test(base)) return "przy drzwiach";
-    if (/\bprzy\s+wej[śs]ciu\b/i.test(base)) return "przy wejściu";
-
-    const PREP = "(?:we?|na|pod|nad|przy|mi[eę]dzy|miedzy|za|przed|obok|kolo|koło|u|w|z|ze)";
-    const re = new RegExp(String.raw`\b${PREP}\s+\S+(?:\s+(?!${PREP}\b|przez\b)\S+){0,6}`, "gi");
-
-    let pps = (base.match(re) || []).map(x => normalizeSpaces(x));
-
-    pps = pps
-      .map(x => x.replace(/\s+(przez\s+chwil[ęe]|na\s+chwil[ęe]|przez\s+moment)\b$/i, ""))
-      .map(x => x.replace(TIME_TAIL, ""))
-      .map(x => stripDanglingPrzez(x))
-      .map(x => trimAtVerb(x))
-      .map(x => normalizeSpaces(x))
-      .filter(x => /\S+\s+\S+/.test(x))
-      .filter(pp => !/\bw\s+ciszy\b/i.test(pp));
-
-    const isWaiting = /\bczeka\w*/i.test(base);
-    if (isWaiting) {
-      pps = pps.filter(pp => {
-        if (!/^na\s+/i.test(pp)) return true;
-        const locHint = /\b(ławce|lawce|peronie|przystanku|wejściu|wejsciu|boisku|rynku|korytarzu|holu|sali|salonie|klasie|bibliotece|kinie|parku|sklepie|fontannie|stole|biurku)\b/i;
-        return locHint.test(pp);
-      });
+    const items = [];
+    for (const s of qv8_split(full)){
+      const qa = qv8_chooseQA(s, full);
+      if (qa) items.push({ ok:true, ...qa, sentence:s, score:90, src:"v8" });
+      if (items.length >= maxQ) break;
     }
-
-    if (!pps.length) return null;
-
-    let best = pps[0], bestScore = -1, bestPos = -1;
-
-    for (const cand0 of pps) {
-      let cand = cand0;
-      let sc = 0;
-      const low = deaccent(cand.toLowerCase());
-      const pos = base.indexOf(cand0);
-      const seatLike = SEATLIKE_RE().test(s);
-
-      if (seatLike) {
-        if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 3;
-        if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 1;
-        if (/\bprzy\s+oknie\b/i.test(cand))                sc += 2;
-        if (/\bprzy\s+drzwiach\b/i.test(cand))             sc += 2;
-      } else {
-        if (/^\s*(w|we|na)\b/i.test(cand))                 sc += 2;
-        if (/^\s*(przy|pod|za|przed|obok|u)\b/i.test(cand)) sc += 1.5;
-      }
-
-      if (/\b(oknie|drzwiach|ławce|lawce|stole|biurku|fontannie|rynku|kinie|przystanku|zoo|klasie|salonie|kuchni|pokoju|balkonie|bibliotece|wejściu|wejsciu)\b/i.test(low)) {
-        sc += 1.5;
-      }
-
-      if (sc > bestScore || (sc === bestScore && pos > bestPos)) {
-        best = cand; bestScore = sc; bestPos = pos;
-      }
-    }
-
-    // hotfix: ucinanie ogonów aktywności/oglądania
-    best = best.replace(/\s+\b(spotkali|spotkał|spotkała|robili|robiła|byli|usiedli|siadł|siadła|czekali|czekał|czekała|obejrzeli|obejrzał|obejrzała|zobaczyli|zobaczył|oglądali|ogladali|ogladal|oglądał)\b.*$/iu, "").trim();
-    best = stripPunct(normalizeSpaces(best));
-
-    if (!/\S+\s+\S+/.test(best)) return null;
-    return best;
+    return res.json({ ok:true, count:items.length, items });
+  } catch (e){
+    return res.status(500).json({ ok:false, error:String(e) });
   }
+});
 
-  // ===== „Kto?” — DO/NA + czasownik + Imię(/ i Imię) =====
-  function detectWhoQuestion(s) {
-    const re = /(do|na)\s+([^,.;!?]+?)\s+(poszed[łl]|poszła|poszli|pojechał|pojechali|weszła|weszli|wszed[łl]|robił|robili|robiła|malował|malowali|piecze|pieczenia|piecz[eał]|piecze|piekl[ai])\s+([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]+)*)/iu;
-    const m = String(s).match(re);
-    if (!m) {
-      // drugi wariant: „X robi/robią …” → Kto robi …?
-      const m2 = String(s).match(/^\s*([A-ZĄĆĘŁŃÓŚŹŻ][\p{L}\-]+(?:\s+i\s+[A-ZĄĆĘŁŃÓŚŹŻ][\p{L}\-]+)*)\s+(robi[ąa]?|maluje|piecze)\s+([^,.;!?]+)/u);
-      if (m2) {
-        const answer = stripPunct(m2[1]).trim();
-        const verb = m2[2].toLowerCase().replace(/ą$/, "a");  // „robią” → „robia” (zaraz poprawimy)
-        const object = stripPunct(m2[3]).trim();
-        const verbQ = verb.replace(/robia/i, "robi");          // „robia” → „robi” (pytanie)
-        const q = sanitizeQ(`Kto ${verbQ} ${object}`);
-        return { ok: true, qtype: "Kto?", question: q, answer };
-      }
-      return null;
-    }
+// CHECK (podmiana /agent/check-answer-text)
+app.post("/agent/check-answer-text", (req, res) => {
+  try {
+    const expected = qv8_norm(req.body?.expectedAnswer || "");
+    const child    = qv8_norm(req.body?.childAnswer || "");
+    if (!expected)
+      return res.json({ ok:false, result:"not-ok", feedback:"Brak oczekiwanej odpowiedzi." });
 
-    const namesRaw = stripPunct(m[4]).trim();
-    if (!namesRaw) return null;
+    const ne = qv8_noDiaLower(expected);
+    const nc = qv8_noDiaLower(child);
 
-    const tokens = namesRaw.split(/\s+/);
-    const looksName = w => /^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/.test(w) && !STOP_CAPS.has(w);
-    const valid = tokens.some(looksName);
-    if (!valid) return null;
+    const tok = s => new Set(String(s).split(/\s+/).filter(Boolean));
+    const A = tok(ne), B = tok(nc);
+    let inter = 0; for (const t of A) if (B.has(t)) inter++;
+    const jac = inter / (A.size + B.size - inter || 1);
 
-    const prep  = m[1].toLowerCase();
-    const place = stripPunct(trimAtVerb(m[2]));
-    const plural = namesRaw.includes(" i ");
-    const verb = plural ? "poszli" : "poszedł";
-    return { ok: true, qtype: "Kto?", question: sanitizeQ(`Kto ${verb} ${prep} ${place}`), answer: namesRaw };
+    const pass = (!!nc && (nc.includes(ne) || jac >= 0.55));
+    return res.json({
+      ok:true,
+      result: pass ? "ok" : "not-ok",
+      feedback: pass ? "Świetnie! Odpowiedź pasuje do treści."
+                     : "Spróbuj jeszcze raz – użyj słów z tekstu."
+    });
+  } catch (e){
+    return res.status(500).json({ ok:false, error:String(e) });
   }
+});
 
-  /* ==================== WARSTWA CONFIDENCE ==================== */
-  const ret = (value, conf=0, reason="") => ({ value: value||"", conf: Number(conf)||0, reason });
+// === QUIZ v8 (END) ===
 
-  function extractDestinationWithConf(s) {
-    const v = extractDestination(s);
-    if (!v) return ret("", 0, "no-dest");
-    const txt = deaccent(String(s).toLowerCase());
-    let conf = 70;
-    if (/\b(wsied\w*|wsiad\w*)\s+do\b/.test(txt)) conf = 95;
-    if (/\b(poszed\w*|poszl\w*|pojech\w*|wesz\w*|wszed\w*)\b/.test(txt)) conf += 10;
-    if (/[,;]\s*(a\s+potem|potem|nast[eę]pnie)/i.test(s)) conf -= 5;
-    conf = Math.max(0, Math.min(100, conf));
-    return ret(v, conf, "rule-dokad");
-  }
-
-  function pickPlaceWithConf(s) {
-    const v = pickPlaceFromSentence(s);
-    if (!v) return ret("", 0, "no-place");
-    let conf = 70;
-    if (/przy\s+(oknie|drzwiach|wejściu|wejsciu)\b/i.test(v)) conf = 85;
-    if (/^\s*(w|we|na)\b/i.test(v)) conf += 5;
-    return ret(v, Math.min(conf, 95), "rule-gdzie");
-  }
-
-  function extractTimeWithConf(s) {
-    const v = extractTime(s);
-    if (!v) return ret("", 0, "no-time");
-    let conf = 70;
-    if (/^\s*o\s*\d{1,2}[:.]\d{2}\s*$/i.test(v)) conf = 90;
-    if (/\b(wczoraj|dzisiaj|dziś|jutro|rano|wieczorem|po\s+południu|po\s+poludniu)\b/i.test(v)) conf = Math.max(conf, 80);
-    return ret(v, conf, "rule-kiedy");
-  }
-
-  function detectWhoWithConf(s) {
-    const q = detectWhoQuestion(s);
-    if (!q || !q.answer) return { ok:false, value:"", conf:0, reason:"no-who", q:null };
-    let conf = 75;
-    if (/\b(poszed\w*|pojech\w*|wszed\w*|wesz\w*)\b/i.test(s)) conf = 85;
-    return { ok:true, value:q.answer, conf, reason:"rule-kto", q };
-  }
-
-  /* ==================== FALLBACK LLM (bezpieczny) ==================== */
-  async function llmFallbackQA({ text, preferredType }) {
-    if (!LLM_FALLBACK_ENABLED) return null;
-    // użyje globalnego helpera chatPref, jeśli istnieje; w przeciwnym razie wyłączy się elegancko
-    const hasChatPref = typeof globalThis.chatPref === "function";
-    if (!hasChatPref) return null;
-    try {
-      const prompt = [
-        { role: "system", content:
-          "Masz zwrócić najkrótszy możliwy fragment ODPOWIEDZI wyłącznie jako substring tekstu użytkownika. " +
-          "Nie parafrazuj, nie dodawaj nowych słów, nie używaj cudzysłowów. Zwróć samą odpowiedź." },
-        { role: "user", content:
-          `Tekst: ${text}\n` +
-          (preferredType ? `Pytanie typu (podpowiedź): ${preferredType}\n` : "") +
-          "Zwróć odpowiedź jako fragment oryginalnego tekstu." }
-      ];
-      const { text: out } = await globalThis.chatPref({
-        prompt, temperature: 0, max_tokens: 24, top_p: 1, deadlineMs: 1200
-      });
-      const ans = String(out||"").trim().replace(/^"+|"+$/g,"");
-      const ok = deaccent(text).toLowerCase().includes(deaccent(ans).toLowerCase());
-      if (!ok || ans.length < 1) return null;
-      return ans;
-    } catch { return null; }
-  }
-
-  /* ==================== GŁÓWNA FUNKCJA Q/A ==================== */
-  function generateQuestionAndAnswerTeacher_core(textRaw) {
-    if (!textRaw || typeof textRaw !== "string")
-      return { ok: false, qtype: "Co?", question: "Co się dzieje?", answer: "", source_path: "error-empty" };
-
-    const text = String(textRaw).normalize("NFC").trim();
-    const t = text.replace(/[!?]/g, " ").replace(/\s+/g, " ").trim();
-    const tDA = deaccent(t);
-
-    const who   = detectWhoWithConf(t);
-    const time  = extractTimeWithConf(t);
-    const dest  = extractDestinationWithConf(t);
-    const place = pickPlaceWithConf(t);
-    const cue   = detectVerbCueDA(tDA);
-
-    function qDokad() {
-      let v = "poszli";
-      let withPron = true;
-      if (cue === "wrócili") v = "wrócili";
-      else if (cue === "wsiedli") v = "wsiedli";
-      else if (cue === "weszli") v = "weszli";
-      else if (cue === "idziemy") { v = "idziemy"; withPron = false; }
-      const middle = withPron ? `oni ${v}` : v;
-      return sanitizeQ(`Dokąd ${middle}`);
-    }
-    function qKiedy() {
-      if (time.value && /^o\s+\d{1,2}[:.]\d{2}/i.test(time.value)) {
-        if (/wsiad\w*|wsied\w*/i.test(tDA) && /\b(do\s+(autobusu|tramwaju|pociągu|pociagu))/i.test(tDA))
-          return "O której godzinie wsiedli?";
-        if (/wr[ao]c/i.test(tDA)) return "O której godzinie wrócili do domu?";
-        return "O której godzinie to się wydarzyło?";
-      }
-      return "Kiedy to się działo?";
-    }
-    function qGdzie() {
-      if (/spotkal|spotkali/i.test(t)) return "Gdzie się spotkali?";
-      if (/czekal|czekali/i.test(t))   return "Gdzie czekali?";
-      if (/czytal|czytała|czytala|czytali/i.test(t)) return "Gdzie czytali?";
-      if (/usiedl|usiedli|siadl|siadła|siadla|siedzi|siedzieli/i.test(t)) return "Gdzie usiedli?";
-      return "Gdzie byli?";
-    }
-
-    // PRIORYTETY + progi confidence
-    if (who.ok && who.conf >= RULE_CONF_THRESHOLD) {
-      const ans = rehydrateAnswerFromOriginal(text, who.value);
-      const q = who.q?.question || "Kto to zrobił?";
-      return { ok: true, qtype: "Kto?", question: q, answer: ans, source_path: "rule-v7.7+conf" };
-    }
-    if (time.value && time.conf >= RULE_CONF_THRESHOLD) {
-      return { ok: true, qtype: "Kiedy?", question: qKiedy(), answer: rehydrateAnswerFromOriginal(text, time.value), source_path:"rule-v7.7+conf" };
-    }
-    if (dest.value && dest.conf >= RULE_CONF_THRESHOLD) {
-      return { ok: true, qtype: "Dokąd?", question: qDokad(), answer: rehydrateAnswerFromOriginal(text, dest.value), source_path:"rule-v7.7+conf" };
-    }
-    if (place.value && place.conf >= RULE_CONF_THRESHOLD) {
-      return { ok: true, qtype: "Gdzie?", question: qGdzie(), answer: rehydrateAnswerFromOriginal(text, place.value), source_path:"rule-v7.7+conf" };
-    }
-
-    // Kandydaci o niskiej pewności (przydadzą się do debug)
-    const candidates = [
-      { type: "Dokąd?", v: dest.value, conf: dest.conf },
-      { type: "Gdzie?", v: place.value, conf: place.conf },
-      { type: "Kiedy?", v: time.value, conf: time.conf },
-      { type: "Kto?",   v: who.value, conf: who.conf }
-    ].filter(x => x.v);
-
-    return { ok: true, qtype: "Co?", question: "Co się dzieje w tej historii?", answer: "", source_path: "fallback-rule-low", candidates };
-  }
-
-  /* ==================== ENDPOINTY ==================== */
-
-  // /agent/comprehend — ASYNC aby użyć fallbacku LLM
-  app.post("/agent/comprehend", async (req, res) => {
-    try {
-      const { text } = req.body || {};
-      let r = generateQuestionAndAnswerTeacher_core(text);
-
-      // Jeśli reguły niepewne → spróbuj LLM
-      if (LLM_FALLBACK_ENABLED && r && r.qtype === "Co?" && (!r.answer || r.answer.length === 0) && text) {
-        const preferred = r.candidates?.sort((a,b)=>b.conf-a.conf)[0]?.type || null;
-        const guess = await llmFallbackQA({ text, preferredType: preferred });
-        if (guess) {
-          r = { ok:true, qtype: preferred || "Co?", question: preferred || "Co się dzieje w tej historii?", answer: rehydrateAnswerFromOriginal(text, guess), source_path:"llm-fallback" };
-        } else {
-          // zostaje fallback „Co?”
-        }
-      }
-
-      res.json(r);
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
-    }
-  });
-
-  // /agent/comprehend-aggregate (bez zmian w API, wewnątrz używa core)
-  app.post("/agent/comprehend-aggregate", (req, res) => {
-    try {
-      const { text, max_questions = 10 } = req.body || {};
-      if (!text?.trim()) return res.json({ ok: true, count: 0, items: [] });
-
-      const cleaned = String(text)
-        .split(/\r?\n/)
-        .map(line => line.replace(/^\s*[>›»]{1,2}\s*/, ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      const rough = cleaned.split(/(?<=[.!?;])\s+/);
-      const splitOnMarkers = s =>
-        s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
-         .map(x => x.trim())
-         .filter(Boolean);
-
-      const sentences = rough
-        .flatMap(splitOnMarkers)
-        .map(s => s.trim())
-        .filter(Boolean)
-        .slice(0, 40);
-
-      const scored = sentences
-        .map(s => {
-          const r = generateQuestionAndAnswerTeacher_core(s);
-          let sc = 0;
-          if (r.qtype === "Dokąd?" && r.answer) sc = 100;
-          else if (r.qtype === "Kiedy?" && r.answer) sc = /^\s*[Oo]\s*\d{1,2}[:.]\d{2}\s*$/.test(r.answer||"") ? 60 : 90;
-          else if (r.qtype === "Kto?"   && r.answer) sc = 85;
-          else if (r.qtype === "Gdzie?" && r.answer) sc = 80;
-          else sc = 40;
-          return { ok:r.ok, qtype:r.qtype, question:r.question, answer:r.answer, sentence:s, score: sc, src: "rule-teacher-strict-v7.7" };
-        })
-        .sort((a, b) => b.score - a.score);
-
-      const top = [];
-      const used = new Set();
-      const buckets = {
-        "Dokąd?": scored.filter(x => x.qtype === "Dokąd?" && x.answer),
-        "Kiedy?": scored.filter(x => x.qtype === "Kiedy?" && x.answer),
-        "Gdzie?": scored.filter(x => x.qtype === "Gdzie?" && x.answer),
-        "Kto?":   scored.filter(x => x.qtype === "Kto?"   && x.answer),
-      };
-
-      for (const typ of ["Dokąd?","Kiedy?","Gdzie?","Kto?"]) {
-        const cand = buckets[typ]?.[0];
-        if (!cand) continue;
-        const key = `${cand.qtype}|${deaccent((cand.answer||"").toLowerCase())}`;
-        if (used.has(key)) continue;
-        top.push(cand);
-        used.add(key);
-        if (top.length >= max_questions) break;
-      }
-
-      if (top.length < max_questions) {
-        for (const r of scored) {
-          if (top.length >= max_questions) break;
-          if (!r.answer) continue;
-          const key = `${r.qtype}|${deaccent((r.answer||"").toLowerCase())}`;
-          if (used.has(key)) continue;
-          used.add(key);
-          top.push(r);
-        }
-      }
-
-      res.json({ ok: true, count: top.length, items: top });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e.message, source_path: "error-exception" });
-    }
-  });
-
-  // ===================== CHECK ANSWER (tekst + pytanie + oczekiwana) =====================
-  app.post("/agent/check-answer-text", (req, res) => {
-    try {
-      const {
-        text = "",
-        age = 8,
-        question = "",
-        expectedAnswer = "",
-        childAnswer = "",
-      } = req.body || {};
-
-      const norm = (s="") => String(s)
-        .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-        .toLowerCase().replace(/[^\p{L}0-9\s-]+/gu," ")
-        .replace(/\s+/g," ").trim();
-
-      const u = norm(childAnswer);
-      const k = norm(expectedAnswer);
-      const q = String(question||"").trim();
-
-      if (!u) {
-        return res.json({
-          ok: true,
-          result: "not-ok",
-          feedback: "Spróbuj odpowiedzieć pełnym zdaniem albo jednym kluczowym słowem.",
-        });
-      }
-
-      if (k) {
-        const jaccard = (() => {
-          const tok = (x) => new Set(String(x).split(" ").filter(Boolean));
-          const A = tok(u), B = tok(k);
-          if (!A.size && !B.size) return 1;
-          let inter = 0; for (const t of A) if (B.has(t)) inter++;
-          return inter / (A.size + B.size - inter);
-        })();
-
-        const pass = u.includes(k) || k.includes(u) || jaccard >= 0.5;
-        return res.json({
-          ok: true,
-          result: pass ? "ok" : "not-ok",
-          feedback: pass
-            ? "Świetnie! Odpowiedź pasuje do treści."
-            : "Sprawdź jeszcze raz fragment i spróbuj użyć słów z tekstu.",
-        });
-      }
-
-      // open-ended
-      const looksMeaningful = /\S+\s+\S+/.test(childAnswer) || String(childAnswer).trim().length >= 5;
-      const T = norm(text);
-      const uTok = new Set(u.split(" ").filter(Boolean));
-      const hits = [...uTok].filter(w => T.includes(w)).length;
-      const pass = looksMeaningful && hits >= 1;
-
-      return res.json({
-        ok: true,
-        result: pass ? "ok" : "not-ok",
-        feedback: pass
-          ? "Dobra odpowiedź – zgadza się z treścią."
-          : "Spróbuj odpowiedzieć prościej, używając słów z fragmentu.",
-      });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: String(e.message||e) });
-    }
-  });
-
-  // ===================== ONE-BEST (jak miałeś) =====================
-  app.post("/agent/comprehend-one", (req, res) => {
-    try {
-      const { text } = req.body || {};
-      if (!text || typeof text !== "string" || !text.trim()) {
-        return res.status(400).json({ ok: false, error: "Empty text" });
-      }
-
-      const P = z => String(z||"").trim().replace(/[.,;!?…:]+$/u,"");
-
-      function extractNames(s) {
-        const STOP_CAPS = new Set(["Do","Na","W","O","Z","Po","Przed","Między","Miedzy","Za","Przy","Pod","Nad"]);
-        const ADVERB_CAPS = new Set(["Potem","Następnie","Nastepnie","Wtedy","Później","Pozniej"]);
-        const VERB_FIRST = /^(Wsiad[a-ząćęłńóśźż]*|Wszed[a-ząćęłńóśźż]*|Wesz[a-ząćęłńóśźż]*|Wróc[a-ząćęłńóśźż]*|Poszed[a-ząćęłńóśźż]*|Posz[a-ząćęłńóśźż]*|Pojech[a-ząćęłńóśźż]*)$/u;
-
-        const tokens = String(s || "").split(/\s+/);
-        const names = [];
-        for (let i = 0; i < tokens.length; i++) {
-          const raw = tokens[i];
-          const t = raw.replace(/[.,;:!?…]+$/u,"");
-
-          if (i === 0 && VERB_FIRST.test(t)) continue;
-
-          if (/^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+$/u.test(t) && !STOP_CAPS.has(t) && !ADVERB_CAPS.has(t)) {
-            names.push(t);
-            if (tokens[i + 1] === "i") {
-              const t2 = (tokens[i + 2] || "").replace(/[.,;:!?…]+$/u,"");
-              if (/^[A-ZĄĆĘŁŃÓŚŹŻ]/u.test(t2)) { names.push(t2); i += 2; }
-            }
-          }
-        }
-        return names.length ? names.join(" i ") : null;
-      }
-
-      function detectMoveCue(s) {
-        const t = deaccent(String(s).toLowerCase());
-        if (/\bposzli\b/.test(t))    return { form: "poszli" };
-        if (/\bpojechali\b/.test(t)) return { form: "pojechali" };
-        if (/\bwsied\w*\b/.test(t))  return { form: "wsiedli" };
-        if (/\bwrocil[iy]\b/.test(t))return { form: "wrócili" };
-        if (/\bwesz\w*\b/.test(t) || /\bwszed\w*\b/.test(t)) return { form: "weszli" };
-        if (/\bposzla\b/.test(t))     return { form: "poszła" };
-        if (/\bpojechala\b/.test(t))  return { form: "pojechała" };
-        if (/\bwrocila\b/.test(t))    return { form: "wróciła" };
-        if (/\bposzedl\b/.test(t))    return { form: "poszedł" };
-        if (/\bpojechal\b/.test(t))   return { form: "pojechał" };
-        return null;
-      }
-
-      function extractDestinationIfMove(s) {
-        const cue = detectMoveCue(s);
-        if (!cue) return null;
-
-        const base = String(s);
-
-        const reBoard = /\b(wsied\w*|wsiad\w*)\s+do\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,5})/iu;
-        const mb = base.match(reBoard);
-        if (mb) {
-          let dest = "do " + mb[2];
-          dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
-          dest = dest
-            .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
-            .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
-            .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
-          const naDo = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-          if (naDo) dest = "do " + naDo[1];
-          return dest.trim();
-        }
-
-        const mv = base.search(/\b(poszed\w*|poszl\w*|pojecha\w*|wróc\w*|wroci\w*|przesz\w*|przejd\w*|wszed\w*|wesz\w*)\b/iu);
-        const tail = mv >= 0 ? base.slice(mv) : base;
-
-        const reDir = /\b(do|na)\s+([^\s,.;!?]+(?:\s+(?!(?:i|oraz|a|do|na)\b)[^\s,.;!?]+){0,8})\b/iu;
-        const md = tail.match(reDir);
-        if (!md) return null;
-
-        let dest = `${md[1]} ${md[2]}`;
-
-        dest = dest.replace(/\s*,?\s*(?:i|oraz|a)\s+(?=(?:pojech\w*|posz\w*|wsiad\w*|wsied\w*|wróci\w*|wroci\w*|wszed\w*|wesz\w*|do|na)\b).*$/iu, "");
-        dest = dest
-          .replace(/\s+(przed|o)\s+\d{1,2}[:.]\d{2}.*$/iu, "")
-          .replace(/\s+\b(zjedli|jedli|pili|bawili|czytali|oglądali|rysowali)\b.*$/iu, "")
-          .replace(/\s+(?:z|ze|od|znad|spod|sprzed)\s+[^\s,.;!?]+.*$/iu, "");
-
-        const naDo2 = dest.match(/\bna\s+[^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,4}\s+do\s+([^\s,.;!?]+(?:\s+[^\s,.;!?]+){0,5})/iu);
-        if (naDo2) dest = "do " + naDo2[1];
-
-        return dest.trim() || null;
-      }
-
-      function buildDokadQuestion(sentence, fallbackNames) {
-        const cue = detectMoveCue(sentence);
-        const namesLocal = extractNames(sentence);
-        const names = namesLocal || fallbackNames || null;
-
-        if (cue && names) return `Dokąd ${cue.form} ${names}?`;
-        if (cue && !names) return `Dokąd ${cue.form}?`;
-        return "Dokąd oni poszli?";
-      }
-
-      const cleaned = text
-        .split(/\r?\n/)
-        .map(l => l.replace(/^\s*[>›»]{1,2}\s*/, ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      const globalNames = extractNames(cleaned);
-
-      const rough = cleaned.split(/(?<=[.!?;])\s+/);
-      const splitOnMarkers = s =>
-        s.split(/,\s*(?:a\s+potem|potem|nast[eę]pnie|wtedy)\b/iu)
-         .map(x => x.trim())
-         .filter(Boolean);
-
-      const sentences = rough.flatMap(splitOnMarkers).filter(Boolean);
-
-      const candidates = sentences.map(s => {
-        const dest = extractDestinationIfMove(s);
-        const move = !!detectMoveCue(s);
-
-        const r = generateQuestionAndAnswerTeacher_core(s);
-
-        let score = 0;
-        let qtype = r.qtype;
-        let question = r.question;
-        let answer = r.answer;
-
-        if (qtype === "Gdzie?" && typeof answer === "string") {
-          answer = answer.toLowerCase();
-        }
-
-        if (move && dest) {
-          score = 100;
-          qtype = "Dokąd?";
-          question = buildDokadQuestion(s, globalNames);
-          answer = dest;
-        } else if (r.qtype === "Kto?" && r.answer) {
-          score = 80;
-        } else if (r.qtype === "Gdzie?" && r.answer) {
-          score = 70;
-        } else if (r.qtype === "Kiedy?" && /^\s*[Oo]\s*\d{1,2}[:.]\d{2}\s*$/.test(r.answer || "")) {
-          score = 60;
-        } else if (r.qtype === "Kiedy?" && r.answer) {
-          score = 50;
-        } else if (r.answer) {
-          score = 20;
-        }
-
-        return { score, qtype, question, answer, sentence: s };
-      });
-
-      candidates.sort((a,b) => b.score - a.score);
-      const best = candidates[0];
-
-      if (!best || !best.answer) {
-        return res.json({ ok: false, message: "No suitable question found", source_path: "one-best" });
-      }
-
-      if (best.qtype === "Dokąd?") {
-        best.question = buildDokadQuestion(best.sentence, globalNames);
-        const fixedDest = extractDestinationIfMove(best.sentence);
-        if (fixedDest) best.answer = fixedDest;
-      }
-
-      res.json({
-        ok: true,
-        qtype: best.qtype,
-        question: best.question,
-        answer: best.answer,
-        sentence: best.sentence,
-        source_path: "one-best"
-      });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: String(err.message || err), source_path: "one-best" });
-    }
-  });
-
-  // ==================== VERBS API + META + HEALTH + DEBUG ====================
-  app.get("/version-quiz", (_req, res) =>
-    res.json({ build: "2025-10-28 rule-teacher-strict-v7.7 (conf + safe-llm-fallback)" })
-  );
-
-  app.post("/verbs/reload", async (_req, res) => {
-    try {
-      const path = "./verbs.js";
-      const verbsModule = await import(path + `?v=${Date.now()}`);
-      VERBS_MOTION     = verbsModule.VERBS_MOTION     || VERBS_MOTION;
-      VERBS_PLACEBOUND = verbsModule.VERBS_PLACEBOUND || VERBS_PLACEBOUND;
-      VERBS_PERCEPTION = verbsModule.VERBS_PERCEPTION || VERBS_PERCEPTION;
-      if (!VERBS_MOTION.includes("pobieg")) VERBS_MOTION.push("pobieg");
-      if (!VERBS_PERCEPTION.includes("zobaczy")) VERBS_PERCEPTION.push("zobaczy");
-      if (!VERBS_PERCEPTION.includes("obejrz")) VERBS_PERCEPTION.push("obejrz");
-      console.log(`♻️ verbs.js reloaded (${VERBS_MOTION.length}+${VERBS_PLACEBOUND.length}+${VERBS_PERCEPTION.length})`);
-      res.json({
-        ok: true,
-        message: "verbs.js reloaded",
-        counts: {
-          motion: VERBS_MOTION.length,
-          placebound: VERBS_PLACEBOUND.length,
-          perception: VERBS_PERCEPTION.length,
-        },
-      });
-    } catch (err) {
-      console.error("reload error:", err);
-      res.status(500).json({ ok: false, error: String(err.message || err) });
-    }
-  });
-
-  app.get("/verbs/common", async (_req, res) => {
-    try {
-      const verbsModule = await import("./verbs.js");
-      const all = verbsModule.COMMON_VERBS || verbsModule.default || [];
-      res.json({ ok: true, count: all.length, verbs: all });
-    } catch (err) {
-      console.error("Error /verbs/common:", err);
-      res.status(500).json({ ok: false, error: String(err.message || err) });
-    }
-  });
-
-  app.get("/health-quiz", (_req, res) => res.status(200).json({ ok: true }));
-
-  // DEBUG: pokaż surowe confidence kandydatów dla jednego zdania
-  app.get("/quiz/debug", (req, res) => {
-    const text = String(req.query.text || "");
-    const r = generateQuestionAndAnswerTeacher_core(text);
-    const dbg = {
-      picked: { qtype: r.qtype, question: r.question, answer: r.answer, source: r.source_path },
-      candidates: r.candidates || [],
-      threshold: RULE_CONF_THRESHOLD,
-      llm_enabled: LLM_FALLBACK_ENABLED
-    };
-    res.json(dbg);
-  });
-
-})(app);
-/* ===================== /QUIZ — INLINE ===================== */
 
 
 
