@@ -1506,6 +1506,200 @@ export default router;
 
 // === QUIZ v8 (END) ===
 
+// === AGENT QUIZ ROUTER (one-best + check-answer-text) ===
+// UWAGA: zakładam, że na górze pliku masz już:
+//   import express from "express";
+//   const app = express();
+//   app.use(express.json());
+
+const agentRouter = express.Router();
+
+/** Proste utils — bezpieczna normalizacja PL */
+function norm(s = "") {
+  return String(s)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}0-9\s-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function jaccard(a, b) {
+  const A = new Set(norm(a).split(" ").filter(Boolean));
+  const B = new Set(norm(b).split(" ").filter(Boolean));
+  if (!A.size && !B.size) return 1;
+  let inter = 0; for (const t of A) if (B.has(t)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+function splitSentences(s=""){
+  return String(s).replace(/\s*[\r\n]+\s*/g," ")
+    .split(/(?<=[.!?…])\s+/u).map(t=>t.trim()).filter(Boolean);
+}
+
+/** Heurystyki do „Kto?” (czynność) */
+function extractWhoDo(sentence) {
+  // przykłady trafień: "Elfy robią ...", "Mikołaj maluje ...", "Pani Krysia piecze ..."
+  const m = sentence.match(
+    /^(?:[Ww]\s+\p{L}+|\p{Lu}\p{L}+|[Pp]ani\s+\p{Lu}\p{L}+|[Pp]an\s+\p{Lu}\p{L}+|[Ee]lfy|[Mm]ikołaj|[Śś]więty\s+[Mm]ikołaj)\b[^\.\?!]*?\b(robi|maluje|piecze|pisze|rysuje|gotuje|czyta|wsiad|wsiedli|poszedł|poszła|poszli|pracuje|pracują)\b/iu
+  );
+  if (!m) return null;
+  // podmiot = pierwsze słowo/grupa przed czasownikiem
+  const subj = sentence.split(/\b(robi|maluje|piecze|pisze|rysuje|gotuje|czyta|wsiad|wsiedli|poszedł|poszła|poszli|pracuje|pracują)\b/iu)[0]
+    .trim()
+    .replace(/[.,!?]+$/,"");
+  // skróć nadmiary, np. „W sobotni poranek Ala” -> „Ala”
+  const subjClean =
+    (subj.match(/\b(Pani|Pan)\s+\p{Lu}\p{L}+\b/iu)?.[0]) ||
+    (subj.match(/\bŚwięty\s+Mikołaj\b/iu)?.[0]) ||
+    (subj.match(/\b[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+(?:\s+[A-ZŁŚŻŹĆŃÓ][\p{L}'-]+)?\b/gu)?.slice(-1)[0]) ||
+    (subj.match(/\b[Ee]lfy\b/)?.[0]) ||
+    subj;
+
+  // normalizacja znanych form (Święty Mikołaj → Święty Mikołaj; Elfy → Elfy; Pan/Pani Imię → pełna fraza)
+  let answer = subjClean.trim()
+    .replace(/\bświety\b/gi, "Święty")
+    .replace(/\bmikolaj\b/gi, "Mikołaj");
+  if (/^mikołaj$/i.test(answer)) answer = "Święty Mikołaj"; // wymuszamy pełną formę
+  if (/^elf$/i.test(answer)) answer = "Elfy";                // liczba mnoga po naszych danych
+  // pojedyncze myki: „Pani Krysia” zostaje jak jest
+
+  // pytanie — bardziej naturalne:
+  // Jeśli zdanie ma „pracuje/pracują/robią/maluje/piecze” → „Kto [czasownik]?”
+  const verb = (m[1] || "").toLowerCase();
+  let questionVerb = "to robi";
+  if (["pracuje","pracują"].includes(verb)) questionVerb = (verb === "pracują") ? "pracują" : "pracuje";
+  else if (verb === "robi") questionVerb = "robi";
+  else if (verb === "maluje") questionVerb = "maluje";
+  else if (verb === "piecze") questionVerb = "piecze";
+  else if (verb === "czyta") questionVerb = "czyta";
+
+  const question = `Kto ${questionVerb}?`;
+  return { question, answer };
+}
+
+/** Heurystyki do „Dokąd?” / „Gdzie?” / „Kiedy?” */
+function extractWhereWhen(sentence) {
+  // Dokąd?
+  let m = sentence.match(/\b(poszli|poszedł|poszła|wsiedli|wsiadł)\b.*?\b(do|na)\s+([^\.,!?]+)/iu);
+  if (m) {
+    const pre = m[2].toLowerCase();
+    const tail = m[3].trim().replace(/[.,!?]+$/,"");
+    return { qtype: "Dokąd?", question: "Dokąd oni poszli?", answer: `${pre} ${tail}` };
+  }
+  // Gdzie?
+  m = sentence.match(/\b(w|na|przy|między)\s+([^\.,!?]+)\b.*\b(usiedli|czekali|siedzieli|byli)\b/iu);
+  if (m) {
+    const prep = m[1].toLowerCase();
+    const place = m[2].trim().replace(/[.,!?]+$/,"");
+    const verb = m[3].toLowerCase();
+    const q = verb.includes("usiedli") || verb.includes("siedzieli") ? "Gdzie usiedli?" :
+              verb.includes("czekali") ? "Gdzie czekali?" :
+              "Gdzie byli?";
+    return { qtype: "Gdzie?", question: q, answer: (prep === "przy" ? `przy ${place}` : place) };
+  }
+  // Kiedy?
+  m = sentence.match(/\b(o\s+\d{1,2}:\d{2}|w\s+\p{L}+ (?:poranek|wieczór|południe)|po\s+\p{L}+|przed\s+\d{1,2}:\d{2})\b/iu);
+  if (m) {
+    const ans = m[0].trim().replace(/[.,!?]+$/,"");
+    return { qtype: "Kiedy?", question: "Kiedy to się działo?", answer: ans[0].toUpperCase()+ans.slice(1) };
+  }
+  return null;
+}
+
+/** POST /agent/comprehend-one
+ * body: { text: string }
+ * return: { ok, qtype, question, answer, sentence, source_path }
+ */
+agentRouter.post("/comprehend-one", (req, res) => {
+  try {
+    const text = String(req.body?.text || "").trim();
+    if (!text) return res.status(400).json({ ok: false, error: "empty-text" });
+
+    const sents = splitSentences(text);
+    // priorytet: zdania z czasownikami akcji → „Kto?”
+    for (const s of sents) {
+      const who = extractWhoDo(s);
+      if (who && who.answer) {
+        return res.json({
+          ok: true,
+          qtype: "Kto?",
+          question: who.question,
+          answer: who.answer,
+          sentence: s,
+          source_path: "one-best-local"
+        });
+      }
+    }
+    // alternatywnie: gdzie/dokąd/kiedy
+    for (const s of sents) {
+      const wx = extractWhereWhen(s);
+      if (wx) {
+        return res.json({
+          ok: true,
+          qtype: wx.qtype,
+          question: wx.question,
+          answer: wx.answer,
+          sentence: s,
+          source_path: "one-best-local"
+        });
+      }
+    }
+    // totalny fallback
+    return res.json({
+      ok: true,
+      qtype: "Co?",
+      question: "Co się dzieje w tej historii?",
+      answer: "",
+      sentence: sents[0] || "",
+      source_path: "one-best-fallback"
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+/** POST /agent/check-answer-text
+ * body: { text, question, expectedAnswer, childAnswer, age? }
+ * return: { ok, result: "ok"|"not-ok", feedback, correctAnswer? }
+ */
+agentRouter.post("/check-answer-text", (req, res) => {
+  try {
+    const expected = String(req.body?.expectedAnswer || "").trim();
+    const child = String(req.body?.childAnswer || "").trim();
+
+    // Jeśli nie mamy expected → spróbuj wyestymować z tekstu („Kto?” na pierwszym zdaniu)
+    let gold = expected;
+    if (!gold) {
+      const sents = splitSentences(String(req.body?.text || ""));
+      for (const s of sents) {
+        const who = extractWhoDo(s);
+        if (who && who.answer) { gold = who.answer; break; }
+      }
+    }
+
+    const ok =
+      !!gold &&
+      (
+        norm(child) === norm(gold) ||
+        norm(child).includes(norm(gold)) ||
+        jaccard(child, gold) >= 0.55
+      );
+
+    return res.json({
+      ok: true,
+      result: ok ? "ok" : "not-ok",
+      feedback: ok
+        ? "Świetnie! Odpowiedź pasuje do treści."
+        : "Dobra próba! Zwróć uwagę na podmiot w zdaniu.",
+      ...(ok ? {} : { correctAnswer: gold || "" })
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Zamontuj router (JEŚLI nie masz jeszcze takiej linijki)
+app.use("/agent", agentRouter);
+// === KONIEC BLOKU AGENT QUIZ ROUTER ===
 
 
 
